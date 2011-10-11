@@ -1,0 +1,136 @@
+#include "raidif.h"
+#include "raid_if.h"
+
+static ssize_t sess_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
+static ssize_t sess_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len);
+static void sess_release(struct kobject *kobj);
+
+struct sess_attribute {
+	struct attribute attr;
+	ssize_t (*show) (targ_sess_t *sess, char *page);
+	ssize_t (*store)(targ_sess_t *sess, char *page, ssize_t count);
+};
+
+struct sysfs_ops sess_sysfs_ops = {
+	.show = sess_attr_show,
+	.store = sess_attr_store,
+};
+
+static struct attribute *sess_attrs[] = {
+	NULL,
+};
+
+struct kobj_type sess_ktype = {
+	.release = sess_release,
+	.default_attrs = sess_attrs,
+	.sysfs_ops = &sess_sysfs_ops,
+};
+
+static ssize_t sess_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+{
+	struct sess_attribute *sess_attr = 
+		container_of(attr, struct sess_attribute, attr);
+	int len = 0;
+	if (sess_attr->show)
+		len = sess_attr->show(container_of(kobj, targ_sess_t, kobj), data);
+	return len;
+}
+
+static ssize_t sess_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+{
+	struct sess_attribute *sess_attr = 
+		container_of(attr, struct sess_attribute, attr);
+	if (sess_attr->store)
+		len = sess_attr->store(container_of(kobj, targ_sess_t, kobj), (char *)data, len);
+	return len;
+}
+
+static void sess_release(struct kobject *kobj)
+{
+	targ_sess_t *sess = container_of(kobj, targ_sess_t, kobj);
+	kfree(sess);
+}
+
+targ_sess_t *targ_sess_new(const char *wwpn, void *data)
+{
+	int res = 0;
+	targ_port_t *port = targ_port_find_by_data(data);
+	targ_sess_t *sess;
+
+	if (!port)
+		return NULL;
+
+	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
+	if (!sess)
+		return NULL;
+
+	INIT_LIST_HEAD(&sess->list);
+	INIT_LIST_HEAD(&sess->dev.list);
+	sess->kobj.ktype = &sess_ktype;
+	sess->kobj.parent = &raidif.kobj;
+	sess->data = data;
+
+	res = kobject_init_and_add(&sess->kobj,
+			&sess_ktype,
+			&raidif.kobj,
+			wwpn);
+	targ_port_add_sess(port, sess);
+
+	return sess;
+}
+
+void targ_sess_put(targ_sess_t *sess)
+{
+	kobject_put(&sess->kobj);
+}
+
+void targ_sess_set_data(targ_sess_t *sess, void *data)
+{
+}
+
+void *targ_sess_get_data(targ_sess_t *sess)
+{
+	return NULL;
+}
+
+int targ_sess_get_dev_nr(targ_sess_t *sess)
+{
+	return 0;
+}
+
+raid_dev_t *raid_bus_get_dev_by_nr(targ_sess_t *sess, int nr)
+{
+	return NULL;
+}
+
+int raid_dev_put(raid_dev_t *dev)
+{
+	return 0;
+}
+
+uint64_t raid_dev_get_blocks(raid_dev_t *dev)
+{
+	return 0;
+}
+
+raid_buf_t *raid_buf_new(raid_dev_t *dev, uint64_t blknr, uint16_t blks, int rw, buf_cb_t cb, void *priv)
+{
+	return NULL;
+}
+
+int raid_buf_free(raid_buf_t *buf)
+{
+	return 0;
+}
+
+raid_sg_t *raid_buf_sg(raid_buf_t *buf, int *count)
+{
+	return NULL;
+}
+
+EXPORT_SYMBOL(targ_sess_new);
+EXPORT_SYMBOL(targ_sess_put);
+EXPORT_SYMBOL(targ_sess_set_data);
+EXPORT_SYMBOL(targ_sess_get_data);
+EXPORT_SYMBOL(targ_sess_get_dev_nr);    
+EXPORT_SYMBOL(targ_sess_get_dev_by_nr);

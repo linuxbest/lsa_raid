@@ -26,20 +26,6 @@ struct kobj_type port_ktype = {
 	.sysfs_ops = &port_sysfs_ops,
 };
 
-struct targ_port {
-	struct kobject kobj;
-	struct list_head list;
-	void *data;
-	struct {
-		void *data;
-		char wwpn[16];
-	} port;
-	struct {
-		struct list_head list;
-		spinlock_t lock;
-	} sess;
-};
-
 static ssize_t port_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
 {
 	struct port_attribute *port_attr = 
@@ -90,6 +76,22 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 void targ_port_put(targ_port_t *port)
 {
 	kobject_put(&port->kobj);
+}
+
+targ_port_t *targ_port_find_by_data(void *data)
+{
+	targ_port_t *port;
+	list_for_each_entry(port, &raidif.port.list, list) {
+		if (port->data == data)
+			return port;
+	}
+	return NULL;
+}
+
+int targ_port_add_sess(targ_port_t *port, targ_sess_t *sess)
+{
+	list_add_tail(&sess->list, &port->sess.list);
+	return 0;
 }
 
 EXPORT_SYMBOL(targ_port_new);
