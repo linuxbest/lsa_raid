@@ -1,7 +1,5 @@
 #include "raidif.h"
 
-#define MAX_ARGS  16
-
 static struct kobj_type raidif_ktype;
 
 struct raidif raidif = {
@@ -78,7 +76,7 @@ static ssize_t raidif_show_devices(char *data)
 	return len;
 }
 
-static int args(char *frame, char *argv[], int argv_max)
+int args(char *frame, char *argv[], int argv_max)
 {
         int argc = 0;
         char *p = frame;
@@ -137,12 +135,18 @@ int __init module_new(void)
 
 void module_destroy(void)
 {
+	while (!list_empty(&raidif.device.list)) {
+		struct raid_device *dev = list_entry(raidif.device.list.next, struct raid_device, list);
+		list_del_init(&dev->list);
+		device_cleanup(dev);
+	}
 	kobject_put(&raidif.kobj);
 }
 
 module_init(module_new);
 module_exit(module_destroy);
 
+MODULE_VERSION(GITVERSION);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Hu Gang <hugang@soulinfo.com>");
 MODULE_DESCRIPTION("RAID Interface API");
