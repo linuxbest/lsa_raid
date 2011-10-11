@@ -99,9 +99,11 @@ static ssize_t device_show_rdev(struct raid_device *dev, char *data)
 	int len = 0;
 	char name[BDEVNAME_SIZE];
 
+	len += sprintf(data + len, "##  name        uuid          blocks  \n");
+	len += sprintf(data + len, "__  ____  ________________  __________\n");
 	list_for_each_entry(rdev, &dev->rdev.list, list) {
 		bdevname(rdev->bdev, name);
-		len += sprintf(data + len, "%d: %s, %016llx, %016llx\n",
+		len += sprintf(data + len, "%02d, %-4s, %016llx, %lld\n",
 				rdev->nr, name, rdev->uuid, rdev->blocks);
 	}
 	return len;
