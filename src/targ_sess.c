@@ -96,35 +96,35 @@ void *targ_sess_get_data(targ_sess_t *sess)
 
 int targ_sess_get_dev_nr(targ_sess_t *sess)
 {
-	return sess->dev->nr;
+	return sess->dev.nr;
 }
 
-raid_dev_t *raid_bus_get_dev_by_nr(targ_sess_t *sess, int nr)
+targ_dev_t *targ_bus_get_dev_by_nr(targ_sess_t *sess, int nr)
 {
 	return NULL;
 }
 
-int raid_dev_put(raid_dev_t *dev)
+int targ_dev_put(targ_dev_t *dev)
 {
 	return 0;
 }
 
-uint64_t raid_dev_get_blocks(raid_dev_t *dev)
+uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
 	return 0;
 }
 
-raid_buf_t *raid_buf_new(raid_dev_t *dev, uint64_t blknr, uint16_t blks, int rw, buf_cb_t cb, void *priv)
+targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
 	return NULL;
 }
 
-int raid_buf_free(raid_buf_t *buf)
+int targ_buf_free(targ_buf_t *buf)
 {
 	return 0;
 }
 
-raid_sg_t *raid_buf_sg(raid_buf_t *buf, int *count)
+targ_sg_t *targ_buf_sg(targ_buf_t *buf, int *count)
 {
 	return NULL;
 }
