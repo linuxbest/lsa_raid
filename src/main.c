@@ -11,6 +11,10 @@ struct raidif raidif = {
 		.lock = SPIN_LOCK_UNLOCKED,
 		.list = LIST_HEAD_INIT(raidif.device.list),
 	},
+	.port = {
+		.lock = SPIN_LOCK_UNLOCKED,
+		.list = LIST_HEAD_INIT(raidif.port.list),
+	},
 };
 
 struct raidif_attribute {
