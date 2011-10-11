@@ -2,7 +2,18 @@
 
 #define MAX_ARGS  16
 
-struct raidif raidif;
+static struct kobj_type raidif_ktype;
+
+struct raidif raidif = {
+	.kobj = {
+		.name = NULL,
+		.ktype = &raidif_ktype,
+	},
+	.device = {
+		.lock = SPIN_LOCK_UNLOCKED,
+		.list = LIST_HEAD_INIT(raidif.device.list),
+	},
+};
 
 struct raidif_attribute {
 	struct attribute attr;
@@ -48,7 +59,7 @@ static struct sysfs_ops raidif_sysfs_ops = {
 	.store= raidif_attr_store,
 };
 
-struct kobj_type raidif_ktype = {
+static struct kobj_type raidif_ktype = {
 	.default_attrs = raidif_attr,
 	.sysfs_ops = &raidif_sysfs_ops,
 };
