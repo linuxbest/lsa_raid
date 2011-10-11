@@ -14,12 +14,12 @@ int         raid_bus_set_remote_wwpn(raid_bus_t *bus, const char *wwpn);
 int         raid_bus_get_dev_nr   (raid_bus_t *bus);
 raid_dev_t *raid_bus_get_dev_by_nr(raid_bus_t *bus, int nr);
 int         raid_dev_put          (raid_dev_t *dev, raid_bus_t *bus);
-uint64_t    raid_dev_get_size     (raid_dev_t *dev);
+uint64_t    raid_dev_get_blocks   (raid_dev_t *dev);
 raid_buf_t *raid_buf_new          (raid_dev_t *dev, 
-		                   uint64_t offset, 
-				   uint16_t size, 
-				   int rw, 
-				   buf_cb_t cb, 
+		                   uint64_t blknr,
+				   uint16_t blks,
+				   int rw,
+				   buf_cb_t cb,
 				   void *priv);
 int         raid_buf_free         (raid_buf_t *buf);
 raid_sg_t  *raid_buf_sg           (raid_buf_t *buf, int *count);
