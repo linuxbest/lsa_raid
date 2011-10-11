@@ -3,7 +3,7 @@ ifneq ($(KERNELRELEASE),)
 
 obj-m = raidif.o
 
-raidif-objs += main.o dev.o mem.o bus.o
+raidif-objs += main.o dev.o mem.o targ_port.o targ_sess.o
 
 EXTRA_CFLAGS := -I$(src)/../include
 
