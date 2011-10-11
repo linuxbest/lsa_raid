@@ -86,16 +86,17 @@ void targ_sess_put(targ_sess_t *sess)
 
 void targ_sess_set_data(targ_sess_t *sess, void *data)
 {
+	sess->data = data;
 }
 
 void *targ_sess_get_data(targ_sess_t *sess)
 {
-	return NULL;
+	return sess->data;
 }
 
 int targ_sess_get_dev_nr(targ_sess_t *sess)
 {
-	return 0;
+	return sess->dev->nr;
 }
 
 raid_dev_t *raid_bus_get_dev_by_nr(targ_sess_t *sess, int nr)
