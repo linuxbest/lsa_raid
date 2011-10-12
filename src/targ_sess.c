@@ -99,7 +99,7 @@ int targ_sess_get_dev_nr(targ_sess_t *sess)
 	return sess->dev.nr;
 }
 
-targ_dev_t *targ_bus_get_dev_by_nr(targ_sess_t *sess, int nr)
+targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 {
 	return NULL;
 }
@@ -135,3 +135,8 @@ EXPORT_SYMBOL(targ_sess_set_data);
 EXPORT_SYMBOL(targ_sess_get_data);
 EXPORT_SYMBOL(targ_sess_get_dev_nr);    
 EXPORT_SYMBOL(targ_sess_get_dev_by_nr);
+
+EXPORT_SYMBOL(targ_dev_get_blocks);
+EXPORT_SYMBOL(targ_buf_sg);
+EXPORT_SYMBOL(targ_buf_free);
+EXPORT_SYMBOL(targ_buf_new);

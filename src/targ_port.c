@@ -54,7 +54,9 @@ static void port_release(struct kobject *kobj)
 targ_port_t *targ_port_new(const char *wwpn, void *data)
 {
 	int res = 0;
-	targ_port_t *port = kzalloc(sizeof(*port), GFP_KERNEL);
+	targ_port_t *port;
+	
+	port = kzalloc(sizeof(*port), GFP_KERNEL);
 	if (!port)
 		return NULL;
 
