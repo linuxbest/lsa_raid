@@ -1,0 +1,2 @@
+chunk   = DDF strip
+stripe  = DDF stripe
