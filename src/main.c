@@ -26,14 +26,24 @@ struct raidif_attribute {
 static ssize_t raidif_show_devices(char *data);
 static ssize_t raidif_store_devices(char *data, ssize_t len);
 
+static ssize_t raidif_show_ports(char *data);
+static ssize_t raidif_store_ports(char *data, ssize_t len);
+
 static struct raidif_attribute raidif_device_attr = {
 	.attr = {.name = "devices", .mode = S_IRUGO | S_IWUGO,},
 	.show = raidif_show_devices,
 	.store = raidif_store_devices,
 };
 
+static struct raidif_attribute raidif_port_attr = {
+	.attr = {.name = "ports", .mode = S_IRUGO | S_IWUGO,},
+	.show = raidif_show_ports,
+	.store = raidif_store_ports,
+};
+
 static struct attribute *raidif_attr[] = {
 	&raidif_device_attr.attr,
+	&raidif_port_attr.attr,
 	NULL,
 };
 
@@ -124,6 +134,24 @@ static ssize_t raidif_store_devices(char *data, ssize_t len)
 		}
 	}
 
+	return len;
+}
+
+static ssize_t raidif_show_ports(char *data)
+{
+	struct targ_port *port;
+	ssize_t len = 0;
+
+	list_for_each_entry(port, &raidif.port.list, list) {
+		len += sprintf(data + len, "%s 0x%x\n", port->kobj.name,
+				(u32)port->data);
+	}
+
+	return len;
+}
+
+static ssize_t raidif_store_ports(char *data, ssize_t len)
+{
 	return len;
 }
 
