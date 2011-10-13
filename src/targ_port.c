@@ -61,6 +61,7 @@ static void targ_port_del_sess_timer_fn(unsigned long arg)
 		targ_sess_t *sess = list_entry(port->sess.del_sess_list.next,
 				typeof(*sess), del_sess_list);
 		if (time_after_eq(jiffies, sess->expires)) {
+			list_del(&sess->del_sess_list);
 			kobject_put(&sess->kobj);
 		} else {
 			port->sess.sess_del_timer.expires = sess->expires;
