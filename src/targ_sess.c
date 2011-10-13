@@ -72,7 +72,7 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 
 	res = kobject_init_and_add(&sess->kobj,
 			&sess_ktype,
-			&raidif.kobj,
+			&port->kobj,
 			wwpn);
 	targ_port_add_sess(port, sess);
 
