@@ -12,7 +12,7 @@
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
 
-#include "raidif.h"
+#include "target.h"
 
 #define DM_MSG_PREFIX "linear"
 
@@ -232,15 +232,15 @@ static int lv_add(struct raid_device *dev, const char *name)
 
 	INIT_LIST_HEAD(&dev->list);
 	dev->kobj.ktype  = &device_ktype;
-	dev->kobj.parent = &raidif.kobj;
+	dev->kobj.parent = &target.kobj;
 	dev->blocks      = 0;
 
 	res = kobject_init_and_add(&dev->kobj,
 			&device_ktype,
-			&raidif.kobj,
+			&target.kobj,
 			buf);
 
-	list_add_tail(&dev->list, &raidif.device.list);
+	list_add_tail(&dev->list, &target.device.list);
 
 	return res;
 }

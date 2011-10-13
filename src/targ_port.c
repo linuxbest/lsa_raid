@@ -1,4 +1,4 @@
-#include "raidif.h"
+#include "target.h"
 #include "raid_if.h"
 
 static ssize_t port_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
@@ -63,14 +63,14 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 	INIT_LIST_HEAD(&port->list);
 	INIT_LIST_HEAD(&port->sess.list);
 	port->kobj.ktype = &port_ktype;
-	port->kobj.parent = &raidif.kobj;
+	port->kobj.parent = &target.kobj;
 	port->data = data;
 
 	res = kobject_init_and_add(&port->kobj,
 			&port_ktype,
-			&raidif.kobj,
+			&target.kobj,
 			wwpn);
-	list_add_tail(&port->list, &raidif.port.list);
+	list_add_tail(&port->list, &target.port.list);
 
 	return port;
 }
@@ -83,7 +83,7 @@ void targ_port_put(targ_port_t *port)
 targ_port_t *targ_port_find_by_data(void *data)
 {
 	targ_port_t *port;
-	list_for_each_entry(port, &raidif.port.list, list) {
+	list_for_each_entry(port, &target.port.list, list) {
 		if (port->data == data)
 			return port;
 	}

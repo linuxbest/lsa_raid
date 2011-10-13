@@ -1,4 +1,4 @@
-#include "raidif.h"
+#include "target.h"
 #include "raid_if.h"
 
 static ssize_t sess_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
@@ -67,7 +67,7 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	INIT_LIST_HEAD(&sess->list);
 	INIT_LIST_HEAD(&sess->dev.list);
 	sess->kobj.ktype = &sess_ktype;
-	sess->kobj.parent = &raidif.kobj;
+	sess->kobj.parent = &target.kobj;
 	sess->data = data;
 
 	res = kobject_init_and_add(&sess->kobj,

@@ -1,9 +1,9 @@
 ifneq ($(KERNELRELEASE),)
 #SCST_INC_DIR := /p/prod/d/scst/scst/include
 
-obj-m = raidif.o
+obj-m = targ.o
 
-raidif-objs += main.o dm-linear.o mem.o targ_port.o targ_sess.o
+targ-objs += main.o dm-linear.o mem.o targ_port.o targ_sess.o
 
 EXTRA_CFLAGS += -I$(src)/../include
 EXTRA_CFLAGS += -I$(srctree)/drivers/md
