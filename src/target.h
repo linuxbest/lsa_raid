@@ -58,15 +58,27 @@ struct targ_port {
 	struct {
 		struct list_head list;
 		spinlock_t lock;
+
+		struct list_head del_sess_list;
+		struct timer_list sess_del_timer;
 	} sess;
 };
 
 struct targ_sess {
 	struct kobject kobj;
 	struct list_head list;
+
+	/* for delete */
+	struct list_head del_sess_list;
+	int deleted;
+	unsigned long jiffies, expires;
+
+	/* private data */
+	struct targ_port *port;
 	void *data;
 	struct {
 		char wwpn[16];
+		void *data;
 	} remote;
 	struct {
 		struct list_head list;
@@ -76,7 +88,9 @@ struct targ_sess {
 };
 
 struct targ_port * targ_port_find_by_data (void *data);
-int                targ_port_add_sess     (struct targ_port *port, struct targ_sess *sess);
+int                targ_port_sess_add     (struct targ_port *port, struct targ_sess *sess);
+void               targ_port_sess_remove  (struct targ_port *port, struct targ_sess *sess);
+struct targ_sess * targ_port_sess_find    (struct targ_port *port, const char *wwpn);
 
 int __init dm_linear_init(void);
 void       dm_linear_exit(void);

@@ -51,6 +51,22 @@ static void port_release(struct kobject *kobj)
 	kfree(port);
 }
 
+static void targ_port_del_sess_timer_fn(unsigned long arg)
+{
+	targ_port_t *port = (targ_port_t *)arg;
+
+	while (!list_empty(&port->sess.del_sess_list)) {
+		targ_sess_t *sess = list_entry(port->sess.del_sess_list.next,
+				typeof(*sess), del_sess_list);
+		if (time_after_eq(jiffies, sess->expires)) {
+			kobject_put(&sess->kobj);
+		} else {
+			port->sess.sess_del_timer.expires = sess->expires;
+			add_timer(&port->sess.sess_del_timer);
+		}
+	}
+}
+
 targ_port_t *targ_port_new(const char *wwpn, void *data)
 {
 	int res = 0;
@@ -65,6 +81,11 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 	port->kobj.ktype = &port_ktype;
 	port->kobj.parent = &target.kobj;
 	port->data = data;
+
+	INIT_LIST_HEAD(&port->sess.del_sess_list);
+	init_timer(&port->sess.sess_del_timer);
+	port->sess.sess_del_timer.data = (unsigned long)port;
+	port->sess.sess_del_timer.function = targ_port_del_sess_timer_fn;
 
 	res = kobject_init_and_add(&port->kobj,
 			&port_ktype,
@@ -90,10 +111,41 @@ targ_port_t *targ_port_find_by_data(void *data)
 	return NULL;
 }
 
-int targ_port_add_sess(targ_port_t *port, targ_sess_t *sess)
+int targ_port_sess_add(targ_port_t *port, targ_sess_t *sess)
 {
 	list_add_tail(&sess->list, &port->sess.list);
+	pr_info("targ_sess(%s:%s) registed.\n",
+			port->port.wwpn, sess->remote.wwpn);
 	return 0;
+}
+
+void targ_port_sess_remove(targ_port_t *port, targ_sess_t *sess)
+{
+	int dev_loss_tmo = 30 + 5;
+	int add_tmr;
+
+	if (sess->deleted) 
+		return;
+
+	add_tmr = list_empty(&port->sess.del_sess_list);
+	list_add_tail(&sess->del_sess_list, &port->sess.del_sess_list);
+	sess->deleted = 1;
+
+	pr_info("targ_sess(%s:%s) scheduled for deletection in %d secs.\n",
+			port->port.wwpn, sess->remote.wwpn, dev_loss_tmo);
+	sess->expires = jiffies + dev_loss_tmo * HZ;
+	if (add_tmr)
+		mod_timer(&port->sess.sess_del_timer, sess->expires);
+}
+
+targ_sess_t *targ_port_sess_find(targ_port_t *port, const char *wwpn)
+{
+	targ_sess_t *sess;
+	list_for_each_entry(sess, &port->sess.list, list) {
+		if (strcmp(sess->remote.wwpn, wwpn) == 0)
+			return sess;
+	}
+	return NULL;
 }
 
 EXPORT_SYMBOL(targ_port_new);

@@ -55,43 +55,54 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 {
 	int res = 0;
 	targ_port_t *port = targ_port_find_by_data(data);
-	targ_sess_t *sess;
+	targ_sess_t *sess = NULL;
 
-	if (!port)
-		return NULL;
+	if (!port) {
+		/* TODO */
+		goto out;
+	}
+	sess = targ_port_sess_find(port, wwpn);
+	if (sess && (sess->data == data || sess->data == NULL)) {
+		sess->data = data;
+		goto out;
+	}
 
 	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
-	if (!sess)
-		return NULL;
+	if (!sess) {
+		goto out;
+	}
 
 	INIT_LIST_HEAD(&sess->list);
+	INIT_LIST_HEAD(&sess->del_sess_list);
 	INIT_LIST_HEAD(&sess->dev.list);
 	sess->kobj.ktype = &sess_ktype;
 	sess->kobj.parent = &target.kobj;
 	sess->data = data;
+	sess->port = port;
 
 	res = kobject_init_and_add(&sess->kobj,
 			&sess_ktype,
 			&port->kobj,
 			wwpn);
-	targ_port_add_sess(port, sess);
-
+	targ_port_sess_add(port, sess);
+out:
 	return sess;
 }
 
 void targ_sess_put(targ_sess_t *sess)
 {
+	targ_port_sess_remove(sess->port, sess);
 	kobject_put(&sess->kobj);
 }
 
 void targ_sess_set_data(targ_sess_t *sess, void *data)
 {
-	sess->data = data;
+	sess->remote.data = data;
 }
 
 void *targ_sess_get_data(targ_sess_t *sess)
 {
-	return sess->data;
+	return sess->remote.data;
 }
 
 int targ_sess_get_dev_nr(targ_sess_t *sess)
