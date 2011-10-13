@@ -168,17 +168,17 @@ struct raid_device_attribute {
 	ssize_t (*store)(struct raid_device *dev, char *page, ssize_t count);
 }; 
 
-static ssize_t device_show_rdev (struct raid_device *dev, char *data);
-static ssize_t device_store_rdev(struct raid_device *dev, char *data, ssize_t len);
+static ssize_t device_show_uuid (struct raid_device *dev, char *data);
+static ssize_t device_store_uuid (struct raid_device *dev, char *data, ssize_t len);
 
-struct raid_device_attribute device_rdev_attr = {
-	.attr = { .name = "rdev", .mode = S_IRUGO | S_IWUGO, },
-	.show = device_show_rdev,
-	.store = device_store_rdev,
+struct raid_device_attribute device_uuid_attr = {
+	.attr = { .name = "uuid", .mode = S_IRUGO | S_IWUGO, },
+	.show = device_show_uuid,
+	.store = device_store_uuid,
 };
 
 static struct attribute *device_attrs[] = {
-	&device_rdev_attr.attr,
+	&device_uuid_attr.attr,
 	NULL,
 };
 
@@ -212,12 +212,12 @@ static ssize_t device_attr_store(struct kobject *kobj, struct attribute *attr, c
 	return len;
 }
 
-static ssize_t device_show_rdev(struct raid_device *dev, char *data)
+static ssize_t device_show_uuid(struct raid_device *dev, char *data)
 {
 	return 0;
 }
 
-static ssize_t device_store_rdev(struct raid_device *dev, char *data, ssize_t len)
+static ssize_t device_store_uuid(struct raid_device *dev, char *data, ssize_t len)
 {
 	return len;
 }
@@ -262,6 +262,7 @@ int device_cleanup(struct raid_device *dev)
 static int lv_del(struct raid_device *dev)
 {
 	list_del_init(&dev->list);
+	device_cleanup(dev);
 	return 0;
 }
 
