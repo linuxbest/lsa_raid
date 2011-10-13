@@ -47,7 +47,8 @@ static struct attribute *target_attr[] = {
 	NULL,
 };
 
-static ssize_t target_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+static ssize_t target_attr_show(struct kobject *kobj, 
+		struct attribute *attr, char *data)
 {
 	struct target_attribute *target_attr = 
 		container_of(attr, struct target_attribute, attr);
@@ -57,7 +58,8 @@ static ssize_t target_attr_show(struct kobject *kobj, struct attribute *attr, ch
 	return len;
 }
 
-static ssize_t target_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+static ssize_t target_attr_store(struct kobject *kobj,
+		struct attribute *attr, const char *data, size_t len)
 {
 	struct target_attribute *target_attr = 
 		container_of(attr, struct target_attribute, attr);
@@ -146,7 +148,8 @@ int __init module_new(void)
 	int res;
 
 	dm_linear_init();
-	res = kobject_init_and_add(&target.kobj, &target_ktype, NULL, "target");
+	res = kobject_init_and_add(&target.kobj, 
+			&target_ktype, NULL, "target");
 
 	return 0;
 }
@@ -154,7 +157,8 @@ int __init module_new(void)
 void module_destroy(void)
 {
 	while (!list_empty(&target.device.list)) {
-		struct raid_device *dev = list_entry(target.device.list.next, struct raid_device, list);
+		struct raid_device *dev = list_entry(target.device.list.next,
+				struct raid_device, list);
 		list_del_init(&dev->list);
 		/* TODO clean the device */
 	}

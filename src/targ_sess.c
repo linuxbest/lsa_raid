@@ -1,8 +1,10 @@
 #include "target.h"
 #include "raid_if.h"
 
-static ssize_t sess_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
-static ssize_t sess_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len);
+static ssize_t sess_attr_show(struct kobject *kobj,
+		struct attribute *attr, char *data);
+static ssize_t sess_attr_store(struct kobject *kobj,
+		struct attribute *attr, const char *data, size_t len);
 static void sess_release(struct kobject *kobj);
 
 struct sess_attribute {
@@ -26,22 +28,26 @@ struct kobj_type sess_ktype = {
 	.sysfs_ops = &sess_sysfs_ops,
 };
 
-static ssize_t sess_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+static ssize_t sess_attr_show(struct kobject *kobj,
+		struct attribute *attr, char *data)
 {
 	struct sess_attribute *sess_attr = 
 		container_of(attr, struct sess_attribute, attr);
 	int len = 0;
 	if (sess_attr->show)
-		len = sess_attr->show(container_of(kobj, targ_sess_t, kobj), data);
+		len = sess_attr->show(container_of(kobj, targ_sess_t, kobj),
+				data);
 	return len;
 }
 
-static ssize_t sess_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+static ssize_t sess_attr_store(struct kobject *kobj,
+		struct attribute *attr, const char *data, size_t len)
 {
 	struct sess_attribute *sess_attr = 
 		container_of(attr, struct sess_attribute, attr);
 	if (sess_attr->store)
-		len = sess_attr->store(container_of(kobj, targ_sess_t, kobj), (char *)data, len);
+		len = sess_attr->store(container_of(kobj, targ_sess_t, kobj),
+				(char *)data, len);
 	return len;
 }
 
@@ -125,7 +131,8 @@ uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 	return 0;
 }
 
-targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, uint16_t blks, int rw, buf_cb_t cb, void *priv)
+targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 
+		uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
 	return NULL;
 }

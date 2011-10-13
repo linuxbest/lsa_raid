@@ -1,8 +1,10 @@
 #include "target.h"
 #include "raid_if.h"
 
-static ssize_t port_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
-static ssize_t port_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len);
+static ssize_t port_attr_show(struct kobject *kobj, 
+		struct attribute *attr, char *data);
+static ssize_t port_attr_store(struct kobject *kobj, 
+		struct attribute *attr, const char *data, size_t len);
 static void port_release(struct kobject *kobj);
 
 struct port_attribute {
@@ -26,22 +28,26 @@ struct kobj_type port_ktype = {
 	.sysfs_ops = &port_sysfs_ops,
 };
 
-static ssize_t port_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+static ssize_t port_attr_show(struct kobject *kobj, 
+		struct attribute *attr, char *data)
 {
 	struct port_attribute *port_attr = 
 		container_of(attr, struct port_attribute, attr);
 	int len = 0;
 	if (port_attr->show)
-		len = port_attr->show(container_of(kobj, targ_port_t, kobj), data);
+		len = port_attr->show(container_of(kobj, targ_port_t, kobj),
+				data);
 	return len;
 }
 
-static ssize_t port_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+static ssize_t port_attr_store(struct kobject *kobj, 
+		struct attribute *attr, const char *data, size_t len)
 {
 	struct port_attribute *port_attr = 
 		container_of(attr, struct port_attribute, attr);
 	if (port_attr->store)
-		len = port_attr->store(container_of(kobj, targ_port_t, kobj), (char *)data, len);
+		len = port_attr->store(container_of(kobj, targ_port_t, kobj),
+				(char *)data, len);
 	return len;
 }
 

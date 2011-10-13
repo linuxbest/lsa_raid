@@ -159,8 +159,10 @@ static struct target_type linear_target = {
 };
 
 static void    device_release(struct kobject *obj);
-static ssize_t device_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
-static ssize_t device_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len);
+static ssize_t device_attr_show(struct kobject *kobj,
+		struct attribute *attr, char *data);
+static ssize_t device_attr_store(struct kobject *kobj,
+		struct attribute *attr, const char *data, size_t len);
 
 struct raid_device_attribute {
 	struct attribute attr;
@@ -168,8 +170,10 @@ struct raid_device_attribute {
 	ssize_t (*store)(struct raid_device *dev, char *page, ssize_t count);
 }; 
 
-static ssize_t device_show_uuid (struct raid_device *dev, char *data);
-static ssize_t device_store_uuid (struct raid_device *dev, char *data, ssize_t len);
+static ssize_t device_show_uuid (struct raid_device *dev, 
+		char *data);
+static ssize_t device_store_uuid (struct raid_device *dev, 
+		char *data, ssize_t len);
 
 struct raid_device_attribute device_uuid_attr = {
 	.attr = { .name = "uuid", .mode = S_IRUGO | S_IWUGO, },
@@ -193,7 +197,8 @@ struct kobj_type device_ktype = {
 	.sysfs_ops = &device_sysfs_ops,
 };
 
-static ssize_t device_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+static ssize_t device_attr_show(struct kobject *kobj, 
+		struct attribute *attr, char *data)
 {
 	struct raid_device_attribute *dev_attr = 
 		container_of(attr, struct raid_device_attribute, attr);
@@ -203,12 +208,14 @@ static ssize_t device_attr_show(struct kobject *kobj, struct attribute *attr, ch
 	return len;
 }
 
-static ssize_t device_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+static ssize_t device_attr_store(struct kobject *kobj,
+		struct attribute *attr, const char *data, size_t len)
 {
 	struct raid_device_attribute *dev_attr = 
 		container_of(attr, struct raid_device_attribute, attr);
 	if (dev_attr->show)
-		len = dev_attr->store(container_of(kobj, struct raid_device, kobj), (char *)data, len);
+		len = dev_attr->store(container_of(kobj, struct raid_device, kobj), 
+				(char *)data, len);
 	return len;
 }
 
@@ -217,7 +224,8 @@ static ssize_t device_show_uuid(struct raid_device *dev, char *data)
 	return 0;
 }
 
-static ssize_t device_store_uuid(struct raid_device *dev, char *data, ssize_t len)
+static ssize_t device_store_uuid(struct raid_device *dev, char *data,
+		ssize_t len)
 {
 	return len;
 }
