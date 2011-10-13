@@ -12,21 +12,19 @@
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
 
+#include "raidif.h"
+
 #define DM_MSG_PREFIX "linear"
 
-/*
- * Linear: maps a linear range of a device.
- */
-struct linear_c {
-	struct dm_dev *dev;
-	sector_t start;
-};
+static int lv_add(struct raid_device *rd, const char *name);
+static int lv_del(struct raid_device *rd);
 
 /*
  * Construct a linear mapping: <dev_path> <offset>
  */
 static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
+	struct raid_device *rd;
 	struct linear_c *lc;
 	unsigned long long tmp;
 
@@ -35,11 +33,12 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -EINVAL;
 	}
 
-	lc = kmalloc(sizeof(*lc), GFP_KERNEL);
-	if (lc == NULL) {
+	rd = kzalloc(sizeof(*rd), GFP_KERNEL);
+	if (rd == NULL) {
 		ti->error = "dm-linear: Cannot allocate linear context";
 		return -ENOMEM;
 	}
+	lc = &rd->lc;
 
 	if (sscanf(argv[1], "%llu", &tmp) != 1) {
 		ti->error = "dm-linear: Invalid device sector";
@@ -55,19 +54,23 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	ti->num_flush_requests = 1;
 	ti->private = lc;
+
+	lv_add(rd, NULL);
+
 	return 0;
 
       bad:
-	kfree(lc);
+	kfree(rd);
 	return -EINVAL;
 }
 
 static void linear_dtr(struct dm_target *ti)
 {
 	struct linear_c *lc = (struct linear_c *) ti->private;
+	struct raid_device *rd = container_of(lc, struct raid_device, lc);
 
 	dm_put_device(ti, lc->dev);
-	kfree(lc);
+	lv_del(rd);
 }
 
 static sector_t linear_map_sector(struct dm_target *ti, sector_t bi_sector)
@@ -154,6 +157,113 @@ static struct target_type linear_target = {
 	.merge  = linear_merge,
 	.iterate_devices = linear_iterate_devices,
 };
+
+static void    device_release(struct kobject *obj);
+static ssize_t device_attr_show(struct kobject *kobj, struct attribute *attr, char *data);
+static ssize_t device_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len);
+
+struct raid_device_attribute {
+	struct attribute attr;
+	ssize_t (*show)(struct raid_device *dev, char *page);
+	ssize_t (*store)(struct raid_device *dev, char *page, ssize_t count);
+}; 
+
+static ssize_t device_show_rdev (struct raid_device *dev, char *data);
+static ssize_t device_store_rdev(struct raid_device *dev, char *data, ssize_t len);
+
+struct raid_device_attribute device_rdev_attr = {
+	.attr = { .name = "rdev", .mode = S_IRUGO | S_IWUGO, },
+	.show = device_show_rdev,
+	.store = device_store_rdev,
+};
+
+static struct attribute *device_attrs[] = {
+	&device_rdev_attr.attr,
+	NULL,
+};
+
+struct sysfs_ops device_sysfs_ops = {
+	.show = device_attr_show,
+	.store = device_attr_store,
+};
+
+struct kobj_type device_ktype = {
+	.release = device_release,
+	.default_attrs = device_attrs,
+	.sysfs_ops = &device_sysfs_ops,
+};
+
+static ssize_t device_attr_show(struct kobject *kobj, struct attribute *attr, char *data)
+{
+	struct raid_device_attribute *dev_attr = 
+		container_of(attr, struct raid_device_attribute, attr);
+	ssize_t len = 0;
+	if (dev_attr->show)
+		len = dev_attr->show(container_of(kobj, struct raid_device, kobj), data);
+	return len;
+}
+
+static ssize_t device_attr_store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
+{
+	struct raid_device_attribute *dev_attr = 
+		container_of(attr, struct raid_device_attribute, attr);
+	if (dev_attr->show)
+		len = dev_attr->store(container_of(kobj, struct raid_device, kobj), (char *)data, len);
+	return len;
+}
+
+static ssize_t device_show_rdev(struct raid_device *dev, char *data)
+{
+	return 0;
+}
+
+static ssize_t device_store_rdev(struct raid_device *dev, char *data, ssize_t len)
+{
+	return len;
+}
+
+/* device */
+static int lv_add(struct raid_device *dev, const char *name)
+{
+	int res = 0;
+	char buf[32];
+
+	sprintf(buf, "dm-%p", dev);
+
+	INIT_LIST_HEAD(&dev->list);
+	dev->kobj.ktype  = &device_ktype;
+	dev->kobj.parent = &raidif.kobj;
+	dev->blocks      = 0;
+
+	res = kobject_init_and_add(&dev->kobj,
+			&device_ktype,
+			&raidif.kobj,
+			buf);
+
+	list_add_tail(&dev->list, &raidif.device.list);
+
+	return res;
+}
+
+static void device_release(struct kobject *obj)
+{
+	struct raid_device *dev =
+		container_of(obj, struct raid_device, kobj);
+	kfree(dev);
+}
+
+int device_cleanup(struct raid_device *dev)
+{
+	kobject_put(&dev->kobj);
+
+	return 0;
+}
+
+static int lv_del(struct raid_device *dev)
+{
+	list_del_init(&dev->list);
+	return 0;
+}
 
 int __init dm_linear_init(void)
 {

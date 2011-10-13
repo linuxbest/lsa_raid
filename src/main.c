@@ -119,21 +119,6 @@ int args(char *frame, char *argv[], int argv_max)
 
 static ssize_t raidif_store_devices(char *data, ssize_t len)
 {
-	char *argv[MAX_ARGS];
-	int argc;
-
-	if ((argc = args(data, argv, MAX_ARGS)) > 0) {
-		if (strcmp(argv[0], "add") == 0) {
-			if (argc == 2)
-				add_device(argv[1]);
-		} else if (strcmp(argv[0], "del") == 0) {
-			if (argc == 2) 
-				del_device(argv[1]);
-		} else {
-			printk("Illegal command %s\n", argv[0]);
-		}
-	}
-
 	return len;
 }
 
@@ -160,6 +145,7 @@ int __init module_new(void)
 {
 	int res;
 
+	dm_linear_init();
 	res = kobject_init_and_add(&raidif.kobj, &raidif_ktype, NULL, "raidif");
 
 	return 0;
@@ -170,9 +156,10 @@ void module_destroy(void)
 	while (!list_empty(&raidif.device.list)) {
 		struct raid_device *dev = list_entry(raidif.device.list.next, struct raid_device, list);
 		list_del_init(&dev->list);
-		device_cleanup(dev);
+		/* TODO clean the device */
 	}
 	kobject_put(&raidif.kobj);
+	dm_linear_exit();
 }
 
 module_init(module_new);

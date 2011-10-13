@@ -35,21 +35,17 @@ extern struct raidif raidif;
 struct raid_device {
 	struct kobject kobj;
 	struct list_head list;
-	uint64_t blocks;
 	uint64_t uuid;
+	uint64_t blocks;
 
-	struct {
-		struct list_head list;
-		spinlock_t lock;
-	} rdev;
+	struct linear_c {
+		struct dm_dev *dev;
+		sector_t start;
+	} lc;
 };
 
 #define MAX_ARGS  16
 int args(char *frame, char *argv[], int argv_max);
-
-int add_device(const char *name);
-int del_device(const char *name);
-int device_cleanup(struct raid_device *dev);
 
 struct targ_port {
 	struct kobject kobj;
@@ -81,5 +77,8 @@ struct targ_sess {
 
 struct targ_port * targ_port_find_by_data (void *data);
 int                targ_port_add_sess     (struct targ_port *port, struct targ_sess *sess);
+
+int __init dm_linear_init(void);
+void       dm_linear_exit(void);
 
 #endif
