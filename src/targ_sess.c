@@ -62,7 +62,7 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 		goto out;
 	}
 	sess = targ_port_sess_find(port, wwpn);
-	if (sess && (sess->data == data || sess->data == NULL)) {
+	if (sess) {
 		sess->data = data;
 		goto out;
 	}

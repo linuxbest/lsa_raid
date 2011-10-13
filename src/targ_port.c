@@ -54,7 +54,9 @@ static void port_release(struct kobject *kobj)
 static void targ_port_del_sess_timer_fn(unsigned long arg)
 {
 	targ_port_t *port = (targ_port_t *)arg;
+	unsigned long flags;
 
+	spin_lock_irqsave(&port->sess.lock, flags);
 	while (!list_empty(&port->sess.del_sess_list)) {
 		targ_sess_t *sess = list_entry(port->sess.del_sess_list.next,
 				typeof(*sess), del_sess_list);
@@ -65,6 +67,7 @@ static void targ_port_del_sess_timer_fn(unsigned long arg)
 			add_timer(&port->sess.sess_del_timer);
 		}
 	}
+	spin_unlock_irqrestore(&port->sess.lock, flags);
 }
 
 targ_port_t *targ_port_new(const char *wwpn, void *data)
@@ -82,6 +85,7 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 	port->kobj.parent = &target.kobj;
 	port->data = data;
 
+	spin_lock_init(&port->sess.lock);
 	INIT_LIST_HEAD(&port->sess.del_sess_list);
 	init_timer(&port->sess.sess_del_timer);
 	port->sess.sess_del_timer.data = (unsigned long)port;
@@ -123,9 +127,11 @@ void targ_port_sess_remove(targ_port_t *port, targ_sess_t *sess)
 {
 	int dev_loss_tmo = 30 + 5;
 	int add_tmr;
+	unsigned long flags;
 
+	spin_lock_irqsave(&port->sess.lock, flags);
 	if (sess->deleted) 
-		return;
+		goto out;
 
 	add_tmr = list_empty(&port->sess.del_sess_list);
 	list_add_tail(&sess->del_sess_list, &port->sess.del_sess_list);
@@ -136,16 +142,25 @@ void targ_port_sess_remove(targ_port_t *port, targ_sess_t *sess)
 	sess->expires = jiffies + dev_loss_tmo * HZ;
 	if (add_tmr)
 		mod_timer(&port->sess.sess_del_timer, sess->expires);
+out:
+	spin_unlock_irqrestore(&port->sess.lock, flags);
 }
 
 targ_sess_t *targ_port_sess_find(targ_port_t *port, const char *wwpn)
 {
 	targ_sess_t *sess;
+	unsigned long flags;
+
+	spin_lock_irqsave(&port->sess.lock, flags);
 	list_for_each_entry(sess, &port->sess.list, list) {
 		if (strcmp(sess->remote.wwpn, wwpn) == 0)
-			return sess;
+			goto found;
 	}
-	return NULL;
+	sess = NULL;
+found:
+	spin_unlock_irqrestore(&port->sess.lock, flags);
+
+	return sess;
 }
 
 EXPORT_SYMBOL(targ_port_new);
