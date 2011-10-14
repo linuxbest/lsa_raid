@@ -93,7 +93,6 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 
 	spin_lock_init(&port->sess.lock);
 	INIT_LIST_HEAD(&port->sess.list);
-	pr_info("targ_port %p, %d\n", port, list_empty(&port->sess.list));
 	strcpy(port->port.wwpn, wwpn);
 
 	INIT_LIST_HEAD(&port->sess.del_sess_list);
@@ -106,7 +105,7 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 			&target.kobj,
 			port->port.wwpn);
 	list_add_tail(&port->list, &target.port.list);
-	pr_info("targ_port(%s, %p): registed.\n", port->port.wwpn, port);
+	pr_info("targ_port(%s): registed.\n", port->port.wwpn);
 
 	return port;
 }
