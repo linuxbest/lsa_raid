@@ -85,11 +85,12 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	sess->kobj.parent = &target.kobj;
 	sess->data = data;
 	sess->port = port;
+	strcpy(sess->remote.wwpn, wwpn);
 
 	res = kobject_init_and_add(&sess->kobj,
 			&sess_ktype,
 			&port->kobj,
-			wwpn);
+			sess->remote.wwpn);
 	targ_port_sess_add(port, sess);
 out:
 	return sess;
@@ -119,11 +120,6 @@ int targ_sess_get_dev_nr(targ_sess_t *sess)
 targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 {
 	return NULL;
-}
-
-int targ_dev_put(targ_dev_t *dev)
-{
-	return 0;
 }
 
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)

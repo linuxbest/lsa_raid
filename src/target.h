@@ -53,7 +53,7 @@ struct targ_port {
 	void *data;
 	struct {
 		void *data;
-		char wwpn[16];
+		char wwpn[64];
 	} port;
 	struct {
 		struct list_head list;
@@ -77,7 +77,7 @@ struct targ_sess {
 	struct targ_port *port;
 	void *data;
 	struct {
-		char wwpn[16];
+		char wwpn[64];
 		void *data;
 	} remote;
 	struct {

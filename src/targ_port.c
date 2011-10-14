@@ -87,12 +87,15 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 		return NULL;
 
 	INIT_LIST_HEAD(&port->list);
-	INIT_LIST_HEAD(&port->sess.list);
 	port->kobj.ktype = &port_ktype;
 	port->kobj.parent = &target.kobj;
 	port->data = data;
 
 	spin_lock_init(&port->sess.lock);
+	INIT_LIST_HEAD(&port->sess.list);
+	pr_info("targ_port %p, %d\n", port, list_empty(&port->sess.list));
+	strcpy(port->port.wwpn, wwpn);
+
 	INIT_LIST_HEAD(&port->sess.del_sess_list);
 	init_timer(&port->sess.sess_del_timer);
 	port->sess.sess_del_timer.data = (unsigned long)port;
@@ -101,8 +104,9 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 	res = kobject_init_and_add(&port->kobj,
 			&port_ktype,
 			&target.kobj,
-			wwpn);
+			port->port.wwpn);
 	list_add_tail(&port->list, &target.port.list);
+	pr_info("targ_port(%s, %p): registed.\n", port->port.wwpn, port);
 
 	return port;
 }
