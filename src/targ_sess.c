@@ -113,7 +113,8 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	/* TODO more device support */
 	sess->dev.nr = 0;
 	sess->dev.array = kzalloc(sizeof(struct targ_dev)*32, GFP_ATOMIC);
-	dm_table_for_each(targ_sess_dev_assign, "linear", sess);
+	/*dm_table_for_each(targ_sess_dev_assign, "linear", sess);*/
+	dm_table_for_each(targ_sess_dev_assign, "raid45", sess);
 out:
 	return sess;
 }
