@@ -9,4 +9,4 @@ ifeq ($(CONFIG_DM_UEVENT),y)
 dm-mod-objs     += dm-uevent.o
 endif
 
-obj-$(CONFIG_BLK_DEV_DM)        += dm-mod.o
+obj-$(CONFIG_BLK_DEV_DM)        += dm-mod.o dm-log.o
