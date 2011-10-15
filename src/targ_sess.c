@@ -31,7 +31,7 @@ static ssize_t sess_show_devs(targ_sess_t *sess, char *data)
 }
 
 static struct sess_attribute sess_dev_attr = {
-	.attr = {.name = "devs", .mode = S_IRUGO, },
+	.attr = {.name = "luns", .mode = S_IRUGO, },
 	.show = sess_show_devs,
 };
 
