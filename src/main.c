@@ -147,6 +147,7 @@ int __init module_new(void)
 {
 	int res;
 
+	req_cache_init();
 	dm_linear_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
@@ -164,6 +165,7 @@ void module_destroy(void)
 	}
 	kobject_put(&target.kobj);
 	dm_linear_exit();
+	req_cache_exit();
 }
 
 module_init(module_new);

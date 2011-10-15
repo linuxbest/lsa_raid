@@ -81,10 +81,20 @@ struct targ_sess {
 		void *data;
 	} remote;
 	struct {
-		struct list_head list;
+		struct targ_dev *array;
 		spinlock_t lock;
 		int nr;
 	} dev;
+	struct {
+		struct list_head list;
+		spinlock_t lock;
+	} req;
+};
+
+struct targ_dev {
+	int lun;
+	struct targ_sess *sess;
+	struct raid_device *dev;
 };
 
 struct targ_port * targ_port_find_by_data (void *data);
@@ -94,5 +104,8 @@ struct targ_sess * targ_port_sess_find    (struct targ_port *port, const char *w
 
 int __init dm_linear_init(void);
 void       dm_linear_exit(void);
+
+int __init req_cache_init(void);
+void       req_cache_exit(void);
 
 #endif
