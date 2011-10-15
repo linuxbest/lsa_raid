@@ -3,7 +3,7 @@ ifneq ($(KERNELRELEASE),)
 
 obj-m = targ.o
 
-targ-objs += main.o dm-linear.o mem.o targ_port.o targ_sess.o
+targ-objs += main.o mem.o targ_port.o targ_sess.o
 targ-objs += dm-raid4-5.o dm-memcache.o dm-region-hash.o dm-message.o
 
 EXTRA_CFLAGS += -I$(src)/../include

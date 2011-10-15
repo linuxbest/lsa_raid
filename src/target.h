@@ -49,9 +49,7 @@ struct raid_device {
 		sector_t start;
 	} lc;
 
-	struct {
-		struct raid_set *rs;
-	} map;
+	struct dm_table *table;
 };
 
 #define MAX_ARGS  16
@@ -104,7 +102,7 @@ struct targ_sess {
 struct targ_dev {
 	int lun;
 	struct targ_sess *sess;
-	struct raid_device *dev;
+	struct dm_table *t;
 };
 
 struct targ_port * targ_port_find_by_data (void *data);
@@ -122,5 +120,8 @@ int __init  dm_raid_init(void);
 void __exit dm_raid_exit(void);
 
 struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int minor);
+
+typedef int (*table_cb_t)(struct dm_table *table, void *priv);
+void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
 
 #endif

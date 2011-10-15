@@ -462,7 +462,6 @@ enum count_type { IO_WORK = 0, IO_RECOVER, IO_NR_COUNT };
 typedef void (*xor_function_t)(unsigned count, unsigned long **data);
 struct raid_set {
 	struct dm_target *ti;	/* Target pointer. */
-	struct list_head tlist; /* link to target */
 
 	struct {
 		unsigned long flags;	/* State flags. */
@@ -3900,23 +3899,6 @@ static void rs_set_congested_fn(struct raid_set *rs)
 	dm_put(md);
 }
 
-/* interface to target module */
-static void target_raid_register(struct raid_set *rs)
-{
-	unsigned long flags;
-	spin_lock_irqsave(&target.raid.lock, flags);
-	list_add_tail(&rs->tlist, &target.raid.list);
-	spin_unlock_irqrestore(&target.raid.lock, flags);
-}
-
-static void target_raid_unregister(struct raid_set *rs)
-{
-	unsigned long flags;
-	spin_lock_irqsave(&target.raid.lock, flags);
-	list_del(&rs->tlist);
-	spin_unlock_irqrestore(&target.raid.lock, flags);
-}
-
 struct raid_set *target_raid_get_by_dev(unsigned int major, unsigned int
 		minor)
 {
@@ -4131,8 +4113,6 @@ static int raid_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	if (r)
 		goto err;
 
-	target_raid_register(rs);
-
 	rs_log(rs, speed); /* Log information about RAID set. */
 	return 0;
 
@@ -4148,7 +4128,6 @@ static void raid_dtr(struct dm_target *ti)
 {
 	struct raid_set *rs = ti->private;
 
-	target_raid_unregister(rs);
 	destroy_workqueue(rs->io.wq);
 	context_free(rs, rs->set.raid_devs);
 }

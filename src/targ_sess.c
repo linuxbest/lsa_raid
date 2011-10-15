@@ -1,12 +1,13 @@
 #include "target.h"
 #include "raid_if.h"
+#include "dm.h"
 
 static ssize_t sess_attr_show(struct kobject *kobj,
 		struct attribute *attr, char *data);
 static ssize_t sess_attr_store(struct kobject *kobj,
 		struct attribute *attr, const char *data, size_t len);
 static void sess_release(struct kobject *kobj);
-static void targ_sess_dev_assign(targ_sess_t *sess);
+static int targ_sess_dev_assign(struct dm_table *table, void *priv);
 
 struct sess_attribute {
 	struct attribute attr;
@@ -25,7 +26,7 @@ static ssize_t sess_show_devs(targ_sess_t *sess, char *data)
 	ssize_t len = 0;
 	for (i = 0; i < sess->dev.nr; i ++) {
 		targ_dev_t *dev = sess->dev.array + i;
-		len += sprintf(data + len, "%d %p\n", dev->lun, dev->dev);
+		len += sprintf(data + len, "%d %p\n", dev->lun, dev->t);
 	}
 	return len;
 }
@@ -109,7 +110,10 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 			&port->kobj,
 			sess->remote.wwpn);
 	targ_port_sess_add(port, sess);
-	targ_sess_dev_assign(sess);
+	/* TODO more device support */
+	sess->dev.nr = 0;
+	sess->dev.array = kzalloc(sizeof(struct targ_dev)*32, GFP_ATOMIC);
+	dm_table_for_each(targ_sess_dev_assign, "linear", sess);
 out:
 	return sess;
 }
@@ -130,34 +134,18 @@ void *targ_sess_get_data(targ_sess_t *sess)
 }
 
 /* assign the device to session */
-static void targ_sess_dev_assign(targ_sess_t *sess)
+static int targ_sess_dev_assign(struct dm_table *table, void *priv)
 {
-	int nr = 0, i = 0;
-	struct raid_device *rdev;
-	struct targ_dev *mem = NULL;
+	targ_sess_t *sess = priv;
+	struct targ_dev *dev = sess->dev.array + sess->dev.nr;
 
-	list_for_each_entry(rdev, &target.device.list, list) {
-		nr ++;
-	}
+	dev->lun = sess->dev.nr;
+	dev->sess= sess;
+	dev->t   = table;
 
-	mem = kzalloc(sizeof(struct targ_dev)*nr, GFP_ATOMIC);
-	if (mem == NULL) {
-		pr_info("targ_sess: assign device memory failed, %d\n", nr);
-		return;
-	}
+	sess->dev.nr ++;
 
-	list_for_each_entry(rdev, &target.device.list, list) {
-		targ_dev_t *dev = &mem[i];
-		char buf[32];
-		sprintf(buf, "lun-%d\n", i);
-		dev->dev = rdev;
-		dev->lun = i;
-		dev->sess = sess;
-		i ++;
-	}
-
-	sess->dev.array = mem;
-	sess->dev.nr = i;
+	return 0;
 }
 
 int targ_sess_get_dev_nr(targ_sess_t *sess)
@@ -174,7 +162,7 @@ targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
-	return dev->dev->blocks;
+	return dm_table_get_size(dev->t);
 }
 
 #define BUF_SHIFT      (16)

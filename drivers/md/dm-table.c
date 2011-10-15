@@ -26,6 +26,7 @@
 #define KEYS_PER_NODE (NODE_SIZE / sizeof(sector_t))
 #define CHILDREN_PER_NODE (KEYS_PER_NODE + 1)
 
+static LIST_HEAD(linear_head);
 /*
  * The table has always exactly one reference from either mapped_device->map
  * or hash_cell->new_map. This reference is not counted in table->holders.
@@ -40,6 +41,7 @@
  */
 
 struct dm_table {
+	struct list_head linear_entry;
 	struct mapped_device *md;
 	atomic_t holders;
 	unsigned type;
@@ -259,6 +261,7 @@ void dm_table_destroy(struct dm_table *t)
 		dm_put_target_type(tgt->type);
 	}
 
+	list_del(&t->linear_entry);
 	vfree(t->highs);
 
 	/* free the device list */
@@ -904,7 +907,7 @@ static int setup_indexes(struct dm_table *t)
  */
 int dm_table_complete(struct dm_table *t)
 {
-	int r = 0;
+	int r = 0, i, c = 0;
 	unsigned int leaf_nodes;
 
 	/* how many indexes will the btree have ? */
@@ -917,6 +920,8 @@ int dm_table_complete(struct dm_table *t)
 
 	if (t->depth >= 2)
 		r = setup_indexes(t);
+
+	list_add_tail(&t->linear_entry, &linear_head);
 
 	return r;
 }
@@ -1236,6 +1241,23 @@ struct mapped_device *dm_table_get_md(struct dm_table *t)
 	return t->md;
 }
 
+typedef int (*table_cb_t)(struct dm_table *table, void *priv);
+void dm_table_for_each(table_cb_t cb, const char *type, void *priv)
+{
+	struct dm_table *t;
+
+	list_for_each_entry(t, &linear_head, linear_entry) {
+		int i, c = 0;
+		for (i = 0; i < t->num_targets; i++) {
+			struct dm_target *tgt = t->targets + i;
+			if (strcmp(tgt->type->name, type) == 0)
+				c ++;
+		}
+		if (c == t->num_targets)
+			cb(t, priv);
+	}
+}
+
 EXPORT_SYMBOL(dm_vcalloc);
 EXPORT_SYMBOL(dm_get_device);
 EXPORT_SYMBOL(dm_put_device);
@@ -1246,3 +1268,5 @@ EXPORT_SYMBOL(dm_table_get_md);
 EXPORT_SYMBOL(dm_table_put);
 EXPORT_SYMBOL(dm_table_get);
 EXPORT_SYMBOL(dm_table_unplug_all);
+
+EXPORT_SYMBOL(dm_table_for_each);

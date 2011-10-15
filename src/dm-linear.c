@@ -146,7 +146,7 @@ static int linear_iterate_devices(struct dm_target *ti,
 }
 
 static struct target_type linear_target = {
-	.name   = "linear",
+	.name   = "linearx",
 	.version = {1, 1, 0},
 	.module = THIS_MODULE,
 	.ctr    = linear_ctr,
@@ -234,7 +234,7 @@ static void device_update_map(struct raid_device *dev, struct dm_target *ti)
 	/* TODO 
 	 * get major & minor
 	 */
-	dev->map.rs = target_raid_get_by_dev(major, minor);
+	/* dev->map.rs = target_raid_get_by_dev(major, minor); */
 }
 
 static int lv_add(struct raid_device *dev, struct dm_target *ti)

@@ -148,7 +148,6 @@ int __init module_new(void)
 
 	dm_raid_init();
 	req_cache_init();
-	dm_linear_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
 
@@ -164,7 +163,6 @@ void __exit module_destroy(void)
 		/* TODO clean the device */
 	}
 	kobject_put(&target.kobj);
-	dm_linear_exit();
 	req_cache_exit();
 	dm_raid_exit();
 }

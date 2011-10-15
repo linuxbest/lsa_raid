@@ -143,7 +143,7 @@ static int linear_iterate_devices(struct dm_target *ti,
 }
 
 static struct target_type linear_target = {
-	.name   = "linearx",
+	.name   = "linear",
 	.version = {1, 1, 0},
 	.module = THIS_MODULE,
 	.ctr    = linear_ctr,
