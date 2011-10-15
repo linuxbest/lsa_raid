@@ -16,7 +16,7 @@
 
 #define DM_MSG_PREFIX "linear"
 
-static int lv_add(struct raid_device *rd, const char *name);
+static int lv_add(struct raid_device *rd, const char *name, sector_t len);
 static int lv_del(struct raid_device *rd);
 
 /*
@@ -55,7 +55,7 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_flush_requests = 1;
 	ti->private = lc;
 
-	lv_add(rd, NULL);
+	lv_add(rd, NULL, ti->len);
 
 	return 0;
 
@@ -231,7 +231,7 @@ static ssize_t device_store_uuid(struct raid_device *dev, char *data,
 }
 
 /* device */
-static int lv_add(struct raid_device *dev, const char *name)
+static int lv_add(struct raid_device *dev, const char *name, sector_t len)
 {
 	int res = 0;
 	char buf[32];
@@ -241,7 +241,7 @@ static int lv_add(struct raid_device *dev, const char *name)
 	INIT_LIST_HEAD(&dev->list);
 	dev->kobj.ktype  = &device_ktype;
 	dev->kobj.parent = &target.kobj;
-	dev->blocks      = 0;
+	dev->blocks      = len;
 
 	res = kobject_init_and_add(&dev->kobj,
 			&device_ktype,

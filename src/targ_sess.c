@@ -167,12 +167,14 @@ int targ_sess_get_dev_nr(targ_sess_t *sess)
 
 targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 {
-	return NULL;
+	if (nr > sess->dev.nr)
+		return NULL;
+	return sess->dev.array + nr;
 }
 
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
-	return 0;
+	return dev->dev->blocks;
 }
 
 struct targ_buf {
