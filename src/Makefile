@@ -4,6 +4,7 @@ ifneq ($(KERNELRELEASE),)
 obj-m = targ.o
 
 targ-objs += main.o dm-linear.o mem.o targ_port.o targ_sess.o
+targ-objs += dm-raid4-5.o dm-memcache.o dm-region-hash.o dm-message.o
 
 EXTRA_CFLAGS += -I$(src)/../include
 EXTRA_CFLAGS += -I$(srctree)/drivers/md
@@ -26,12 +27,12 @@ uninstall:
 	rm -f $(INSTALL_DIR)/scst_*.ko
 endif
 
-EXTRA_CFLAGS += -I$(SUBDIRS) -I$(SCST_INC_DIR) -Wextra -Wno-unused-parameter
-EXTRA_CFLAGS += -I$(SUBDIRS)/../include/ -I$(NVRAM_INC_DIR)
-EXTRA_CFLAGS += -DEXTRACHECKS
+#EXTRA_CFLAGS += -I$(SUBDIRS) -I$(SCST_INC_DIR) -Wextra -Wno-unused-parameter
+#EXTRA_CFLAGS += -I$(SUBDIRS)/../include/ -I$(NVRAM_INC_DIR)
+#EXTRA_CFLAGS += -DEXTRACHECKS
 #EXTRA_CFLAGS += -DTRACING
-EXTRA_CFLAGS += -DDEBUG -g
-EXTRA_CFLAGS += -Werror
+#EXTRA_CFLAGS += -DDEBUG -g
+#EXTRA_CFLAGS += -Werror
 EXTRA_CFLAGS += -DGITVERSION=\"${GITVERSION}\"
 
 clean:

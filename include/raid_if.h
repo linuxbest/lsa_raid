@@ -6,7 +6,7 @@ typedef struct targ_sess targ_sess_t;
 typedef struct targ_dev  targ_dev_t;
 typedef struct targ_buf  targ_buf_t;
 typedef struct scatterlist targ_sg_t;
-typedef int (*buf_cb_t)(targ_dev_t *dev, void *priv, int err);
+typedef int (*buf_cb_t)(targ_dev_t *dev, targ_buf_t *buf, void *priv, int err);
 
 targ_port_t   *targ_port_new             (const char *wwpn, void *port_osdata);
 void           targ_port_put             (targ_port_t *port);

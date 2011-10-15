@@ -4522,7 +4522,7 @@ static void init_exit(const char *bad_msg, const char *good_msg, int r)
 		DMINFO("%s %s", good_msg, version);
 }
 
-static int __init dm_raid_init(void)
+int __init dm_raid_init(void)
 {
 	int r = dm_register_target(&raid_target);
 
@@ -4530,12 +4530,13 @@ static int __init dm_raid_init(void)
 	return r;
 }
 
-static void __exit dm_raid_exit(void)
+void __exit dm_raid_exit(void)
 {
 	dm_unregister_target(&raid_target);
 	init_exit("un", "exit", 0);
 }
 
+#if 0
 /* Module hooks. */
 module_init(dm_raid_init);
 module_exit(dm_raid_exit);
@@ -4545,3 +4546,4 @@ MODULE_AUTHOR("Heinz Mauelshagen <hjm@redhat.com>");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("dm-raid4");
 MODULE_ALIAS("dm-raid5");
+#endif

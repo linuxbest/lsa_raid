@@ -16,7 +16,7 @@
 
 #define DM_MSG_PREFIX "linear"
 
-static int lv_add(struct raid_device *rd, const char *name, sector_t len);
+static int lv_add(struct raid_device *rd, struct dm_target *ti);
 static int lv_del(struct raid_device *rd);
 
 /*
@@ -55,7 +55,7 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_flush_requests = 1;
 	ti->private = lc;
 
-	lv_add(rd, NULL, ti->len);
+	lv_add(rd, ti);
 
 	return 0;
 
@@ -172,13 +172,10 @@ struct raid_device_attribute {
 
 static ssize_t device_show_uuid (struct raid_device *dev, 
 		char *data);
-static ssize_t device_store_uuid (struct raid_device *dev, 
-		char *data, ssize_t len);
 
 struct raid_device_attribute device_uuid_attr = {
-	.attr = { .name = "uuid", .mode = S_IRUGO | S_IWUGO, },
+	.attr = { .name = "uuid", .mode = S_IRUGO, },
 	.show = device_show_uuid,
-	.store = device_store_uuid,
 };
 
 static struct attribute *device_attrs[] = {
@@ -221,17 +218,16 @@ static ssize_t device_attr_store(struct kobject *kobj,
 
 static ssize_t device_show_uuid(struct raid_device *dev, char *data)
 {
+#if 0
+	dm_copy_name_and_uuid(dm_table_get_md(dev->ti->table), NULL, data);
+	return strlen(data); 
+#else
 	return 0;
-}
-
-static ssize_t device_store_uuid(struct raid_device *dev, char *data,
-		ssize_t len)
-{
-	return len;
+#endif
 }
 
 /* device */
-static int lv_add(struct raid_device *dev, const char *name, sector_t len)
+static int lv_add(struct raid_device *dev, struct dm_target *ti)
 {
 	int res = 0;
 	char buf[32];
@@ -241,13 +237,14 @@ static int lv_add(struct raid_device *dev, const char *name, sector_t len)
 	INIT_LIST_HEAD(&dev->list);
 	dev->kobj.ktype  = &device_ktype;
 	dev->kobj.parent = &target.kobj;
-	dev->blocks      = len;
+	dev->blocks      = ti->len;
+	dev->ti          = ti;
 
 	res = kobject_init_and_add(&dev->kobj,
 			&device_ktype,
 			&target.kobj,
 			buf);
-
+	/* TODO better create a link to device mapper device */
 	list_add_tail(&dev->list, &target.device.list);
 
 	return res;

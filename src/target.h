@@ -23,6 +23,10 @@ struct target {
 	struct {
 		struct list_head list;
 		spinlock_t lock;
+	} raid;
+	struct {
+		struct list_head list;
+		spinlock_t lock;
 	} device;
 	struct {
 		struct list_head list;
@@ -35,13 +39,17 @@ extern struct target target;
 struct raid_device {
 	struct kobject kobj;
 	struct list_head list;
-	uint64_t uuid;
+	struct dm_target *ti;
 	uint64_t blocks;
 
 	struct linear_c {
 		struct dm_dev *dev;
 		sector_t start;
 	} lc;
+
+	struct {
+		struct dm_target *ti;
+	} map;
 };
 
 #define MAX_ARGS  16
@@ -107,5 +115,8 @@ void       dm_linear_exit(void);
 
 int __init req_cache_init(void);
 void       req_cache_exit(void);
+
+int __init  dm_raid_init(void);
+void __exit dm_raid_exit(void);
 
 #endif

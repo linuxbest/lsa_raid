@@ -85,8 +85,7 @@ static ssize_t target_show_devices(char *data)
 	ssize_t len = 0;
 
 	list_for_each_entry(dev, &target.device.list, list) {
-		len += sprintf(data + len, "%s %u\n", dev->kobj.name,
-				(u32)dev->blocks);
+		len += sprintf(data + len, "%s\n", dev->kobj.name);
 	}
 
 	return len;
@@ -147,6 +146,7 @@ int __init module_new(void)
 {
 	int res;
 
+	dm_raid_init();
 	req_cache_init();
 	dm_linear_init();
 	res = kobject_init_and_add(&target.kobj, 
@@ -166,6 +166,7 @@ void module_destroy(void)
 	kobject_put(&target.kobj);
 	dm_linear_exit();
 	req_cache_exit();
+	dm_raid_exit();
 }
 
 module_init(module_new);
