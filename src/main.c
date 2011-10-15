@@ -155,7 +155,7 @@ int __init module_new(void)
 	return 0;
 }
 
-void module_destroy(void)
+void __exit module_destroy(void)
 {
 	while (!list_empty(&target.device.list)) {
 		struct raid_device *dev = list_entry(target.device.list.next,

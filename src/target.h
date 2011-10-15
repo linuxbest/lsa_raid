@@ -17,6 +17,8 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
 
+struct raid_set;
+struct raid_req;
 struct target {
 	struct kobject kobj;
 	struct completion done;
@@ -48,7 +50,7 @@ struct raid_device {
 	} lc;
 
 	struct {
-		struct dm_target *ti;
+		struct raid_set *rs;
 	} map;
 };
 
@@ -118,5 +120,7 @@ void       req_cache_exit(void);
 
 int __init  dm_raid_init(void);
 void __exit dm_raid_exit(void);
+
+struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int minor);
 
 #endif
