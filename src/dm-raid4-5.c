@@ -1365,11 +1365,13 @@ static void stripe_zero_pl_part(struct stripe *stripe, int p,
 	struct page_list *pl = pl_elem(PL(stripe, p), o);
 
 	BUG_ON(!pl);
+#if 0 /* TODO hardware zero */
 	while (pl && pages--) {
 		BUG_ON(!pl->page);
 		memset(page_address(pl->page), 0, PAGE_SIZE);
 		pl = pl->next;
 	}
+#endif
 }
 
 /* Initialize parity chunk of stripe. */
@@ -1842,7 +1844,9 @@ MAKE_XOR(64)
 static void xor_blocks_wrapper(unsigned n, unsigned long **data)
 {
 	BUG_ON(n < 2 || n > MAX_XOR_BLOCKS + 1);
+#if 0
 	xor_blocks(n - 1, XOR_SIZE, (void *) data[0], (void **) data + 1);
+#endif
 }
 
 struct xor_func {
@@ -1929,9 +1933,10 @@ static void common_xor(struct stripe *stripe, sector_t count,
 	unsigned sector;
 
 	BUG_ON(!count);
+#if 0 /* TODO hardware xor */
 	for (sector = off; sector < count; sector += SECTORS_PER_PAGE)
 		xor(stripe, pi, sector);
-
+#endif
 	/* Set parity page uptodate and clean. */
 	chunk_set(CHUNK(stripe, pi), CLEAN);
 	atomic_inc(RS(stripe->sc)->stats + S_XORS); /* REMOVEME: statistics. */
