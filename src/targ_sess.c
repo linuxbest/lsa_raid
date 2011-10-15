@@ -99,7 +99,6 @@ out:
 void targ_sess_put(targ_sess_t *sess)
 {
 	targ_port_sess_remove(sess->port, sess);
-	kobject_put(&sess->kobj);
 }
 
 void targ_sess_set_data(targ_sess_t *sess, void *data)
