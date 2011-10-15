@@ -112,6 +112,33 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 
 void targ_port_put(targ_port_t *port)
 {
+	unsigned long flags;
+	LIST_HEAD(head);
+
+	spin_lock_irqsave(&port->sess.lock, flags);
+	while (!list_empty(&port->sess.list)) {
+		targ_sess_t *sess = list_entry(port->sess.list.next,
+				typeof(*sess), list);
+		list_del(&sess->list);
+		list_add_tail(&sess->list, &head);
+	}
+	while (!list_empty(&port->sess.del_sess_list)) {
+		targ_sess_t *sess = list_entry(port->sess.del_sess_list.next,
+				typeof(*sess), del_sess_list);
+		list_del(&sess->del_sess_list);
+		list_add_tail(&sess->list, &head);
+	}
+	del_timer(&port->sess.sess_del_timer);
+	spin_unlock_irqrestore(&port->sess.lock, flags);
+
+	while (!list_empty(&head)) {
+		targ_sess_t *sess = list_entry(head.next, typeof(*sess), list);
+		list_del(&sess->list);
+		kobject_put(&sess->kobj);
+	}
+
+	pr_info("targ_port(%s): unregisted.\n", port->port.wwpn);
+	list_del(&port->list);
 	kobject_put(&port->kobj);
 }
 
