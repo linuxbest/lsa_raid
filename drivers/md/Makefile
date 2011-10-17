@@ -8,7 +8,11 @@ dm-mod-objs     += dm-uevent.o
 endif
 
 dm-mod-objs     += targ_main.o targ_port.o targ_sess.o
+ifeq ($(TARGT_DUMMY_BUF),y)
 dm-mod-objs     += targ_dummy_buf.o
+else
+dm-mod-objs     += targ_dm_buf.o
+endif
 dm-mod-objs     += dm-raid4-5.o dm-memcache.o dm-region-hash.o dm-message.o
 dm-mod-objs     += dm-log.o
 
