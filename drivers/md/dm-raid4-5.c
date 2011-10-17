@@ -1722,7 +1722,7 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 
 	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
 		targ_req_t *req = bio->bi_private;
-		targ_buf_add_page(&req->buf, stripe, pl->page, page_offset);
+		targ_buf_add_page(bio, stripe, pl, page_offset);
 		return;
 	}
 

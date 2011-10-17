@@ -125,9 +125,10 @@ struct targ_buf {
 	int nents;
 };
 
+struct page_list;
 struct stripe;
-int targ_buf_add_page(struct targ_buf *buf, struct stripe *stripe,
-		struct page *page, unsigned offset);
+int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
+		struct page_list *pl, unsigned offset);
 
 typedef struct target_req {
 	struct list_head list;

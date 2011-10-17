@@ -15,9 +15,15 @@ static int _targ_buf_free(struct targ_buf *buf)
 	return 0;
 }
 
-int targ_buf_add_page(struct targ_buf *buf, struct stripe *stripe, 
-		struct page *page, unsigned offset)
+static void targ_bio_put(targ_req_t *req);
+
+int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
+		struct page_list *pl, unsigned offset)
 {
+	targ_req_t *req = bio->bi_private;
+
+	targ_bio_put(req);
+
 	return 0;
 }
 
@@ -51,9 +57,7 @@ static void targ_bio_put(targ_req_t *req)
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
-	targ_req_t *req = bi->bi_private;
-	pr_debug("bio %p, req %p\n", bi, req);
-	targ_bio_put(req);
+	pr_debug("bio %p\n", bi);
 	bio_put(bi);
 }
 
