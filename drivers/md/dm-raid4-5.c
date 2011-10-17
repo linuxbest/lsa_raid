@@ -38,8 +38,6 @@
  */ 
 
 static const char *version = "v0.2594b";
-#define DEBUG
-
 #include "dm.h"
 #include "dm-memcache.h"
 #include "dm-message.h"
@@ -95,7 +93,7 @@ static const char *version = "v0.2594b";
 #define	DAEMON	"kraid45d"
 #define	DM_MSG_PREFIX	TARGET
 
-#define	SECTORS_PER_PAGE	(PAGE_SIZE >> SECTOR_SHIFT)
+#define	SECTORS_PER_PAGE	(DM_PAGE_SIZE >> SECTOR_SHIFT)
 
 /* Amount/size for __xor(). */
 #define	XOR_SIZE	PAGE_SIZE
@@ -1563,7 +1561,8 @@ static int sc_init(struct raid_set *rs, unsigned stripes)
 	/* Create memory cache client context for RAID stripe cache. */
 	sc->mem_cache_client =
 		dm_mem_cache_client_create(stripes, rs->set.raid_devs,
-					   chunk_pages(rs->set.io_size));
+					   chunk_pages(rs->set.io_size), 
+					   DM_PAGE_ORDER);
 	if (IS_ERR(sc->mem_cache_client))
 		return PTR_ERR(sc->mem_cache_client);
 
@@ -1571,7 +1570,8 @@ static int sc_init(struct raid_set *rs, unsigned stripes)
 	rstripes = rec->recovery_stripes;
 	rec->mem_cache_client =
 		dm_mem_cache_client_create(rstripes, rs->set.raid_devs,
-					   chunk_pages(rec->io_size));
+					   chunk_pages(rec->io_size),
+					   DM_PAGE_ORDER);
 	if (IS_ERR(rec->mem_cache_client))
 		return PTR_ERR(rec->mem_cache_client);
 
@@ -1732,8 +1732,8 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 		unsigned bio_offset = 0;
 		void *bio_addr = __bio_kmap_atomic(bio, i, KM_USER0);
 redo:
-		size = (page_offset + len > PAGE_SIZE) ?
-		       PAGE_SIZE - page_offset : len;
+		size = (page_offset + len > DM_PAGE_SIZE) ?
+		       DM_PAGE_SIZE - page_offset : len;
 
 		if (rw == READ)
 			memcpy(bio_addr + bio_offset,
@@ -1743,7 +1743,7 @@ redo:
 			       bio_addr + bio_offset, size);
 
 		page_offset += size;
-		if (page_offset == PAGE_SIZE) {
+		if (page_offset == DM_PAGE_SIZE) {
 			/*
 			 * We reached the end of the chunk page ->
 			 * need to refer to the next one to copy more data.

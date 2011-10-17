@@ -44,7 +44,8 @@ struct dm_mem_cache_client;
  */
 struct dm_mem_cache_client *
 dm_mem_cache_client_create(unsigned objects, unsigned chunks,
-			   unsigned pages_per_chunk);
+			   unsigned pages_per_chunk,
+			   unsigned order);
 void dm_mem_cache_client_destroy(struct dm_mem_cache_client *client);
 
 /*

@@ -28,19 +28,20 @@ struct dm_mem_cache_client {
 	unsigned pages_per_chunk;
 	unsigned free_pages;
 	unsigned total_pages;
+	unsigned order;
 };
 
 /*
  * Free pages and page_list elements of client.
  */
-static void free_cache_pages(struct page_list *list)
+static void free_cache_pages(struct page_list *list, int order)
 {
 	while (list) {
 		struct page_list *pl = list;
 
 		list = pl->next;
 		BUG_ON(!pl->page);
-		__free_page(pl->page);
+		__free_pages(pl->page, order);
 		kfree(pl);
 	}
 }
@@ -48,19 +49,19 @@ static void free_cache_pages(struct page_list *list)
 /*
  * Alloc number of pages and page_list elements as required by client.
  */
-static struct page_list *alloc_cache_pages(unsigned pages)
+static struct page_list *alloc_cache_pages(unsigned pages, int order)
 {
 	struct page_list *pl, *ret = NULL;
 	struct page *page;
 
 	while (pages--) {
-		page = alloc_page(GFP_NOIO);
+		page = alloc_pages(GFP_NOIO, order);
 		if (!page)
 			goto err;
 
 		pl = kmalloc(sizeof(*pl), GFP_NOIO);
 		if (!pl) {
-			__free_page(page);
+			__free_pages(page, order);
 			goto err;
 		}
 
@@ -72,7 +73,7 @@ static struct page_list *alloc_cache_pages(unsigned pages)
 	return ret;
 
 err:
-	free_cache_pages(ret);
+	free_cache_pages(ret, order);
 	return NULL;
 }
 
@@ -142,7 +143,7 @@ static void free_chunks(struct dm_mem_cache_client *cl,
  */
 struct dm_mem_cache_client *
 dm_mem_cache_client_create(unsigned objects, unsigned chunks,
-			   unsigned pages_per_chunk)
+			   unsigned pages_per_chunk, unsigned order)
 {
 	unsigned total_pages = objects * chunks * pages_per_chunk;
 	struct dm_mem_cache_client *client;
@@ -157,7 +158,7 @@ dm_mem_cache_client_create(unsigned objects, unsigned chunks,
 	if (!client->objs_pool)
 		goto err;
 
-	client->free_list = alloc_cache_pages(total_pages);
+	client->free_list = alloc_cache_pages(total_pages, order);
 	if (!client->free_list)
 		goto err1;
 
@@ -166,6 +167,7 @@ dm_mem_cache_client_create(unsigned objects, unsigned chunks,
 	client->chunks = chunks;
 	client->pages_per_chunk = pages_per_chunk;
 	client->free_pages = client->total_pages = total_pages;
+	client->order = order;
 	return client;
 
 err1:
@@ -179,7 +181,7 @@ EXPORT_SYMBOL(dm_mem_cache_client_create);
 void dm_mem_cache_client_destroy(struct dm_mem_cache_client *cl)
 {
 	BUG_ON(cl->free_pages != cl->total_pages);
-	free_cache_pages(cl->free_list);
+	free_cache_pages(cl->free_list, cl->order);
 	mempool_destroy(cl->objs_pool);
 	kfree(cl);
 }
@@ -196,7 +198,7 @@ int dm_mem_cache_grow(struct dm_mem_cache_client *cl, unsigned objects)
 	struct page_list *pl, *last;
 
 	BUG_ON(!pages);
-	pl = alloc_cache_pages(pages);
+	pl = alloc_cache_pages(pages, cl->order);
 	if (!pl)
 		return -ENOMEM;
 
@@ -247,7 +249,7 @@ int dm_mem_cache_shrink(struct dm_mem_cache_client *cl, unsigned objects)
 	spin_unlock_irqrestore(&cl->lock, flags);
 
 	if (!r) {
-		free_cache_pages(pl);
+		free_cache_pages(pl, cl->order);
 		mempool_resize(cl->objs_pool, cl->objects, GFP_NOIO);
 	}
 
