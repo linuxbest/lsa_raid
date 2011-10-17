@@ -1,11 +1,15 @@
 #define DEBUG
+
 #include "target.h"
 #include "raid_if.h"
 #include "dm.h"
+#include <linux/dm-io.h>
 
-static int targ_buf_init(struct targ_buf *buf, int bios)
+static int targ_buf_init(struct targ_buf *buf, int bios, int len)
 {
-	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
+	int res = sg_alloc_table(&buf->sg_table, bios+PFN_UP(len), GFP_ATOMIC);
+	buf->sg_cur = buf->sg_table.sgl;
+	buf->nents = 0; 
 	return res;
 }
 
@@ -21,6 +25,24 @@ int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
 		struct page_list *pl, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
+	int tlen = bio->bi_size;
+
+	debug("bio %p, %d, stripe %p, pl %p, offset %d", 
+			bio, tlen, stripe, pl, offset);
+
+	do {
+		int len = PAGE_SIZE - offset;
+		struct page *page = pl->page;
+
+		sg_set_page(req->buf.sg_cur, page,
+				PAGE_SIZE - offset, offset);
+		offset = 0;
+
+		pl = pl->next;
+		tlen -= len;
+		req->buf.sg_cur = sg_next(req->buf.sg_cur);
+		req->buf.nents ++;
+	} while (tlen);
 
 	targ_bio_put(req);
 
@@ -51,13 +73,13 @@ static void targ_bio_init(targ_req_t *req, int bios)
 static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
+		debug("req %p, bio done", req);
 		req->cb(req->dev, &req->buf, req->priv, 0);
 	}
 }
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
-	pr_debug("bio %p\n", bi);
 	bio_put(bi);
 }
 
@@ -79,7 +101,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 
-	pr_debug("buf %p, req %p, %lld, %d, %s\n", &req->buf, req, blknr, 
+	debug("buf %p, req %p, %lld, %d, %s", &req->buf, req, blknr, 
 			blks, rw ? "W" : "R");
 	do {
 		sector_t max = max_io_len(NULL, blknr, ti);
@@ -112,7 +134,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		blknr += len;
 	} while (remaining -= len);
 
-	targ_buf_init(&req->buf, bios);
+	targ_buf_init(&req->buf, bios, blks<<9);
 	targ_bio_init(req, bios);
 
 	while (hbio) {
@@ -130,7 +152,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 int targ_buf_free(targ_buf_t *buf)
 {
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
-	pr_debug("buf %p, req %p\n", buf, req);
+	debug("buf %p, req %p", buf, req);
 	_targ_buf_free(&req->buf);
 	kmem_cache_free(req_cache, req);
 	return 0;
@@ -138,7 +160,7 @@ int targ_buf_free(targ_buf_t *buf)
 
 targ_sg_t *targ_buf_sg(targ_buf_t *buf, int *count)
 {
-	pr_debug("buf %p, sg %p, nents %d\n", buf, buf->sg_table.sgl,
+	debug("buf %p, sg %p, nents %d", buf, buf->sg_table.sgl,
 			buf->nents);
 	*count = buf->nents;
 	return buf->sg_table.sgl;

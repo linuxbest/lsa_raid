@@ -3395,7 +3395,6 @@ void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
 {
 	struct raid_set *rs;
 	
-	pr_debug("ti %p, bio %p\n", ti, bio);
 	rs = ti->private;
 
 	io_get(rs);
@@ -4013,7 +4012,6 @@ static int raid_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	struct raid_type *raid_type;
 	struct variable_parms parms;
 
-	pr_debug("ti %p\n", ti);
 	/* Ensure minimum number of parameters. */
 	if (argc < MIN_PARMS)
 		TI_ERR("Not enough parameters");

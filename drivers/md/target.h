@@ -123,6 +123,7 @@ void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
 struct targ_buf {
 	struct sg_table sg_table;
 	int nents;
+	struct scatterlist *sg_cur;
 };
 
 struct page_list;
@@ -144,5 +145,11 @@ typedef struct target_req {
 
 #define BIO_REQ_BUF   16
 void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio);
+
+#ifndef DEBUG
+#define debug(fmt, ...)
+#else
+#define debug(fmt, ...) pr_debug("%s:%d " fmt, __func__, __LINE__, ##__VA_ARGS__);
+#endif
 
 #endif
