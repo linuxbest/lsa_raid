@@ -287,6 +287,7 @@ static int (*_inits[])(void) __initdata = {
 	dm_interface_init,
 	dm_dirty_log_init,
 	dm_raid_init,
+	dm_targ_init,
 };
 
 static void (*_exits[])(void) = {
@@ -299,6 +300,7 @@ static void (*_exits[])(void) = {
 	dm_interface_exit,
 	dm_dirty_log_exit,
 	dm_raid_exit,
+	dm_targ_exit,
 };
 
 static int __init dm_init(void)
