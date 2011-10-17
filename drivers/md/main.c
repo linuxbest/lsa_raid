@@ -142,11 +142,10 @@ static ssize_t target_store_ports(char *data, ssize_t len)
 }
 
 /* module init & cleanup */
-int __init module_new(void)
+int dm_targ_init(void)
 {
 	int res;
 
-	dm_raid_init();
 	req_cache_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
@@ -154,7 +153,7 @@ int __init module_new(void)
 	return 0;
 }
 
-void __exit module_destroy(void)
+void dm_targ_exit(void)
 {
 	while (!list_empty(&target.device.list)) {
 		struct raid_device *dev = list_entry(target.device.list.next,
@@ -164,9 +163,9 @@ void __exit module_destroy(void)
 	}
 	kobject_put(&target.kobj);
 	req_cache_exit();
-	dm_raid_exit();
 }
 
+#if 0
 module_init(module_new);
 module_exit(module_destroy);
 
@@ -174,3 +173,4 @@ MODULE_VERSION(GITVERSION);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Hu Gang <hugang@soulinfo.com>");
 MODULE_DESCRIPTION("Target");
+#endif

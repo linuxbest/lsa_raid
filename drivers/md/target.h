@@ -110,14 +110,8 @@ int                targ_port_sess_add     (struct targ_port *port, struct targ_s
 void               targ_port_sess_remove  (struct targ_port *port, struct targ_sess *sess);
 struct targ_sess * targ_port_sess_find    (struct targ_port *port, const char *wwpn);
 
-int __init dm_linear_init(void);
-void       dm_linear_exit(void);
-
-int __init req_cache_init(void);
-void       req_cache_exit(void);
-
-int __init  dm_raid_init(void);
-void __exit dm_raid_exit(void);
+int  req_cache_init(void);
+void req_cache_exit(void);
 
 struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int minor);
 

@@ -4546,7 +4546,7 @@ static void init_exit(const char *bad_msg, const char *good_msg, int r)
 		DMINFO("%s %s", good_msg, version);
 }
 
-int __init dm_raid_init(void)
+int dm_raid_init(void)
 {
 	int r = dm_register_target(&raid_target);
 
@@ -4554,7 +4554,7 @@ int __init dm_raid_init(void)
 	return r;
 }
 
-void __exit dm_raid_exit(void)
+void dm_raid_exit(void)
 {
 	dm_unregister_target(&raid_target);
 	init_exit("un", "exit", 0);

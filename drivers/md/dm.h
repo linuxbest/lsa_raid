@@ -140,4 +140,13 @@ void dm_kcopyd_exit(void);
 struct dm_md_mempools *dm_alloc_md_mempools(unsigned type);
 void dm_free_md_mempools(struct dm_md_mempools *pools);
 
+int  dm_dirty_log_init(void);
+void dm_dirty_log_exit(void);
+
+int  dm_raid_init(void);
+void dm_raid_exit(void);
+
+int  dm_targ_init(void);
+void dm_targ_exit(void);
+
 #endif

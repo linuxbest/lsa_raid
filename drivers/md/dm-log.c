@@ -863,7 +863,7 @@ static struct dm_dirty_log_type _disk_type = {
 	.status = disk_status,
 };
 
-static int __init dm_dirty_log_init(void)
+int dm_dirty_log_init(void)
 {
 	int r;
 
@@ -880,15 +880,17 @@ static int __init dm_dirty_log_init(void)
 	return r;
 }
 
-static void __exit dm_dirty_log_exit(void)
+void dm_dirty_log_exit(void)
 {
 	dm_dirty_log_type_unregister(&_disk_type);
 	dm_dirty_log_type_unregister(&_core_type);
 }
 
+#if 0
 module_init(dm_dirty_log_init);
 module_exit(dm_dirty_log_exit);
 
 MODULE_DESCRIPTION(DM_NAME " dirty region log");
 MODULE_AUTHOR("Joe Thornber, Heinz Mauelshagen <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");
+#endif

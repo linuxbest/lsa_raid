@@ -221,7 +221,7 @@ typedef struct target_req {
 
 static struct kmem_cache *req_cache;
 
-int __init req_cache_init(void)
+int req_cache_init(void)
 {
 	req_cache = kmem_cache_create("targ_req", sizeof(targ_req_t), 
 			0, 0, NULL);
