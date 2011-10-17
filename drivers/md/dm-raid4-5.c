@@ -466,7 +466,7 @@ struct raid_set {
 
 	struct {
 		unsigned long flags;	/* State flags. */
-		struct mutex in_lock;	/* Protects central input list below. */
+		spinlock_t in_lock;	/* Protects central input list below. */
 		struct bio_list in;	/* Pending ios (central input list). */
 		struct bio_list work;	/* ios work set. */
 		wait_queue_head_t suspendq;	/* suspend synchronization. */
@@ -3358,10 +3358,10 @@ static void do_raid(struct work_struct *ws)
 	do_unplug(rs);		/* Unplug the sets device queues. */
 
 	/* Quickly grab all new ios queued and add them to the work list. */
-	mutex_lock(&rs->io.in_lock);
+	spin_lock_irq(&rs->io.in_lock);
 	bio_list_merge(ios, ios_in);
 	bio_list_init(ios_in);
-	mutex_unlock(&rs->io.in_lock);
+	spin_unlock_irq(&rs->io.in_lock);
 
 	if (!bio_list_empty(ios))
 		do_ios(rs, ios); /* Got ios to work into the cache. */
@@ -3393,12 +3393,8 @@ static void dispatch_delayed_bios(void *context, struct bio_list *bl)
 
 void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
 {
-	struct raid_set *rs;
-	
-	rs = ti->private;
-
-	io_get(rs);
-	bio->bi_sector -= ti->begin;
+	struct raid_set *rs = ti->private;
+	unsigned long flags;
 
 	/*
 	 * Get io reference to be waiting for to drop
@@ -3408,9 +3404,9 @@ void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
 	bio->bi_sector -= ti->begin;	/* Remap sector. */
 
 	/* Queue io to RAID set. */
-	mutex_lock(&rs->io.in_lock);
+	spin_lock_irqsave(&rs->io.in_lock, flags);
 	bio_list_add(&rs->io.in, bio);
-	mutex_unlock(&rs->io.in_lock);
+	spin_unlock_irqrestore(&rs->io.in_lock, flags);
 
 	/* Wake daemon to process input list. */
 	wake_do_raid(rs);
@@ -3606,7 +3602,7 @@ context_alloc(struct raid_type *raid_type, struct variable_parms *p,
 	atomic_set(rec->io_count + IO_RECOVER, 0);
 
 	/* Initialize io lock and queues. */
-	mutex_init(&rs->io.in_lock);
+	spin_lock_init(&rs->io.in_lock);
 	bio_list_init(&rs->io.in);
 	bio_list_init(&rs->io.work);
 
@@ -4186,9 +4182,9 @@ static int raid_map(struct dm_target *ti, struct bio *bio,
 		bio->bi_sector -= ti->begin;	/* Remap sector. */
 
 		/* Queue io to RAID set. */
-		mutex_lock(&rs->io.in_lock);
+		spin_lock_irq(&rs->io.in_lock);
 		bio_list_add(&rs->io.in, bio);
-		mutex_unlock(&rs->io.in_lock);
+		spin_unlock_irq(&rs->io.in_lock);
 
 		/* Wake daemon to process input list. */
 		wake_do_raid(rs);
