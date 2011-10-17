@@ -17,6 +17,8 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
 
+#include "raid_if.h"
+
 struct raid_set;
 struct raid_req;
 struct target {
@@ -117,5 +119,29 @@ struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int mino
 
 typedef int (*table_cb_t)(struct dm_table *table, void *priv);
 void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
+
+struct targ_buf {
+	struct sg_table sg_table;
+	int nents;
+};
+
+struct stripe;
+int targ_buf_add_page(struct targ_buf *buf, struct stripe *stripe,
+		struct page *page, unsigned offset);
+
+typedef struct target_req {
+	struct list_head list;
+	struct targ_buf buf;
+	struct targ_dev *dev;
+	uint64_t sector;
+	uint16_t num;
+	int rw;
+	buf_cb_t cb;
+	void *priv;
+	atomic_t bios_inflight;
+} targ_req_t;
+
+#define BIO_REQ_BUF   16
+void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio);
 
 #endif

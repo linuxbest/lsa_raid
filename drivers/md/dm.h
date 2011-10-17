@@ -149,4 +149,7 @@ void dm_raid_exit(void);
 int  dm_targ_init(void);
 void dm_targ_exit(void);
 
+sector_t max_io_len(struct mapped_device *md,
+		sector_t sector, struct dm_target *ti);
+
 #endif

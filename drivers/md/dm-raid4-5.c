@@ -38,6 +38,7 @@
  */ 
 
 static const char *version = "v0.2594b";
+#define DEBUG
 
 #include "dm.h"
 #include "dm-memcache.h"
@@ -1719,6 +1720,12 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 	page_addr = page_address(pl->page);
 	page_offset = to_bytes(bio->bi_sector & (SECTORS_PER_PAGE - 1));
 
+	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
+		targ_req_t *req = bio->bi_private;
+		targ_buf_add_page(&req->buf, stripe, pl->page, page_offset);
+		return;
+	}
+
 	/* Walk all segments and copy data across between bio_vecs and pages. */
 	bio_for_each_segment(bv, bio, i) {
 		int len = bv->bv_len, size;
@@ -3384,6 +3391,36 @@ static void dispatch_delayed_bios(void *context, struct bio_list *bl)
 	ClearRSBandwidth(rs);
 }
 
+void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
+{
+	struct raid_set *rs;
+	
+	pr_debug("ti %p, bio %p\n", ti, bio);
+	rs = ti->private;
+
+	io_get(rs);
+	bio->bi_sector -= ti->begin;
+
+	/*
+	 * Get io reference to be waiting for to drop
+	 * to zero on device suspension/destruction.
+	 */
+	io_get(rs);
+	bio->bi_sector -= ti->begin;	/* Remap sector. */
+
+	/* Queue io to RAID set. */
+	mutex_lock(&rs->io.in_lock);
+	bio_list_add(&rs->io.in, bio);
+	mutex_unlock(&rs->io.in_lock);
+
+	/* Wake daemon to process input list. */
+	wake_do_raid(rs);
+
+	/* REMOVEME: statistics. */
+	atomic_inc(rs->stats + (bio_data_dir(bio) == READ ?
+				S_BIOS_READ : S_BIOS_WRITE));
+}
+
 /*************************************************************
  * Constructor helpers
  *************************************************************/
@@ -3976,6 +4013,7 @@ static int raid_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	struct raid_type *raid_type;
 	struct variable_parms parms;
 
+	pr_debug("ti %p\n", ti);
 	/* Ensure minimum number of parameters. */
 	if (argc < MIN_PARMS)
 		TI_ERR("Not enough parameters");

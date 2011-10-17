@@ -1,59 +1,25 @@
+#define DEBUG
 #include "target.h"
 #include "raid_if.h"
 #include "dm.h"
 
-#define BUF_SHIFT      (16)
-#define BUF_SIZE       (1<<BUF_SHIFT)
-#define BUF_ORDER      (BUF_SHIFT-PAGE_SHIFT)
-#define BUF_PFN_UP(x)  (((x) + BUF_SIZE-1) >> BUF_SHIFT)
-
-struct targ_buf {
-	struct sg_table sg_table;
-	int nents;
-};
-
-static int _targ_buf_init(struct targ_buf *buf, int dlen)
+static int targ_buf_init(struct targ_buf *buf, int bios)
 {
-	struct scatterlist *sg;
-	int res, i = 0;
-
-	buf->nents = BUF_PFN_UP(dlen);
-	res = sg_alloc_table(&buf->sg_table, buf->nents, GFP_ATOMIC);
-	sg = buf->sg_table.sgl;
-	pr_debug("sg %p, %d, %d\n", sg, buf->nents, dlen);
-
-	for (i = 0; i < buf->nents; i ++, sg = sg_next(sg)) {
-		struct page *pg = alloc_pages(GFP_ATOMIC, BUF_ORDER);
-		sg_set_page(sg, pg, BUF_SIZE, 0);
-	}
-
-	return 0;
+	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
+	return res;
 }
 
 static int _targ_buf_free(struct targ_buf *buf)
 {
-	struct scatterlist *sg;
-	int i = 0;
-
-	for_each_sg(buf->sg_table.sgl, sg, buf->nents, i) {
-		struct page *pg = sg_page(sg);
-		__free_pages(pg, BUF_ORDER);
-	}
 	sg_free_table(&buf->sg_table);
-
 	return 0;
 }
 
-typedef struct target_req {
-	struct list_head list;
-	struct targ_buf buf;
-	targ_dev_t *dev;
-	uint64_t sector;
-	uint16_t num;
-	int rw;
-	buf_cb_t cb;
-	void *priv;
-} targ_req_t;
+int targ_buf_add_page(struct targ_buf *buf, struct stripe *stripe, 
+		struct page *page, unsigned offset)
+{
+	return 0;
+}
 
 static struct kmem_cache *req_cache;
 
@@ -71,10 +37,36 @@ void req_cache_exit(void)
 	kmem_cache_destroy(req_cache);
 }
 
+static void targ_bio_init(targ_req_t *req, int bios)
+{
+	atomic_set(&req->bios_inflight, bios+1);
+}
+
+static void targ_bio_put(targ_req_t *req)
+{
+	if (atomic_dec_and_test(&req->bios_inflight)) {
+		req->cb(req->dev, &req->buf, req->priv, 0);
+	}
+}
+
+static void targ_bio_end_io(struct bio *bi, int error)
+{
+	targ_req_t *req = bi->bi_private;
+	pr_debug("bio %p, req %p\n", bi, req);
+	targ_bio_put(req);
+	bio_put(bi);
+}
+
 targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 
 		uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
+	struct dm_target *ti = dm_table_find_target(dev->t, blknr);
 	targ_req_t *req;
+	struct bio *bio, *hbio = NULL, *tbio = NULL;
+	sector_t remaining = blks;
+	sector_t len = 0;
+	int bios = 0;
+
 	req = kmem_cache_zalloc(req_cache, GFP_ATOMIC);
 	req->dev   = dev;
 	req->sector= blknr;
@@ -85,8 +77,48 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 	pr_debug("buf %p, req %p, %lld, %d, %s\n", &req->buf, req, blknr, 
 			blks, rw ? "W" : "R");
-	_targ_buf_init(&req->buf, blks << 9);
-	cb(dev, &req->buf, priv, 0);
+	do {
+		sector_t max = max_io_len(NULL, blknr, ti);
+		bio = bio_alloc(GFP_ATOMIC, 1);
+
+		/* TODO bio check */
+		len = min_t(sector_t, blks, max);
+
+		bio->bi_rw = rw;
+		bio->bi_end_io = targ_bio_end_io;
+		bio->bi_private = req;
+		bio->bi_bdev = NULL;
+		bio->bi_sector = blknr;
+		bio->bi_flags = (1<<BIO_UPTODATE) | (1<<BIO_REQ_BUF);
+		bio->bi_next = NULL;
+
+		bio->bi_idx = bios;
+		bio->bi_io_vec = NULL;
+		bio->bi_size = to_bytes(len);
+
+		bio->bi_vcnt = 0;
+		bio->bi_max_vecs = 0;
+
+		if (!hbio)
+			hbio = tbio = bio;
+		else
+			tbio = tbio->bi_next = bio;
+
+		bios ++;
+		blknr += len;
+	} while (remaining -= len);
+
+	targ_buf_init(&req->buf, bios);
+	targ_bio_init(req, bios);
+
+	while (hbio) {
+		bio = hbio;
+		hbio = hbio->bi_next;
+		bio->bi_next = NULL;
+		dm_raid45_req_queue(ti, bio);
+	}
+
+	targ_bio_put(req);
 
 	return &req->buf;
 }
