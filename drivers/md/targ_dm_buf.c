@@ -3,6 +3,7 @@
 #include "target.h"
 #include "raid_if.h"
 #include "dm.h"
+#include "dm-raid45.h"
 #include <linux/dm-io.h>
 
 static int targ_buf_init(struct targ_buf *buf, int bios, int len)
@@ -22,27 +23,17 @@ static int _targ_buf_free(struct targ_buf *buf)
 static void targ_bio_put(targ_req_t *req);
 
 int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
-		struct page_list *pl, unsigned offset)
+		struct page *page, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("bio %p, %d, stripe %p, pl %p, offset %d", 
-			bio, tlen, stripe, pl, offset);
+	debug("bio %p, %d, stripe %p, pg %p, offset %d", 
+			bio, tlen, stripe, page, offset);
 
-	do {
-		int len = PAGE_SIZE - offset;
-		struct page *page = pl->page;
-
-		sg_set_page(req->buf.sg_cur, page,
-				PAGE_SIZE - offset, offset);
-		offset = 0;
-
-		pl = pl->next;
-		tlen -= len;
-		req->buf.sg_cur = sg_next(req->buf.sg_cur);
-		req->buf.nents ++;
-	} while (tlen);
+	sg_set_page(req->buf.sg_cur, page, DM_PAGE_SIZE - offset, offset);
+	req->buf.sg_cur = sg_next(req->buf.sg_cur);
+	req->buf.nents ++;
 
 	targ_bio_put(req);
 
@@ -90,8 +81,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_req_t *req;
 	struct bio *bio, *hbio = NULL, *tbio = NULL;
 	sector_t remaining = blks;
-	sector_t len = 0;
 	int bios = 0;
+	sector_t len = 0;
 
 	req = kmem_cache_zalloc(req_cache, GFP_ATOMIC);
 	req->dev   = dev;
@@ -101,15 +92,13 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 
-	debug("buf %p, req %p, %lld, %d, %s", &req->buf, req, blknr, 
-			blks, rw ? "W" : "R");
+	debug("buf %p, req %p, %lld, %d, %s, %p", &req->buf, req, blknr, 
+			blks, rw ? "W" : "R", ti);
 	do {
 		sector_t max = max_io_len(NULL, blknr, ti);
-		bio = bio_alloc(GFP_ATOMIC, 1);
-
-		/* TODO bio check */
 		len = min_t(sector_t, blks, max);
 
+		bio = bio_alloc(GFP_ATOMIC, 1);
 		bio->bi_rw = rw;
 		bio->bi_end_io = targ_bio_end_io;
 		bio->bi_private = req;
@@ -132,6 +121,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 		bios ++;
 		blknr += len;
+		blks  -= len;
 	} while (remaining -= len);
 
 	targ_buf_init(&req->buf, bios, blks<<9);

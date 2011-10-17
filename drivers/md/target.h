@@ -129,7 +129,7 @@ struct targ_buf {
 struct page_list;
 struct stripe;
 int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
-		struct page_list *pl, unsigned offset);
+		struct page *page, unsigned offset);
 
 typedef struct target_req {
 	struct list_head list;

@@ -25,7 +25,7 @@ struct dm_raid45_locking_type {
 	void (*unlock)(void *lock_handle);
 };
 
-#define DM_PAGE_ORDER 0
+#define DM_PAGE_ORDER 4
 #define DM_PAGE_SIZE  (PAGE_SIZE<<DM_PAGE_ORDER)
 #define DM_PAGE_SHIFT (PAGE_SHIFT+DM_PAGE_ORDER)
 

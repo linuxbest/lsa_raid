@@ -38,6 +38,8 @@
  */ 
 
 static const char *version = "v0.2594b";
+#define DEBUG
+
 #include "dm.h"
 #include "dm-memcache.h"
 #include "dm-message.h"
@@ -61,16 +63,16 @@ static const char *version = "v0.2594b";
 /* Minimum/maximum and default # of selectable stripes. */
 #define	STRIPES_MIN		8
 #define	STRIPES_MAX		16384
-#define	STRIPES_DEFAULT		80
+#define	STRIPES_DEFAULT		256
 
 /* Maximum and default chunk size in sectors if not set in constructor. */
 #define	CHUNK_SIZE_MIN		8
-#define	CHUNK_SIZE_MAX		16384
-#define	CHUNK_SIZE_DEFAULT	64
+#define	CHUNK_SIZE_MAX		SECTORS_PER_PAGE
+#define	CHUNK_SIZE_DEFAULT	SECTORS_PER_PAGE
 
 /* Default io size in sectors if not set in constructor. */
 #define	IO_SIZE_MIN		CHUNK_SIZE_MIN
-#define	IO_SIZE_DEFAULT		IO_SIZE_MIN
+#define	IO_SIZE_DEFAULT		SECTORS_PER_PAGE
 
 /* Recover io size default in sectors. */
 #define	RECOVER_IO_SIZE_MIN		64
@@ -188,6 +190,8 @@ struct stripe_chunk {
 	struct bio_list bl[NR_BL_TYPES];
 	struct {
 		unsigned long flags; /* IO status flags. */
+		struct bio      req;
+		struct bio_vec  vec;
 	} io;
 };
 
@@ -1722,7 +1726,7 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 
 	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
 		targ_req_t *req = bio->bi_private;
-		targ_buf_add_page(bio, stripe, pl, page_offset);
+		targ_buf_add_page(bio, stripe, pl->page, page_offset);
 		return;
 	}
 
@@ -2283,6 +2287,44 @@ static void endio(unsigned long error, void *context)
 	stripe_put_references(chunk->stripe);
 }
 
+static void chunk_end_io(struct bio * bi, int error)
+{
+	endio((unsigned long)error, bi->bi_private);
+}
+
+static int dm_bio(struct dm_io_request *io_req, unsigned num_regions,
+	    struct dm_io_region *where, unsigned long *sync_error_bits)
+{
+	struct stripe_chunk *chunk = io_req->notify.context;
+	struct page_list *pl = io_req->mem.ptr.pl;
+	struct bio *bi = &chunk->io.req;
+
+	bio_init(bi);
+	bi->bi_rw        = io_req->bi_rw;
+	bi->bi_bdev      = where->bdev;
+	bi->bi_private   = chunk;
+	bi->bi_end_io    = chunk_end_io;
+	bi->bi_sector    = where->sector;
+	bi->bi_flags     = 1 << BIO_UPTODATE;
+	bi->bi_next      = NULL;
+
+	bi->bi_idx       = 0;
+	bi->bi_vcnt      = 1;
+	bi->bi_max_vecs  = 1;
+
+	bi->bi_size      = to_bytes(where->count);
+	bi->bi_io_vec    = &chunk->io.vec;
+	bi->bi_io_vec[0].bv_len    = to_bytes(where->count);
+	bi->bi_io_vec[0].bv_offset = 0;
+	bi->bi_io_vec[0].bv_page   = pl->page;
+
+	count_vm_events(bi->bi_rw ? PGPGOUT : PGPGIN, where->count);
+	generic_make_request(bi);
+
+	return 0;
+}
+
+
 /* Read/Write a chunk asynchronously. */
 static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 {
@@ -2333,7 +2375,7 @@ static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 						    S_DM_IO_READ));
 	SetChunkLocked(chunk);
 	SetDevIoQueued(dev);
-	BUG_ON(dm_io(&control, 1, &io, NULL));
+	BUG_ON(dm_bio(&control, 1, &io, NULL));
 }
 
 /*
