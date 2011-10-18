@@ -19,7 +19,7 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 	int i;
 	struct stripe_buf *sb = buf->sb;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-		targ_buf_put_page(sb->stripe, sb->page, dirty);
+		targ_page_put(sb->stripe, sb->page, dirty);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -28,14 +28,14 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 
 static void targ_bio_put(targ_req_t *req);
 
-int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
-		struct page *page, unsigned offset)
+int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page,
+		unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("bio %p, %d, stripe %p, pg %p, offset %d, %d", 
-			bio, tlen, stripe, page, offset, bio->bi_idx);
+	debug("buf %p, stripe %p, pg %p, tlen %05d @ %05d, %d\n",
+			&req->buf, stripe, page, tlen, offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].stripe = stripe;
 	req->buf.sb[bio->bi_idx].page   = page;
@@ -48,7 +48,7 @@ int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
 	return 0;
 }
 
-static void targ_buf_map(targ_buf_t *buf)
+static void targ_buf_set_page(targ_buf_t *buf)
 {
 	int i;
 	struct stripe_buf *sb = buf->sb;
@@ -83,8 +83,8 @@ static void targ_bio_init(targ_req_t *req, int bios)
 static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
-		debug("req %p, bio done", req);
-		targ_buf_map(&req->buf);
+		debug("buf %p, done\n", &req->buf);
+		targ_buf_set_page(&req->buf);
 		req->cb(req->dev, &req->buf, req->priv, 0);
 	}
 }
@@ -112,8 +112,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 
-	debug("buf %p, req %p, %lld, %d, %s, %p", &req->buf, req, blknr, 
-			blks, rw ? "W" : "R", ti);
+	debug("buf %p, req %p, %s, %04d @ %lld\n", &req->buf, req, 
+			rw ? "W" : "R", blks, blknr);
 	do {
 		sector_t max = max_io_len(NULL, blknr, ti);
 		len = min_t(sector_t, blks, max);
@@ -162,20 +162,25 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 int targ_buf_free(targ_buf_t *buf)
 {
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
-	debug("buf %p, req %p", buf, req);
+	debug("buf %p, req %p, %s\n", buf, req, req->rw ? "W" : "R");
 	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
 	return 0;
 }
 
-targ_sg_t *targ_buf_sg(targ_buf_t *buf, int *count)
+targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)
 {
-	debug("buf %p, sg %p, nents %d", buf, buf->sg_table.sgl,
-			buf->nents);
-	*count = buf->nents;
+	debug("buf %p, sg %p, nents %d\n", buf, buf->sg_table.sgl, buf->nents);
+	*sg_cnt = dma_map_sg(dev, buf->sg_table.sgl, buf->nents, dir);
 	return buf->sg_table.sgl;
 }
 
-EXPORT_SYMBOL(targ_buf_sg);
+void targ_buf_unmap(targ_buf_t *buf, struct device *dev, int dir)
+{
+	dma_unmap_sg(dev, buf->sg_table.sgl, buf->nents, dir);
+}
+
+EXPORT_SYMBOL(targ_buf_map);
+EXPORT_SYMBOL(targ_buf_unmap);
 EXPORT_SYMBOL(targ_buf_free);
 EXPORT_SYMBOL(targ_buf_new);

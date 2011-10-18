@@ -27,6 +27,12 @@ targ_buf_t    *targ_buf_new              (targ_dev_t *dev,
 					  buf_cb_t cb,
 					  void *priv);
 int           targ_buf_free              (targ_buf_t *buf);
-targ_sg_t    *targ_buf_sg                (targ_buf_t *buf, int *count);
+targ_sg_t    *targ_buf_map               (targ_buf_t *buf, 
+		                          struct device *dev, 
+					  int dir,
+					  int *sg_cnt);
+void          targ_buf_unmap             (targ_buf_t *buf, 
+		                          struct device *dev, 
+					  int dir);
 
 #endif

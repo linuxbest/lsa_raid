@@ -1751,7 +1751,7 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
 		targ_req_t *req = bio->bi_private;
 		stripe_rdy_ref(stripe);
-		targ_buf_add_page(bio, stripe, pl->page, page_offset);
+		targ_page_add(bio, stripe, pl->page, page_offset);
 		return;
 	}
 
@@ -2803,17 +2803,19 @@ static void stripe_rw(struct stripe *stripe)
 	 * chunks of the stripe.
 	 */
 	if (StripeRBW(stripe)) {
-		r = stripe_merge_possible(stripe, nosync);
-		if (!r) { /* Merge possible. */
-			/*
-			 * I rely on valid parity in order
-			 * to xor a fraction of chunks out
-			 * of parity and back in.
-			 */
-			stripe_merge_writes(stripe);	/* Merge writes in. */
-			SetStripeMerged(stripe);	/* Writes merged. */
+		if (!StripeMerged(stripe)) {
+			r = stripe_merge_possible(stripe, nosync);
+			if (!r) { /* Merge possible. */
+				/*
+				 * I rely on valid parity in order
+				 * to xor a fraction of chunks out
+				 * of parity and back in.
+				 */
+				stripe_merge_writes(stripe);	/* Merge writes in. */
+				SetStripeMerged(stripe);	/* Writes merged. */
+			}
 		}
-		if (stripe_rdy_get(stripe) == 0) {
+		if (StripeMerged(stripe) && stripe_rdy_get(stripe) == 0) {
 			struct stripe_chunk *chunk;
 
 			parity_xor(stripe);		/* Update parity. */
@@ -4664,10 +4666,12 @@ void dm_raid_exit(void)
 	init_exit("un", "exit", 0);
 }
 
-int targ_buf_put_page(struct stripe *stripe, struct page *page, int dirty)
+int targ_page_put(struct stripe *stripe, struct page *page, int dirty)
 {
 	if (stripe_rdy_put(stripe) == 0 && dirty) {
 		BUG_ON(!list_empty(stripe->lists + LIST_FLUSH));
+		BUG_ON(!StripeMerged(stripe));
+		BUG_ON(!StripeRBW(stripe));
 		stripe_flush_add(stripe);
 		wake_do_raid(RS(stripe->sc));
 	}

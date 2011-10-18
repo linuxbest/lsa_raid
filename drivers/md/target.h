@@ -133,9 +133,9 @@ struct targ_buf {
 };
 
 struct page_list;
-int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
+int targ_page_add(struct bio *bio, struct stripe *stripe,
 		struct page *page, unsigned offset);
-int targ_buf_put_page(struct stripe *stripe, struct page *page, int dirty);
+int targ_page_put(struct stripe *stripe, struct page *page, int dirty);
 
 typedef struct target_req {
 	struct list_head list;
@@ -152,6 +152,6 @@ typedef struct target_req {
 #define BIO_REQ_BUF   16
 void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio);
 
-#define debug(fmt, ...) pr_debug("%s:%d " fmt, __func__, __LINE__, ##__VA_ARGS__);
+#define debug(fmt, ...) pr_debug("%-15s:%04d: " fmt, __func__, __LINE__, ##__VA_ARGS__);
 
 #endif
