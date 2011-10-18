@@ -209,6 +209,7 @@ BITOPS(Chunk, Uptodate,	 stripe_chunk, CHUNK_UPTODATE)
  * and the stripe cache rely on the first 3!
  */
 enum list_types {
+	LIST_RDY,       /* Stripes to doing rdy xfer. */
 	LIST_FLUSH,	/* Stripes to flush for io. */
 	LIST_ENDIO,	/* Stripes to endio. */
 	LIST_LRU,	/* Least recently used stripes. */
@@ -308,6 +309,7 @@ struct stripe_hash {
 enum sc_lock_types {
 	LOCK_ENDIO,	/* Protect endio list. */
 	LOCK_LRU,	/* Protect LRU list. */
+	LOCK_RDY,       /* Protect RDY list. */
 	NR_LOCKS,       /* To size array in struct stripe_cache. */
 };
 
@@ -1129,6 +1131,31 @@ static struct stripe *stripe_endio_pop(struct stripe_cache *sc)
 	/* This runs in parallel with endio(). */
 	spin_lock_irq(lock);
 	POP_LIST(LIST_ENDIO)
+	spin_unlock_irq(lock);
+	return stripe;
+}
+
+static void stripe_rdy_add(struct stripe *stripe)
+{
+	struct stripe_cache *sc = stripe->sc;
+	struct list_head *lh = stripe->lists + LIST_RDY;
+	spinlock_t *lock = stripe->sc->locks + LOCK_RDY;
+	unsigned long flags;
+
+	spin_lock_irqsave(lock, flags);
+	if (list_empty(lh))
+		list_add_tail(lh, sc->lists + LIST_RDY);
+	spin_unlock_irqrestore(lock, flags);
+}
+
+static struct stripe *stripe_rdy_pop(struct stripe_cache *sc)
+{
+	struct stripe *stripe;
+	spinlock_t *lock = sc->locks + LOCK_RDY;
+
+	/* This runs in parallel with endio(). */
+	spin_lock_irq(lock);
+	POP_LIST(LIST_RDY)
 	spin_unlock_irq(lock);
 	return stripe;
 }
@@ -2315,7 +2342,8 @@ static void endio(unsigned long error, void *context)
 	else
 		SetChunkUnlock(chunk);
 
-	debug("rs %p, stripe %p, chunk %p, done\n", rs, stripe, chunk);
+	debug("rs %p, stripe %p, chunk %p/%d, done\n", 
+			rs, stripe, chunk, chunk_ref(chunk));
 	/* Indirectly puts stripe on cache's endio list via stripe_io_put(). */
 	stripe_put_references(chunk->stripe);
 }
@@ -2390,7 +2418,7 @@ static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 	BUG_ON(ChunkLocked(chunk));
 	BUG_ON(!ChunkUptodate(chunk) && ChunkDirty(chunk));
 	BUG_ON(ChunkUptodate(chunk) && !ChunkDirty(chunk));
-	BUG_ON(stripe_rdy_get(stripe) != 0 && ChunkDirty(chunk));
+	WARN_ON(stripe_rdy_get(stripe) != 0 && ChunkDirty(chunk));
 
 	/*
 	 * Don't rw past end of device, which can happen, because
@@ -2410,8 +2438,8 @@ static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 	SetChunkLocked(chunk);
 	SetDevIoQueued(dev);
 
-	debug("rs %p, stripe %p, chunk %p, %s\n", rs, stripe, chunk,
-			ChunkDirty(chunk) ? "W" : "R");
+	debug("rs %p, stripe %p, chunk %p/%d, %s\n", rs, stripe, chunk,
+			chunk_ref(chunk), ChunkDirty(chunk) ? "W" : "R");
 	BUG_ON(dm_bio(&control, 1, &io, NULL));
 }
 
@@ -2473,8 +2501,7 @@ static void stripe_merge_writes(struct stripe *stripe)
 			 * because it is just us accessing them anyway.
 			 */
 			bio_list_for_each(bio, write)
-				bio_copy_page_list(WRITE, stripe, pl, bio,
-						chunk);
+				bio_copy_page_list(WRITE, stripe, pl, bio, chunk);
 
 			bio_list_merge(BL_CHUNK(chunk, WRITE_MERGED), write);
 			bio_list_init(write);
@@ -2761,6 +2788,45 @@ static void stripe_avoid_reads(struct stripe *stripe)
 	}
 }
 
+static void stripe_do_rw(struct stripe *stripe)
+{
+	struct raid_set *rs = RS(stripe->sc);
+	int r;
+
+	/* Now submit any reads/writes for non-uptodate or dirty chunks. */
+	r = stripe_chunks_rw(stripe);
+	if (!r) {
+		/*
+		 * No io submitted because of chunk io
+		 * prohibited or locked chunks/failed devices
+		 * -> push to end io list for processing.
+		 */
+		stripe_endio_push(stripe);
+		atomic_inc(rs->stats + S_NO_RW); /* REMOVEME: statistics. */
+	}
+}
+
+static void stripe_rdy(struct stripe *stripe)
+{
+	struct raid_set *rs = RS(stripe->sc);
+	struct stripe_chunk *chunk = CHUNK(stripe, stripe->idx.parity);
+
+	debug("rs %p, stripe %p, chunk %p\n", rs, stripe, chunk);
+	parity_xor(stripe);		/* Update parity. */
+	ClearStripeReconstruct(stripe);	/* Reset xor enforce. */
+	SetStripeMerged(stripe);	/* Writes merged. */
+	ClearStripeRBW(stripe);         /* Disable RBW. */
+
+	/*
+	 * REMOVEME: sanity check on parity chunk
+	 * 	     states after writes got merged.
+	 */
+	BUG_ON(ChunkLocked(chunk));
+	BUG_ON(!ChunkUptodate(chunk));
+	BUG_ON(!ChunkDirty(chunk));
+	BUG_ON(!ChunkIo(chunk));
+}
+
 /*
  * Read/write a stripe.
  *
@@ -2805,7 +2871,8 @@ static void stripe_rw(struct stripe *stripe)
 	 */
 	if (!StripeMerged(stripe)) {
 		r = stripe_queue_writes(stripe);
-		debug("rs %p, stripe %p, %d\n", rs, stripe, r);
+		debug("rs %p, stripe %p, %d, rdy %d\n", rs, stripe, r,
+				stripe_rdy_get(stripe));
 		if (r)
 			/* Writes got queued -> flag RBW. */
 			SetStripeRBW(stripe);
@@ -2816,54 +2883,28 @@ static void stripe_rw(struct stripe *stripe)
 	 * chunks of the stripe.
 	 */
 	if (StripeRBW(stripe)) {
-		if (!StripeMerged(stripe)) {
-			r = stripe_merge_possible(stripe, nosync);
-			if (!r) { /* Merge possible. */
-				/*
-				 * I rely on valid parity in order
-				 * to xor a fraction of chunks out
-				 * of parity and back in.
-				 */
-				stripe_merge_writes(stripe);	/* Merge writes in. */
-				SetStripeMerged(stripe);	/* Writes merged. */
-			}
-		}
-		debug("rs %p, stripe %p, %d, %d\n", rs, stripe,
-				StripeMerged(stripe), stripe_rdy_get(stripe));
-		if (StripeMerged(stripe) && stripe_rdy_get(stripe) == 0) {
-			struct stripe_chunk *chunk;
-
-			parity_xor(stripe);		/* Update parity. */
-			ClearStripeReconstruct(stripe);	/* Reset xor enforce. */
-			ClearStripeRBW(stripe);         /* Disable RBW. */
-
+		r = stripe_merge_possible(stripe, nosync);
+		if (!r) { /* Merge possible. */
+			WARN_ON(stripe_rdy_get(stripe) != 0);
 			/*
-			 * REMOVEME: sanity check on parity chunk
-			 * 	     states after writes got merged.
+			 * I rely on valid parity in order
+			 * to xor a fraction of chunks out
+			 * of parity and back in.
 			 */
-			chunk = CHUNK(stripe, stripe->idx.parity);
-			BUG_ON(ChunkLocked(chunk));
-			BUG_ON(!ChunkUptodate(chunk));
-			BUG_ON(!ChunkDirty(chunk));
-			BUG_ON(!ChunkIo(chunk));
-		} else if (stripe_rdy_get(stripe))
-			return;
+			stripe_merge_writes(stripe);	/* Merge writes in. */
+			debug("rs %p, stripe %p, %d, %d\n", rs, stripe,
+					StripeMerged(stripe), stripe_rdy_get(stripe));
+			if (stripe_rdy_get(stripe))
+				return;
+
+			stripe_rdy(stripe);
+		}
 	} else if (!nosync && !StripeMerged(stripe))
 		/* Read avoidance if not degraded/resynchronizing/merged. */
 		stripe_avoid_reads(stripe);
 
 io:
-	/* Now submit any reads/writes for non-uptodate or dirty chunks. */
-	r = stripe_chunks_rw(stripe);
-	if (!r) {
-		/*
-		 * No io submitted because of chunk io
-		 * prohibited or locked chunks/failed devices
-		 * -> push to end io list for processing.
-		 */
-		stripe_endio_push(stripe);
-		atomic_inc(rs->stats + S_NO_RW); /* REMOVEME: statistics. */
-	}
+	stripe_do_rw(stripe);
 }
 
 /*
@@ -3275,6 +3316,17 @@ static void do_flush(struct raid_set *rs)
 		stripe_rw(stripe); /* Read/write stripe. */
 }
 
+static void do_rdy(struct raid_set *rs)
+{
+	struct stripe *stripe;
+
+	while ((stripe = stripe_rdy_pop(&rs->sc))) {
+		debug("stripe %p\n", stripe);
+		stripe_rdy(stripe); /* rdy stripe. */
+		stripe_do_rw(stripe);
+	}
+}
+
 /* Stripe cache resizing. */
 static void do_sc_resize(struct raid_set *rs)
 {
@@ -3457,6 +3509,7 @@ static void do_raid(struct work_struct *ws)
 		do_ios(rs, ios); /* Got ios to work into the cache. */
 
 	do_flush(rs);		/* Flush any stripes on io list. */
+	do_rdy(rs);             /* doing rdy */
 	do_unplug(rs);		/* Unplug the sets device queues. */
 	do_busy_event(rs);	/* Check if we got too busy. */
 }
@@ -4693,8 +4746,7 @@ int targ_page_put(struct stripe *stripe, struct page *page, int dirty, struct
 			rs, stripe, rdy, chunk, chunk_ref(chunk), dirty);
 	if (rdy == 0 && dirty) {
 		WARN_ON(!StripeRBW(stripe));
-		WARN_ON(!StripeMerged(stripe));
-		stripe_flush_add(stripe);
+		stripe_rdy_add(stripe);
 		wake_do_raid(RS(stripe->sc));
 	}
 	return 0;

@@ -35,7 +35,7 @@ int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page,
 	int tlen = bio->bi_size;
 
 	debug("buf %p, stripe %p, chunk %p, pg %p, tlen %05d @ %05d, %d\n",
-			&req->buf, stripe, stripe, page, tlen, offset, bio->bi_idx);
+			&req->buf, stripe, chunk, page, tlen, offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].stripe = stripe;
 	req->buf.sb[bio->bi_idx].chunk  = chunk;
