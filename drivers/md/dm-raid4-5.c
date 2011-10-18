@@ -2247,7 +2247,7 @@ static int stripe_queue_bio(struct raid_set *rs, struct bio *bio,
 
 	stripe = stripe_find(rs, raid_address(rs, bio->bi_sector, &addr));
 	if (stripe) {
-		int r = 0, rw = bio_data_dir(bio);
+		int r = 0, rw = bio_data_dir(bio), ref = 0;
 
 		/* Distinguish reads and writes. */
 		bio_list_add(BL(stripe, addr.di, rw), bio);
@@ -2268,12 +2268,15 @@ static int stripe_queue_bio(struct raid_set *rs, struct bio *bio,
 		 * Put on io (flush) list in case of
 		 * initial bio queued to chunk.
 		 */
-		if (chunk_get(CHUNK(stripe, addr.di)) == 1)
+		if ((ref = chunk_get(CHUNK(stripe, addr.di))) == 1)
 			stripe_flush_add(stripe);
 
+		debug("rs %p, bio %p, stripe %p, %d/%p\n", rs, bio,
+				stripe, ref, CHUNK(stripe, addr.di));
 		return r;
 	}
 
+	debug("rs %p, bio %p, reject\n", rs, bio);
 	/* Got no stripe from cache or failed to lock it -> reject bio. */
 	bio_list_add(reject, bio);
 	atomic_inc(rs->stats + S_IOS_POST); /* REMOVEME: statistics. */
@@ -2291,6 +2294,9 @@ static int stripe_queue_bio(struct raid_set *rs, struct bio *bio,
 static void endio(unsigned long error, void *context)
 {
 	struct stripe_chunk *chunk = context;
+	struct stripe *stripe = chunk->stripe;
+	struct stripe_cache *sc = stripe->sc;
+	struct raid_set *rs = RS(sc);
 
 	if (unlikely(error)) {
 		chunk_set(chunk, ERROR);
@@ -2308,6 +2314,7 @@ static void endio(unsigned long error, void *context)
 	else
 		SetChunkUnlock(chunk);
 
+	debug("rs %p, stripe %p, chunk %p, done\n", rs, stripe, chunk);
 	/* Indirectly puts stripe on cache's endio list via stripe_io_put(). */
 	stripe_put_references(chunk->stripe);
 }
@@ -2401,6 +2408,9 @@ static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 						    S_DM_IO_READ));
 	SetChunkLocked(chunk);
 	SetDevIoQueued(dev);
+
+	debug("rs %p, stripe %p, chunk %p, %s\n", rs, stripe, chunk,
+			ChunkDirty(chunk) ? "W" : "R");
 	BUG_ON(dm_bio(&control, 1, &io, NULL));
 }
 
@@ -2423,6 +2433,7 @@ static int stripe_chunks_rw(struct stripe *stripe)
 	 * o dirtied by parity calculations
 	 */
 	r = for_each_io_dev(stripe, stripe_get_references);
+	debug("rs %p, stripe %p, %d\n", rs, stripe, r);
 	if (r) {
 		/* Io needed: chunks are either not uptodate or dirty. */
 		int max;	/* REMOVEME: */
@@ -2460,9 +2471,8 @@ static void stripe_merge_writes(struct stripe *stripe)
 			 * We can play with the lists without holding a lock,
 			 * because it is just us accessing them anyway.
 			 */
-			bio_list_for_each(bio, write) {
+			bio_list_for_each(bio, write)
 				bio_copy_page_list(WRITE, stripe, pl, bio);
-			}
 
 			bio_list_merge(BL_CHUNK(chunk, WRITE_MERGED), write);
 			bio_list_init(write);
@@ -2484,7 +2494,7 @@ static int stripe_queue_writes(struct stripe *stripe)
 		if (!bio_list_empty(write)) {
 			bio_list_merge(BL_CHUNK(chunk, WRITE_QUEUED), write);
 			bio_list_init(write);
-SetChunkIo(chunk);
+			SetChunkIo(chunk);
 			r = 1;
 		}
 	}
@@ -2793,6 +2803,7 @@ static void stripe_rw(struct stripe *stripe)
 	 */
 	if (!StripeMerged(stripe)) {
 		r = stripe_queue_writes(stripe);
+		debug("rs %p, stripe %p, %d\n", rs, stripe, r);
 		if (r)
 			/* Writes got queued -> flag RBW. */
 			SetStripeRBW(stripe);
@@ -2815,6 +2826,8 @@ static void stripe_rw(struct stripe *stripe)
 				SetStripeMerged(stripe);	/* Writes merged. */
 			}
 		}
+		debug("rs %p, stripe %p, %d, %d\n", rs, stripe,
+				StripeMerged(stripe), stripe_rdy_get(stripe));
 		if (StripeMerged(stripe) && stripe_rdy_get(stripe) == 0) {
 			struct stripe_chunk *chunk;
 
@@ -2831,7 +2844,7 @@ static void stripe_rw(struct stripe *stripe)
 			BUG_ON(!ChunkUptodate(chunk));
 			BUG_ON(!ChunkDirty(chunk));
 			BUG_ON(!ChunkIo(chunk));
-		} else 
+		} else if (stripe_rdy_get(stripe))
 			return;
 	} else if (!nosync && !StripeMerged(stripe))
 		/* Read avoidance if not degraded/resynchronizing/merged. */
@@ -3309,6 +3322,7 @@ static void do_ios(struct raid_set *rs, struct bio_list *ios)
 	 *    o queue io to all other regions
 	 */
 	while ((bio = bio_list_pop(ios))) {
+		debug("rs %p, bio %p\n", rs, bio);
 		/*
 		 * In case we get a barrier bio, push it back onto
 		 * the input queue unless all work queues are empty
@@ -3413,6 +3427,7 @@ static void do_raid(struct work_struct *ws)
 					   io.dws_do_raid.work);
 	struct bio_list *ios = &rs->io.work, *ios_in = &rs->io.in;
 
+	debug("rs %p wakeup\n", rs);
 	/*
 	 * We always need to end io, so that ios can get errored in
 	 * case the set failed and the region counters get decremented
@@ -3470,6 +3485,7 @@ void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
 	struct raid_set *rs = ti->private;
 	unsigned long flags;
 
+	debug("rs %p, bio %p\n", rs, bio);
 	/*
 	 * Get io reference to be waiting for to drop
 	 * to zero on device suspension/destruction.
@@ -4668,13 +4684,14 @@ void dm_raid_exit(void)
 
 int targ_page_put(struct stripe *stripe, struct page *page, int dirty)
 {
+	struct stripe_cache *sc = stripe->sc;
+	struct raid_set *rs = RS(sc);
+	debug("rs %p, stripe %p\n", rs, stripe);
 	if (stripe_rdy_put(stripe) == 0 && dirty) {
-		BUG_ON(!list_empty(stripe->lists + LIST_FLUSH));
-		BUG_ON(!StripeMerged(stripe));
-		BUG_ON(!StripeRBW(stripe));
 		stripe_flush_add(stripe);
 		wake_do_raid(RS(stripe->sc));
 	}
+	return 0;
 }
 
 #if 0
