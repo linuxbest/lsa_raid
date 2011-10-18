@@ -120,16 +120,22 @@ struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int mino
 typedef int (*table_cb_t)(struct dm_table *table, void *priv);
 void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
 
+struct stripe;
+struct stripe_buf {
+	struct stripe *stripe;
+	struct page *page;
+	unsigned offset;
+};
 struct targ_buf {
+	struct stripe_buf *sb;
 	struct sg_table sg_table;
 	int nents;
-	struct scatterlist *sg_cur;
 };
 
 struct page_list;
-struct stripe;
 int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
 		struct page *page, unsigned offset);
+int targ_buf_put_page(struct stripe *stripe, struct page *page, int dirty);
 
 typedef struct target_req {
 	struct list_head list;

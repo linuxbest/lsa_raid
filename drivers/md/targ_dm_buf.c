@@ -8,15 +8,21 @@
 
 static int targ_buf_init(struct targ_buf *buf, int bios, int len)
 {
-	int res = sg_alloc_table(&buf->sg_table, bios+PFN_UP(len), GFP_ATOMIC);
-	buf->sg_cur = buf->sg_table.sgl;
+	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
 	buf->nents = 0; 
+	buf->sb = kmalloc(sizeof(struct stripe_buf)*bios, GFP_ATOMIC);
 	return res;
 }
 
-static int _targ_buf_free(struct targ_buf *buf)
+static int _targ_buf_free(struct targ_buf *buf, int dirty)
 {
+	int i;
+	struct stripe_buf *sb = buf->sb;
+	for (i = 0; i < buf->nents; i ++, sb ++) {
+		targ_buf_put_page(sb->stripe, sb->page, dirty);
+	}
 	sg_free_table(&buf->sg_table);
+	kfree(buf->sb);
 	return 0;
 }
 
@@ -28,16 +34,29 @@ int targ_buf_add_page(struct bio *bio, struct stripe *stripe,
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("bio %p, %d, stripe %p, pg %p, offset %d", 
-			bio, tlen, stripe, page, offset);
+	debug("bio %p, %d, stripe %p, pg %p, offset %d, %d", 
+			bio, tlen, stripe, page, offset, bio->bi_idx);
 
-	sg_set_page(req->buf.sg_cur, page, DM_PAGE_SIZE - offset, offset);
-	req->buf.sg_cur = sg_next(req->buf.sg_cur);
+	req->buf.sb[bio->bi_idx].stripe = stripe;
+	req->buf.sb[bio->bi_idx].page   = page;
+	req->buf.sb[bio->bi_idx].offset = offset;
+
 	req->buf.nents ++;
 
 	targ_bio_put(req);
 
 	return 0;
+}
+
+static void targ_buf_map(targ_buf_t *buf)
+{
+	int i;
+	struct stripe_buf *sb = buf->sb;
+	struct scatterlist *sg = buf->sg_table.sgl;
+
+	for (i = 0; i < buf->nents; i ++, sg = sg_next(sg), sb ++) {
+		sg_set_page(sg, sb->page, DM_PAGE_SIZE - sb->offset, sb->offset);
+	}
 }
 
 static struct kmem_cache *req_cache;
@@ -65,6 +84,7 @@ static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
 		debug("req %p, bio done", req);
+		targ_buf_map(&req->buf);
 		req->cb(req->dev, &req->buf, req->priv, 0);
 	}
 }
@@ -143,7 +163,7 @@ int targ_buf_free(targ_buf_t *buf)
 {
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
 	debug("buf %p, req %p", buf, req);
-	_targ_buf_free(&req->buf);
+	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
 	return 0;
 }

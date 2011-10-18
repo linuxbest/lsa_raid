@@ -63,7 +63,7 @@ static const char *version = "v0.2594b";
 /* Minimum/maximum and default # of selectable stripes. */
 #define	STRIPES_MIN		8
 #define	STRIPES_MAX		16384
-#define	STRIPES_DEFAULT		256
+#define	STRIPES_DEFAULT		512
 
 /* Maximum and default chunk size in sectors if not set in constructor. */
 #define	CHUNK_SIZE_MIN		8
@@ -242,6 +242,7 @@ struct stripe {
 	sector_t key;	 /* Hash key. */
 	region_t region; /* Region stripe is mapped to. */
 
+	atomic_t rdy_cnt;			/* Reference count. */
 	struct {
 		unsigned long flags;	/* Stripe state flags (see below). */
 
@@ -1253,6 +1254,28 @@ static void stripe_put(struct stripe *stripe)
 		BUG_ON(stripe_ref(stripe) < 0);
 }
 
+static void stripe_rdy_ref(struct stripe *stripe)
+{
+	if (atomic_inc_return(&stripe->rdy_cnt) == 1) {
+		atomic_inc(&stripe->cnt);
+	}
+}
+
+static int stripe_rdy_get(struct stripe *stripe)
+{
+	return atomic_read(&stripe->rdy_cnt);
+}
+
+static int stripe_rdy_put(struct stripe *stripe)
+{
+	int res = atomic_dec_return(&stripe->rdy_cnt);
+	if (res == 0) {
+		stripe_put(stripe);
+	}
+	BUG_ON(res < 0);
+	return res;
+}
+
 /* Helper needed by for_each_io_dev(). */
 static void stripe_get_references(struct stripe *stripe, unsigned p)
 {
@@ -1344,6 +1367,7 @@ static void stripe_init(struct stripe_cache *sc, struct stripe *stripe)
 
 	stripe->io.size = RS(sc)->set.io_size;
 	atomic_set(&stripe->cnt, 0);
+	atomic_set(&stripe->rdy_cnt, 0);
 	atomic_set(&stripe->io.pending, 0);
 	stripe_invalidate(stripe);
 }
@@ -1726,6 +1750,7 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 
 	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
 		targ_req_t *req = bio->bi_private;
+		stripe_rdy_ref(stripe);
 		targ_buf_add_page(bio, stripe, pl->page, page_offset);
 		return;
 	}
@@ -2357,6 +2382,7 @@ static void stripe_chunk_rw(struct stripe *stripe, unsigned p)
 	BUG_ON(ChunkLocked(chunk));
 	BUG_ON(!ChunkUptodate(chunk) && ChunkDirty(chunk));
 	BUG_ON(ChunkUptodate(chunk) && !ChunkDirty(chunk));
+	BUG_ON(stripe_rdy_get(stripe) != 0 && ChunkDirty(chunk));
 
 	/*
 	 * Don't rw past end of device, which can happen, because
@@ -2434,8 +2460,9 @@ static void stripe_merge_writes(struct stripe *stripe)
 			 * We can play with the lists without holding a lock,
 			 * because it is just us accessing them anyway.
 			 */
-			bio_list_for_each(bio, write)
+			bio_list_for_each(bio, write) {
 				bio_copy_page_list(WRITE, stripe, pl, bio);
+			}
 
 			bio_list_merge(BL_CHUNK(chunk, WRITE_MERGED), write);
 			bio_list_init(write);
@@ -2778,18 +2805,20 @@ static void stripe_rw(struct stripe *stripe)
 	if (StripeRBW(stripe)) {
 		r = stripe_merge_possible(stripe, nosync);
 		if (!r) { /* Merge possible. */
-			struct stripe_chunk *chunk;
-
 			/*
 			 * I rely on valid parity in order
 			 * to xor a fraction of chunks out
 			 * of parity and back in.
 			 */
 			stripe_merge_writes(stripe);	/* Merge writes in. */
+			SetStripeMerged(stripe);	/* Writes merged. */
+		}
+		if (stripe_rdy_get(stripe) == 0) {
+			struct stripe_chunk *chunk;
+
 			parity_xor(stripe);		/* Update parity. */
 			ClearStripeReconstruct(stripe);	/* Reset xor enforce. */
-			SetStripeMerged(stripe);	/* Writes merged. */
-			ClearStripeRBW(stripe);		/* Disable RBW. */
+			ClearStripeRBW(stripe);         /* Disable RBW. */
 
 			/*
 			 * REMOVEME: sanity check on parity chunk
@@ -2800,7 +2829,8 @@ static void stripe_rw(struct stripe *stripe)
 			BUG_ON(!ChunkUptodate(chunk));
 			BUG_ON(!ChunkDirty(chunk));
 			BUG_ON(!ChunkIo(chunk));
-		}
+		} else 
+			return;
 	} else if (!nosync && !StripeMerged(stripe))
 		/* Read avoidance if not degraded/resynchronizing/merged. */
 		stripe_avoid_reads(stripe);
@@ -4632,6 +4662,15 @@ void dm_raid_exit(void)
 {
 	dm_unregister_target(&raid_target);
 	init_exit("un", "exit", 0);
+}
+
+int targ_buf_put_page(struct stripe *stripe, struct page *page, int dirty)
+{
+	if (stripe_rdy_put(stripe) == 0 && dirty) {
+		BUG_ON(!list_empty(stripe->lists + LIST_FLUSH));
+		stripe_flush_add(stripe);
+		wake_do_raid(RS(stripe->sc));
+	}
 }
 
 #if 0
