@@ -1732,7 +1732,8 @@ check_shift_di:
  * Pay attention to data alignment in stripe and bio pages.
  */
 static void bio_copy_page_list(int rw, struct stripe *stripe,
-			       struct page_list *pl, struct bio *bio)
+			       struct page_list *pl, struct bio *bio,
+			       struct stripe_chunk *chunk)
 {
 	unsigned i, page_offset;
 	void *page_addr;
@@ -1751,7 +1752,7 @@ static void bio_copy_page_list(int rw, struct stripe *stripe,
 	if (test_bit(BIO_REQ_BUF, &bio->bi_flags)) {
 		targ_req_t *req = bio->bi_private;
 		stripe_rdy_ref(stripe);
-		targ_page_add(bio, stripe, pl->page, page_offset);
+		targ_page_add(bio, stripe, pl->page, page_offset, chunk);
 		return;
 	}
 
@@ -2141,7 +2142,7 @@ static void bio_list_endio(struct stripe *stripe, struct bio_list *bl,
 			dm_rh_dec(rs->recover.rh, stripe->region);
 		else if (!error)
 			/* Copy data accross. */
-			bio_copy_page_list(READ, stripe, pl, bio);
+			bio_copy_page_list(READ, stripe, pl, bio, chunk);
 
 		bio_endio(bio, error);
 
@@ -2472,7 +2473,8 @@ static void stripe_merge_writes(struct stripe *stripe)
 			 * because it is just us accessing them anyway.
 			 */
 			bio_list_for_each(bio, write)
-				bio_copy_page_list(WRITE, stripe, pl, bio);
+				bio_copy_page_list(WRITE, stripe, pl, bio,
+						chunk);
 
 			bio_list_merge(BL_CHUNK(chunk, WRITE_MERGED), write);
 			bio_list_init(write);
@@ -3322,7 +3324,6 @@ static void do_ios(struct raid_set *rs, struct bio_list *ios)
 	 *    o queue io to all other regions
 	 */
 	while ((bio = bio_list_pop(ios))) {
-		debug("rs %p, bio %p\n", rs, bio);
 		/*
 		 * In case we get a barrier bio, push it back onto
 		 * the input queue unless all work queues are empty
@@ -3485,7 +3486,7 @@ void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio)
 	struct raid_set *rs = ti->private;
 	unsigned long flags;
 
-	debug("rs %p, bio %p\n", rs, bio);
+	debug("rs %p, bio %p, req %p\n", rs, bio, bio->bi_private);
 	/*
 	 * Get io reference to be waiting for to drop
 	 * to zero on device suspension/destruction.
@@ -4682,12 +4683,17 @@ void dm_raid_exit(void)
 	init_exit("un", "exit", 0);
 }
 
-int targ_page_put(struct stripe *stripe, struct page *page, int dirty)
+int targ_page_put(struct stripe *stripe, struct page *page, int dirty, struct
+		stripe_chunk *chunk)
 {
 	struct stripe_cache *sc = stripe->sc;
 	struct raid_set *rs = RS(sc);
-	debug("rs %p, stripe %p\n", rs, stripe);
-	if (stripe_rdy_put(stripe) == 0 && dirty) {
+	int rdy = stripe_rdy_put(stripe);
+	debug("rs %p, stripe %p/%d, chunk %p/%d, dirty %d\n",
+			rs, stripe, rdy, chunk, chunk_ref(chunk), dirty);
+	if (rdy == 0 && dirty) {
+		WARN_ON(!StripeRBW(stripe));
+		WARN_ON(!StripeMerged(stripe));
 		stripe_flush_add(stripe);
 		wake_do_raid(RS(stripe->sc));
 	}

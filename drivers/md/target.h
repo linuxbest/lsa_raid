@@ -123,6 +123,7 @@ void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
 struct stripe;
 struct stripe_buf {
 	struct stripe *stripe;
+	struct stripe_chunk *chunk;
 	struct page *page;
 	unsigned offset;
 };
@@ -133,9 +134,10 @@ struct targ_buf {
 };
 
 struct page_list;
-int targ_page_add(struct bio *bio, struct stripe *stripe,
-		struct page *page, unsigned offset);
-int targ_page_put(struct stripe *stripe, struct page *page, int dirty);
+int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page, 
+		unsigned offset, struct stripe_chunk *chunk);
+int targ_page_put(struct stripe *stripe, struct page *page, int dirty, 
+		struct stripe_chunk *chunk);
 
 typedef struct target_req {
 	struct list_head list;

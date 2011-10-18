@@ -19,7 +19,7 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 	int i;
 	struct stripe_buf *sb = buf->sb;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-		targ_page_put(sb->stripe, sb->page, dirty);
+		targ_page_put(sb->stripe, sb->page, dirty, sb->chunk);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -29,15 +29,16 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 static void targ_bio_put(targ_req_t *req);
 
 int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page,
-		unsigned offset)
+		unsigned offset, struct stripe_chunk *chunk)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("buf %p, stripe %p, pg %p, tlen %05d @ %05d, %d\n",
-			&req->buf, stripe, page, tlen, offset, bio->bi_idx);
+	debug("buf %p, stripe %p, chunk %p, pg %p, tlen %05d @ %05d, %d\n",
+			&req->buf, stripe, stripe, page, tlen, offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].stripe = stripe;
+	req->buf.sb[bio->bi_idx].chunk  = chunk;
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
 
