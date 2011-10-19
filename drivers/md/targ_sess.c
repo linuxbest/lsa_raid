@@ -163,7 +163,10 @@ targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
-	return dm_table_get_size(dev->t);
+	if (dev->t)
+		return dm_table_get_size(dev->t);
+	else
+		return 8388608; /* 4GB */
 }
 
 EXPORT_SYMBOL(targ_sess_new);

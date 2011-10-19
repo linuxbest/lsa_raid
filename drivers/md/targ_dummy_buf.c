@@ -1,3 +1,5 @@
+//#define DEBUG
+
 #include "target.h"
 #include "raid_if.h"
 #include "dm.h"
