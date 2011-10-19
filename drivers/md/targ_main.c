@@ -8,11 +8,9 @@ struct target target = {
 		.ktype = &target_ktype,
 	},
 	.device = {
-		.lock = SPIN_LOCK_UNLOCKED,
 		.list = LIST_HEAD_INIT(target.device.list),
 	},
 	.port = {
-		.lock = SPIN_LOCK_UNLOCKED,
 		.list = LIST_HEAD_INIT(target.port.list),
 	},
 };
@@ -146,6 +144,9 @@ int dm_targ_init(void)
 {
 	int res;
 
+	spin_lock_init(&target.device.lock);
+	spin_lock_init(&target.port.lock);
+
 	req_cache_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
@@ -165,12 +166,10 @@ void dm_targ_exit(void)
 	req_cache_exit();
 }
 
-#if 0
-module_init(module_new);
-module_exit(module_destroy);
+module_init(dm_targ_init);
+module_exit(dm_targ_exit);
 
 MODULE_VERSION(GITVERSION);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Hu Gang <hugang@soulinfo.com>");
 MODULE_DESCRIPTION("Target");
-#endif

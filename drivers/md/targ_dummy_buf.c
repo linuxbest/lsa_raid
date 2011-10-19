@@ -2,15 +2,12 @@
 #include "raid_if.h"
 #include "dm.h"
 
+#include <linux/dma-mapping.h>
+
 #define BUF_SHIFT      (16)
 #define BUF_SIZE       (1<<BUF_SHIFT)
 #define BUF_ORDER      (BUF_SHIFT-PAGE_SHIFT)
 #define BUF_PFN_UP(x)  (((x) + BUF_SIZE-1) >> BUF_SHIFT)
-
-struct targ_buf {
-	struct sg_table sg_table;
-	int nents;
-};
 
 static int _targ_buf_init(struct targ_buf *buf, int dlen)
 {
@@ -43,17 +40,6 @@ static int _targ_buf_free(struct targ_buf *buf)
 
 	return 0;
 }
-
-typedef struct target_req {
-	struct list_head list;
-	struct targ_buf buf;
-	targ_dev_t *dev;
-	uint64_t sector;
-	uint16_t num;
-	int rw;
-	buf_cb_t cb;
-	void *priv;
-} targ_req_t;
 
 static struct kmem_cache *req_cache;
 
@@ -108,6 +94,20 @@ targ_sg_t *targ_buf_sg(targ_buf_t *buf, int *count)
 	return buf->sg_table.sgl;
 }
 
+targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)
+{
+	debug("buf %p, sg %p, nents %d\n", buf, buf->sg_table.sgl, buf->nents);
+	*sg_cnt = dma_map_sg(dev, buf->sg_table.sgl, buf->nents, dir);
+	return buf->sg_table.sgl;
+}
+
+void targ_buf_unmap(targ_buf_t *buf, struct device *dev, int dir)
+{
+	dma_unmap_sg(dev, buf->sg_table.sgl, buf->nents, dir);
+}
+
+EXPORT_SYMBOL(targ_buf_map);
+EXPORT_SYMBOL(targ_buf_unmap);
 EXPORT_SYMBOL(targ_buf_sg);
 EXPORT_SYMBOL(targ_buf_free);
 EXPORT_SYMBOL(targ_buf_new);

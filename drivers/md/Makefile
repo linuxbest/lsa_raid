@@ -1,22 +1,13 @@
 ifneq ($(KERNELRELEASE),)
 
-dm-mod-y	+= dm.o dm-table.o dm-target.o dm-linear.o dm-stripe.o \
-		   dm-ioctl.o dm-io.o dm-kcopyd.o dm-sysfs.o
-
-ifeq ($(CONFIG_DM_UEVENT),y)
-dm-mod-objs     += dm-uevent.o
-endif
-
-dm-mod-objs     += targ_main.o targ_port.o targ_sess.o
+target-objs     += targ_main.o targ_port.o targ_sess.o
 ifeq ($(TARGT_DUMMY_BUF),y)
-dm-mod-objs     += targ_dummy_buf.o
+target-objs     += targ_dummy_buf.o
 else
-dm-mod-objs     += targ_dm_buf.o
+target-objs     += targ_dm_buf.o
 endif
-dm-mod-objs     += dm-raid4-5.o dm-memcache.o dm-region-hash.o dm-message.o
-dm-mod-objs     += dm-log.o
 
-obj-$(CONFIG_BLK_DEV_DM)        += dm-mod.o
+obj-m += target.o
 
 EXTRA_CFLAGS += -DGITVERSION=\"${GITVERSION}\"
 EXTRA_CFLAGS += -I$(src)/../../include
