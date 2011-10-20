@@ -405,7 +405,7 @@ struct mddev_s
 	void (*sync_super)(mddev_t *mddev, mdk_rdev_t *rdev);
 
 	/* target extends */
-	int (*targ_page_add)(struct bio *bio, struct page *page, unsigned offset);
+	int (*targ_page_add)(mddev_t *mddev, struct bio *bio, struct page *page, unsigned offset);
 	int (*targ_remap_req)(mddev_t *mddev, struct bio * bi);
 };
 

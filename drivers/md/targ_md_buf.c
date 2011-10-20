@@ -28,7 +28,8 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 
 static void targ_bio_put(targ_req_t *req);
 
-static int targ_page_add(struct bio *bio, struct page *page, unsigned offset)
+static int targ_page_add(mddev_t *mddev, struct bio *bio, 
+		struct page *page, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
@@ -38,6 +39,7 @@ static int targ_page_add(struct bio *bio, struct page *page, unsigned offset)
 
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
+	req->buf.sb[bio->bi_idx].len    = tlen;
 
 	req->buf.nents ++;
 
@@ -53,7 +55,7 @@ static void targ_buf_set_page(targ_buf_t *buf)
 	struct scatterlist *sg = buf->sg_table.sgl;
 
 	for (i = 0; i < buf->nents; i ++, sg = sg_next(sg), sb ++) {
-		//sg_set_page(sg, sb->page, sb->offset, sb->offset);
+		sg_set_page(sg, sb->page, sb->len, sb->offset);
 	}
 }
 

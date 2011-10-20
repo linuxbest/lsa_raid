@@ -694,6 +694,20 @@ static void ops_complete_biofill(void *stripe_head_ref)
 	release_stripe(sh);
 }
 
+static void targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev)
+{
+	raid5_conf_t *conf = sh->raid_conf;
+	int page_offset = 0;
+	sector_t sector = dev->sector;
+
+	if (bio->bi_sector >= sector)
+		page_offset = (signed)(bio->bi_sector - sector) * 512;
+	else
+		page_offset = (signed)(sector - bio->bi_sector) * -512;
+
+	conf->mddev->targ_page_add(conf->mddev, bio, dev->page, page_offset);
+}
+
 static void ops_run_biofill(struct stripe_head *sh)
 {
 	struct dma_async_tx_descriptor *tx = NULL;
@@ -712,6 +726,10 @@ static void ops_run_biofill(struct stripe_head *sh)
 			dev->read = rbi = dev->toread;
 			dev->toread = NULL;
 			spin_unlock_irq(&conf->device_lock);
+			if (bio_flagged(rbi, BIO_REQ_BUF)) {
+				targ_page_add(sh, rbi, dev);
+				continue;
+			}
 			while (rbi && rbi->bi_sector <
 				dev->sector + STRIPE_SECTORS) {
 				tx = async_copy_data(0, rbi, dev->page,

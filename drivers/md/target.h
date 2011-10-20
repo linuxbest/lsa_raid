@@ -122,7 +122,7 @@ void md_for_each_device(table_cb_t cb, void *priv);
 
 struct stripe_buf {
 	struct page *page;
-	unsigned offset;
+	unsigned offset, len;
 };
 
 struct targ_buf {
