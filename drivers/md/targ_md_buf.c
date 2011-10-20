@@ -135,8 +135,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
 		len = min_t(sector_t, remaining, boundary);
 
-		debug("buf %p, bi#%llu, len %d, %s\n", 
-				&req->buf, blknr, (uint16_t)len, rw ? "W" : "R");
+		debug("buf %p/%d, bi#%llu, len %d, %s\n", 
+				&req->buf, bios, blknr, (uint16_t)len, rw ? "W" : "R");
 		bio = bio_alloc(GFP_ATOMIC, 1);
 		bio->bi_rw       = rw;
 		bio->bi_end_io   = targ_bio_end_io;
