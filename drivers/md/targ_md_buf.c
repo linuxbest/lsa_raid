@@ -16,8 +16,10 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 {
 	int i;
 	struct stripe_buf *sb = buf->sb;
+	targ_req_t *req = container_of(buf, targ_req_t, buf);
+	struct mdk_personality *mdk = req->dev->t->pers;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-	//	targ_page_put(sb->stripe, sb->page, dirty, sb->chunk);
+		mdk->targ_page_put(sb->sh, sb->dev);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -39,6 +41,8 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
 	req->buf.sb[bio->bi_idx].len    = tlen;
+	req->buf.sb[bio->bi_idx].sh     = sh;
+	req->buf.sb[bio->bi_idx].dev    = dev;
 
 	req->buf.nents ++;
 

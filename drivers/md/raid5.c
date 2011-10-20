@@ -694,11 +694,14 @@ static void ops_complete_biofill(void *stripe_head_ref)
 	release_stripe(sh);
 }
 
-static void targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev)
+static struct dma_async_tx_descriptor *
+targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev, 
+		int frombio, struct dma_async_tx_descriptor *tx_pending)
 {
 	raid5_conf_t *conf = sh->raid_conf;
 	int page_offset = 0;
 	sector_t sector = dev->sector;
+	struct dma_async_tx_descriptor *tx = tx_pending;
 
 	while (bio) {
 		if (bio->bi_sector >= sector)
@@ -708,7 +711,12 @@ static void targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev 
 
 		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
 		bio = bio->bi_next;
+#if 0
+		atomic_inc(&sh->count);
+#endif
 	}
+
+	return tx;
 }
 
 static void ops_run_biofill(struct stripe_head *sh)
@@ -730,7 +738,7 @@ static void ops_run_biofill(struct stripe_head *sh)
 			dev->toread = NULL;
 			spin_unlock_irq(&conf->device_lock);
 			if (bio_flagged(rbi, BIO_REQ_BUF)) {
-				targ_page_add(sh, rbi, dev);
+				tx = targ_page_add(sh, rbi, dev, 0, tx);
 				continue;
 			}
 			while (rbi && rbi->bi_sector <
@@ -1076,7 +1084,7 @@ ops_run_biodrain(struct stripe_head *sh, struct dma_async_tx_descriptor *tx)
 			spin_unlock_irq(&sh->raid_conf->device_lock);
 
 			if (bio_flagged(wbi, BIO_REQ_BUF)) {
-				targ_page_add(sh, wbi, dev);
+				tx = targ_page_add(sh, wbi, dev, 1, tx);
 				continue;
 			}
 
@@ -3948,6 +3956,16 @@ out:
 	return 0;
 }
 
+static int targ_page_put(struct stripe_head *sh, struct r5dev *dev)
+{
+	pr_debug("%s: stripe %llu\n", __func__,
+		(unsigned long long)sh->sector);
+#if 0
+	release_stripe(sh);
+#endif
+	return 0;
+}
+
 static int targ_page_req(mddev_t *mddev, struct bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
@@ -5878,6 +5896,7 @@ static struct mdk_personality raid5_personality =
 	.quiesce	= raid5_quiesce,
 	.takeover	= raid5_takeover,
 	.targ_page_req  = targ_page_req,
+	.targ_page_put  = targ_page_put,
 };
 
 static struct mdk_personality raid4_personality =

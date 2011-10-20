@@ -467,7 +467,7 @@ struct mdk_personality
 	
 	/* target extends */
 	int (*targ_page_req)(mddev_t *mddev, struct bio * bi);
-	int (*targ_page_put)(struct page *page, int dirty);
+	int (*targ_page_put)(struct stripe_head *sh, struct r5dev *dev);
 };
 
 
