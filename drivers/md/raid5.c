@@ -3899,10 +3899,7 @@ static void add_bio_to_req_list(struct bio *bi, raid5_conf_t *conf)
 	unsigned long flags;
 
 	spin_lock_irqsave(&conf->device_lock, flags);
-
-	bi->bi_next = conf->target_list;
-	conf->target_list = bi;
-
+	bio_list_add(&conf->target_list, bi);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 	md_wakeup_thread(conf->mddev->thread);
 }
@@ -3916,13 +3913,7 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 		conf->retry_target = NULL;
 		return bi;
 	}
-	bi = conf->target_list;
-	if (bi) {
-		conf->target_list = bi->bi_next;
-		bi->bi_next = NULL;
-		return bi;
-	}
-	return bi;
+	return bio_list_pop(&conf->target_list);
 }
 
 static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
