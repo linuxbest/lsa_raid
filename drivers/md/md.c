@@ -8263,3 +8263,16 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MD RAID framework");
 MODULE_ALIAS("md");
 MODULE_ALIAS_BLOCKDEV_MAJOR(MD_MAJOR);
+
+/* target extend functions */
+#include "target.h"
+void md_for_each_device(table_cb_t cb, void *priv)
+{
+	mddev_t *mddev;
+	struct list_head *tmp;
+
+	for_each_mddev(mddev, tmp) {
+		cb(mddev, priv);
+	}
+}
+EXPORT_SYMBOL_GPL(md_for_each_device);

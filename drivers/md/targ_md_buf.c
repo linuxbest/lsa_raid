@@ -2,9 +2,9 @@
 
 #include "target.h"
 #include "raid_if.h"
-#include "dm.h"
-#include "dm-raid45.h"
-#include <linux/dm-io.h>
+#include "md.h"
+
+#include <linux/dma-mapping.h>
 
 static int targ_buf_init(struct targ_buf *buf, int bios, int len)
 {
@@ -19,7 +19,7 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 	int i;
 	struct stripe_buf *sb = buf->sb;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-		targ_page_put(sb->stripe, sb->page, dirty, sb->chunk);
+	//	targ_page_put(sb->stripe, sb->page, dirty, sb->chunk);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -28,17 +28,14 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 
 static void targ_bio_put(targ_req_t *req);
 
-int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page,
-		unsigned offset, struct stripe_chunk *chunk)
+static int targ_page_add(struct bio *bio, struct page *page, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
 	debug("buf %p, stripe %p, chunk %p, pg %p, tlen %05d @ %05d, %d\n",
-			&req->buf, stripe, chunk, page, tlen, offset, bio->bi_idx);
+			&req->buf, NULL, NULL, page, tlen, offset, bio->bi_idx);
 
-	req->buf.sb[bio->bi_idx].stripe = stripe;
-	req->buf.sb[bio->bi_idx].chunk  = chunk;
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
 
@@ -56,7 +53,7 @@ static void targ_buf_set_page(targ_buf_t *buf)
 	struct scatterlist *sg = buf->sg_table.sgl;
 
 	for (i = 0; i < buf->nents; i ++, sg = sg_next(sg), sb ++) {
-		sg_set_page(sg, sb->page, DM_PAGE_SIZE - sb->offset, sb->offset);
+		//sg_set_page(sg, sb->page, sb->offset, sb->offset);
 	}
 }
 
@@ -95,10 +92,14 @@ static void targ_bio_end_io(struct bio *bi, int error)
 	bio_put(bi);
 }
 
+static int targ_remap_req(struct mddev_s *t, struct bio *bio)
+{
+	return 0;
+}
+
 targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 
 		uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
-	struct dm_target *ti = dm_table_find_target(dev->t, blknr);
 	targ_req_t *req;
 	struct bio *bio, *hbio = NULL, *tbio = NULL;
 	sector_t remaining = blks;
@@ -116,24 +117,26 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	debug("buf %p, req %p, %s, %04d @ %lld\n", &req->buf, req, 
 			rw ? "W" : "R", blks, blknr);
 	do {
-		sector_t max = max_io_len(NULL, blknr, ti);
-		len = min_t(sector_t, blks, max);
+		sector_t split_io = dev->t->chunk_sectors;
+		sector_t offset   = blknr;
+		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
+		len = min_t(sector_t, blks, boundary);
 
 		bio = bio_alloc(GFP_ATOMIC, 1);
-		bio->bi_rw = rw;
-		bio->bi_end_io = targ_bio_end_io;
-		bio->bi_private = req;
-		bio->bi_bdev = NULL;
-		bio->bi_sector = blknr;
-		bio->bi_flags = (1<<BIO_UPTODATE) | (1<<BIO_REQ_BUF);
-		bio->bi_next = NULL;
+		bio->bi_rw       = rw;
+		bio->bi_end_io   = targ_bio_end_io;
+		bio->bi_private  = req;
+		bio->bi_bdev     = NULL;
+		bio->bi_sector   = blknr;
+		bio->bi_flags    = (1<<BIO_UPTODATE) | (1<<BIO_REQ_BUF);
+		bio->bi_next     = NULL;
 
-		bio->bi_idx = bios;
-		bio->bi_io_vec = NULL;
-		bio->bi_size = to_bytes(len);
+		bio->bi_idx      = 0;
+		bio->bi_io_vec   = NULL;
+		bio->bi_size     = len << 9;
 
-		bio->bi_vcnt = 0;
-		bio->bi_max_vecs = 0;
+		bio->bi_vcnt     = 1;
+		bio->bi_max_vecs = 1;
 
 		if (!hbio)
 			hbio = tbio = bio;
@@ -152,7 +155,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio = hbio;
 		hbio = hbio->bi_next;
 		bio->bi_next = NULL;
-		dm_raid45_req_queue(ti, bio);
+		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 
 	targ_bio_put(req);
@@ -167,6 +170,12 @@ int targ_buf_free(targ_buf_t *buf)
 	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
 	return 0;
+}
+
+void targ_md_buf_init(struct mddev_s *t)
+{
+	t->targ_page_add = targ_page_add;
+	t->targ_remap_req= targ_remap_req;
 }
 
 targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)

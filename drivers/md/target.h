@@ -104,7 +104,7 @@ struct targ_sess {
 struct targ_dev {
 	int lun;
 	struct targ_sess *sess;
-	struct dm_table *t;
+	struct mddev_s *t;
 };
 
 struct targ_port * targ_port_find_by_data (void *data);
@@ -117,27 +117,19 @@ void req_cache_exit(void);
 
 struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int minor);
 
-typedef int (*table_cb_t)(struct dm_table *table, void *priv);
-void dm_table_for_each(table_cb_t cb, const char *type, void *priv);
+typedef int (*table_cb_t)(struct mddev_s *t, void *priv);
+void md_for_each_device(table_cb_t cb, void *priv);
 
-struct stripe;
 struct stripe_buf {
-	struct stripe *stripe;
-	struct stripe_chunk *chunk;
 	struct page *page;
 	unsigned offset;
 };
+
 struct targ_buf {
 	struct stripe_buf *sb;
 	struct sg_table sg_table;
 	int nents;
 };
-
-struct page_list;
-int targ_page_add(struct bio *bio, struct stripe *stripe, struct page *page, 
-		unsigned offset, struct stripe_chunk *chunk);
-int targ_page_put(struct stripe *stripe, struct page *page, int dirty, 
-		struct stripe_chunk *chunk);
 
 typedef struct target_req {
 	struct list_head list;
@@ -152,8 +144,8 @@ typedef struct target_req {
 } targ_req_t;
 
 #define BIO_REQ_BUF   16
-void dm_raid45_req_queue(struct dm_target *ti, struct bio *bio);
-
 #define debug(fmt, ...) pr_debug("%-15s:%04d: " fmt, __func__, __LINE__, ##__VA_ARGS__);
+
+void targ_md_buf_init(struct mddev_s *t);
 
 #endif

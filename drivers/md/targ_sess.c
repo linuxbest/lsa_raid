@@ -1,13 +1,13 @@
 #include "target.h"
 #include "raid_if.h"
-#include "dm.h"
+#include "md.h"
 
 static ssize_t sess_attr_show(struct kobject *kobj,
 		struct attribute *attr, char *data);
 static ssize_t sess_attr_store(struct kobject *kobj,
 		struct attribute *attr, const char *data, size_t len);
 static void sess_release(struct kobject *kobj);
-static int targ_sess_dev_assign(struct dm_table *table, void *priv);
+static int targ_sess_mdev_assign(struct mddev_s *mdev, void *priv);
 
 struct sess_attribute {
 	struct attribute attr;
@@ -113,8 +113,7 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	/* TODO more device support */
 	sess->dev.nr = 0;
 	sess->dev.array = kzalloc(sizeof(struct targ_dev)*32, GFP_ATOMIC);
-	/*dm_table_for_each(targ_sess_dev_assign, "linear", sess);*/
-	/*dm_table_for_each(targ_sess_dev_assign, "raid45", sess);*/
+	md_for_each_device(targ_sess_mdev_assign, sess);
 out:
 	return sess;
 }
@@ -135,16 +134,17 @@ void *targ_sess_get_data(targ_sess_t *sess)
 }
 
 /* assign the device to session */
-static int targ_sess_dev_assign(struct dm_table *table, void *priv)
+static int targ_sess_mdev_assign(struct mddev_s *t, void *priv)
 {
 	targ_sess_t *sess = priv;
 	struct targ_dev *dev = sess->dev.array + sess->dev.nr;
 
 	dev->lun = sess->dev.nr;
 	dev->sess= sess;
-	dev->t   = table;
+	dev->t   = t;
 
 	sess->dev.nr ++;
+	targ_md_buf_init(t);
 
 	return 0;
 }
@@ -164,7 +164,7 @@ targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
 	if (dev->t)
-		return dm_table_get_size(dev->t);
+		return dev->t->array_sectors;
 	else
 		return 8388608; /* 4GB */
 }

@@ -56,6 +56,7 @@
 #include "raid5.h"
 #include "raid0.h"
 #include "bitmap.h"
+#include "target.h"
 
 /*
  * Stripe cache
@@ -3856,6 +3857,110 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
+/* calling in interrupt context */
+static void add_bio_to_req_list(struct bio *bi, raid5_conf_t *conf)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+
+	bi->bi_next = conf->target_list;
+	conf->target_list = bi;
+
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+}
+
+static struct bio *remove_bio_from_req(raid5_conf_t *conf)
+{
+	struct bio *bi;
+
+	bi = conf->retry_target;
+	if (bi) {
+		conf->retry_target = NULL;
+		return bi;
+	}
+	bi = conf->target_list;
+	if (bi) {
+		conf->target_list = bi->bi_next;
+		bi->bi_next = NULL;
+		return bi;
+	}
+	return bi;
+}
+
+static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
+{
+	int dd_idx;
+	sector_t sector, logical_sector, last_sector;
+	struct stripe_head *sh;
+	const int rw = bio_data_dir(bi);
+
+	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
+	last_sector = bi->bi_sector + (bi->bi_size>>9);
+	bi->bi_next = NULL;
+	bi->bi_phys_segments = 1;	/* over-loaded to count active stripes */
+
+	sector = raid5_compute_sector(conf, logical_sector, 0, &dd_idx, NULL);
+	sh = get_active_stripe(conf, sector, 0, 1, 0);
+
+	if (!sh) 
+		goto out;
+
+	if (!add_stripe_bio(sh, bi, dd_idx, rw)) {
+		release_stripe(sh);
+		goto out;
+	}
+
+	handle_stripe(sh);
+	release_stripe(sh);
+
+	return 1;
+out:
+	conf->retry_target = bi;
+	return 0;
+}
+
+static int targ_page_req(mddev_t *mddev, struct bio * bi)
+{
+	raid5_conf_t *conf = mddev->private;
+#if 0
+	sector_t bi_sector;
+	mdk_rdev_t *rdev;
+	struct block_device *bdev = NULL;
+	int dd_idx, aligned_read = 1;
+
+	if (bi->bi_rw == WRITE) {
+		goto out;
+	}
+
+	bi_sector = raid5_compute_sector(conf, bi->bi_sector, 0, &dd_idx, NULL);
+
+	rcu_read_lock();
+	rdev = rcu_dereference(conf->disks[dd_idx].rdev);
+	if (rdev && test_bit(In_sync, &rdev->flags)) {
+		sector_t first_bad;
+		int bad_sectors;
+
+		bi->bi_flags &= ~(1 << BIO_SEG_VALID);
+		bi->bi_next  = (void*)rdev;
+		bi->bi_bdev  = rdev->bdev;
+		bi->bi_sector= rdev->data_offset + bi_sector;
+
+		if (!is_badblock(rdev, bi_sector, bi->bi_size>>9, 
+					&first_bad, &bad_sectors)) {
+			rcu_read_unlock();
+			return mddev->targ_remap_req(mddev, bi);
+		}
+	}
+	rcu_read_unlock();
+
+out:
+#endif
+	add_bio_to_req_list(bi, conf);
+
+	return 0;
+}
+
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
 static sector_t reshape_request(mddev_t *mddev, sector_t sector_nr, int *skipped)
@@ -4274,6 +4379,16 @@ static void raid5d(mddev_t *mddev)
 				break;
 			handled++;
 		}
+		
+		while ((bio = remove_bio_from_req(conf))) {
+			int ok;
+			spin_unlock_irq(&conf->device_lock);
+			ok = targ_page_bio(conf, bio);
+			spin_lock_irq(&conf->device_lock);
+			if (!ok)
+				break;
+			handled ++;
+		}
 
 		sh = __get_priority_stripe(conf);
 
@@ -4650,7 +4765,7 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 	else
 		conf->max_degraded = 1;
 	conf->algorithm = mddev->new_layout;
-	conf->max_nr_stripes = NR_STRIPES;
+	conf->max_nr_stripes = (256*1024*1024>>STRIPE_SS_SHIFT)/max_disks;
 	conf->reshape_progress = mddev->reshape_position;
 	if (conf->reshape_progress != MaxSector) {
 		conf->prev_chunk_sectors = mddev->chunk_sectors;
@@ -5734,6 +5849,7 @@ static struct mdk_personality raid5_personality =
 	.finish_reshape = raid5_finish_reshape,
 	.quiesce	= raid5_quiesce,
 	.takeover	= raid5_takeover,
+	.targ_page_req  = targ_page_req,
 };
 
 static struct mdk_personality raid4_personality =
