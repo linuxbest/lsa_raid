@@ -1075,6 +1075,11 @@ ops_run_biodrain(struct stripe_head *sh, struct dma_async_tx_descriptor *tx)
 			wbi = dev->written = chosen;
 			spin_unlock_irq(&sh->raid_conf->device_lock);
 
+			if (bio_flagged(wbi, BIO_REQ_BUF)) {
+				targ_page_add(sh, wbi, dev);
+				continue;
+			}
+
 			while (wbi && wbi->bi_sector <
 				dev->sector + STRIPE_SECTORS) {
 				if (wbi->bi_rw & REQ_FUA)
