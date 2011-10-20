@@ -35,8 +35,9 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("buf %p, stripe %p, dev %p, pg %p, tlen %04d @ %05d, %d\n",
-			&req->buf, sh, dev, page, tlen>>9, offset, bio->bi_idx);
+	debug("buf %p, bi#%llu, stripe %p, tlen %04d @ %05d, %d\n",
+			&req->buf, bio->bi_sector, sh, tlen>>9, 
+			offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
@@ -53,13 +54,17 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 
 static void targ_buf_set_page(targ_buf_t *buf)
 {
-	int i;
+	targ_req_t *req = container_of(buf, targ_req_t, buf);
+	int i, tlen = req->num << 9;
 	struct stripe_buf *sb = buf->sb;
 	struct scatterlist *sg = buf->sg_table.sgl;
 
 	for (i = 0; i < buf->nents; i ++, sg = sg_next(sg), sb ++) {
 		sg_set_page(sg, sb->page, sb->len, sb->offset);
+		tlen -= sb->len;
 	}
+
+	WARN_ON(tlen != 0);
 }
 
 static struct kmem_cache *req_cache;
@@ -130,6 +135,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
 		len = min_t(sector_t, remaining, boundary);
 
+		debug("buf %p, bi#%llu, len %d, %s\n", 
+				&req->buf, blknr, (uint16_t)len, rw ? "W" : "R");
 		bio = bio_alloc(GFP_ATOMIC, 1);
 		bio->bi_rw       = rw;
 		bio->bi_end_io   = targ_bio_end_io;
@@ -157,8 +164,6 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 	targ_buf_init(&req->buf, bios);
 	targ_bio_init(req, bios);
-	debug("buf %p, req %p, %s, %04d @ %lld, %d\n", &req->buf, req, 
-			rw ? "W" : "R", blks, blknr - blks, bios);
 
 	while (hbio) {
 		bio = hbio;

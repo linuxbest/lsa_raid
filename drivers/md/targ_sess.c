@@ -39,8 +39,8 @@ static ssize_t sess_show_cmds(targ_sess_t *sess, char *data)
 	
 	spin_lock_irqsave(&sess->req.lock, flags);
 	list_for_each_entry(req, &sess->req.list, list) {
-		len += sprintf(data + len, "%p, %d @ %lld %s, %d\n",
-				req, req->num, req->sector, 
+		len += sprintf(data + len, "buf %p, %d bi#%lld %s, %d\n",
+				&req->buf, req->num, req->sector, 
 				req->rw ? "W" : "R",
 				atomic_read(&req->bios_inflight));
 	}
