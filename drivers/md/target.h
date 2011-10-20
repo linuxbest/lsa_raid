@@ -153,4 +153,10 @@ typedef struct target_req {
 
 void targ_md_buf_init(struct mddev_s *t);
 
+#define STRIPE_SS_SHIFT         16
+#define STRIPE_SHIFT            STRIPE_SS_SHIFT
+#define STRIPE_SIZE             (1UL<<STRIPE_SHIFT)
+#define STRIPE_SECTORS          (STRIPE_SIZE>>9)
+#define STRIPE_ORDER            (STRIPE_SHIFT - PAGE_SHIFT)
+
 #endif

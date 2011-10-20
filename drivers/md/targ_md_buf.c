@@ -125,7 +125,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
 
 	do {
-		sector_t split_io = dev->t->chunk_sectors;
+		sector_t split_io = STRIPE_SECTORS;
 		sector_t offset   = blknr;
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
 		len = min_t(sector_t, remaining, boundary);
