@@ -1,5 +1,3 @@
-#define DEBUG
-
 #include "target.h"
 #include "raid_if.h"
 #include "md.h"
@@ -29,13 +27,14 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 static void targ_bio_put(targ_req_t *req);
 
 static int targ_page_add(mddev_t *mddev, struct bio *bio, 
+		struct stripe_head *sh, struct r5dev *dev,
 		struct page *page, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
-	debug("buf %p, stripe %p, chunk %p, pg %p, tlen %05d @ %05d, %d\n",
-			&req->buf, NULL, NULL, page, tlen, offset, bio->bi_idx);
+	debug("buf %p, stripe %p, dev %p, pg %p, tlen %04d @ %05d, %d\n",
+			&req->buf, sh, dev, page, tlen>>9, offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
@@ -83,7 +82,6 @@ static void targ_bio_init(targ_req_t *req, int bios)
 static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
-		debug("buf %p, done\n", &req->buf);
 		targ_buf_set_page(&req->buf);
 		req->cb(req->dev, &req->buf, req->priv, 0);
 	}
@@ -133,7 +131,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_flags    = (1<<BIO_UPTODATE) | (1<<BIO_REQ_BUF);
 		bio->bi_next     = NULL;
 
-		bio->bi_idx      = 0;
+		bio->bi_idx      = bios;
 		bio->bi_io_vec   = NULL;
 		bio->bi_size     = len << 9;
 

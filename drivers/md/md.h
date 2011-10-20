@@ -29,6 +29,8 @@
 typedef struct mddev_s mddev_t;
 typedef struct mdk_rdev_s mdk_rdev_t;
 
+struct stripe_head;
+struct r5dev;
 /* Bad block numbers are stored sorted in a single page.
  * 64bits is used for each block or extent.
  * 54 bits are sector number, 9 bits are extent size,
@@ -405,7 +407,8 @@ struct mddev_s
 	void (*sync_super)(mddev_t *mddev, mdk_rdev_t *rdev);
 
 	/* target extends */
-	int (*targ_page_add)(mddev_t *mddev, struct bio *bio, struct page *page, unsigned offset);
+	int (*targ_page_add)(mddev_t *mddev, struct bio *bio, struct stripe_head *sh, 
+			struct r5dev *dev, struct page *page, unsigned offset);
 	int (*targ_remap_req)(mddev_t *mddev, struct bio * bi);
 };
 

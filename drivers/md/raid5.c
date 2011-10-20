@@ -705,7 +705,7 @@ static void targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev 
 	else
 		page_offset = (signed)(sector - bio->bi_sector) * -512;
 
-	conf->mddev->targ_page_add(conf->mddev, bio, dev->page, page_offset);
+	conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
 }
 
 static void ops_run_biofill(struct stripe_head *sh)
@@ -3150,7 +3150,7 @@ static void handle_stripe(struct stripe_head *sh)
 	clear_bit(STRIPE_DELAYED, &sh->state);
 
 	pr_debug("handling stripe %llu, state=%#lx cnt=%d, "
-		"pd_idx=%d, qd_idx=%d\n, check:%d, reconstruct:%d\n",
+		"pd_idx=%d, qd_idx=%d, check:%d, reconstruct:%d\n",
 	       (unsigned long long)sh->sector, sh->state,
 	       atomic_read(&sh->count), sh->pd_idx, sh->qd_idx,
 	       sh->check_state, sh->reconstruct_state);

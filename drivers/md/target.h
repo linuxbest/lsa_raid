@@ -120,9 +120,13 @@ struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int mino
 typedef int (*table_cb_t)(struct mddev_s *t, void *priv);
 void md_for_each_device(table_cb_t cb, void *priv);
 
+struct stripe_head;
+struct r5dev;
 struct stripe_buf {
 	struct page *page;
 	unsigned offset, len;
+	struct stripe_head *sh;
+	struct r5dev *dev;
 };
 
 struct targ_buf {
