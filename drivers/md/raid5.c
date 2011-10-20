@@ -700,12 +700,15 @@ static void targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev 
 	int page_offset = 0;
 	sector_t sector = dev->sector;
 
-	if (bio->bi_sector >= sector)
-		page_offset = (signed)(bio->bi_sector - sector) * 512;
-	else
-		page_offset = (signed)(sector - bio->bi_sector) * -512;
+	while (bio) {
+		if (bio->bi_sector >= sector)
+			page_offset = (signed)(bio->bi_sector - sector) * 512;
+		else
+			page_offset = (signed)(sector - bio->bi_sector) * -512;
 
-	conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+		bio = bio->bi_next;
+	}
 }
 
 static void ops_run_biofill(struct stripe_head *sh)
@@ -3935,6 +3938,7 @@ static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
 
 	return 1;
 out:
+	WARN_ON(conf->retry_target);
 	conf->retry_target = bi;
 	return 0;
 }

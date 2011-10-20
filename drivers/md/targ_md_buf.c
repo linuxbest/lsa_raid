@@ -4,7 +4,7 @@
 
 #include <linux/dma-mapping.h>
 
-static int targ_buf_init(struct targ_buf *buf, int bios, int len)
+static int targ_buf_init(struct targ_buf *buf, int bios)
 {
 	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
 	buf->nents = 0; 
@@ -120,13 +120,11 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	list_add_tail(&req->list, &dev->sess->req.list);
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
 
-	debug("buf %p, req %p, %s, %04d @ %lld, %d\n", &req->buf, req, 
-			rw ? "W" : "R", blks, blknr, cmds);
 	do {
 		sector_t split_io = dev->t->chunk_sectors;
 		sector_t offset   = blknr;
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
-		len = min_t(sector_t, blks, boundary);
+		len = min_t(sector_t, remaining, boundary);
 
 		bio = bio_alloc(GFP_ATOMIC, 1);
 		bio->bi_rw       = rw;
@@ -151,11 +149,12 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 		bios ++;
 		blknr += len;
-		blks  -= len;
 	} while (remaining -= len);
 
-	targ_buf_init(&req->buf, bios, blks<<9);
+	targ_buf_init(&req->buf, bios);
 	targ_bio_init(req, bios);
+	debug("buf %p, req %p, %s, %04d @ %lld, %d\n", &req->buf, req, 
+			rw ? "W" : "R", blks, blknr - blks, bios);
 
 	while (hbio) {
 		bio = hbio;
