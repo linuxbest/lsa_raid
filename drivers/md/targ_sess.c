@@ -31,6 +31,28 @@ static ssize_t sess_show_devs(targ_sess_t *sess, char *data)
 	return len;
 }
 
+static ssize_t sess_show_cmds(targ_sess_t *sess, char *data)
+{
+	ssize_t len = 0;
+	unsigned long flags;
+	targ_req_t *req;
+	
+	spin_lock_irqsave(&sess->req.lock, flags);
+	list_for_each_entry(req, &sess->req.list, list) {
+		len += sprintf(data + len, "%p, %d @ %lld %s, %d\n",
+				req, req->num, req->sector, 
+				req->rw ? "W" : "R",
+				atomic_read(&req->bios_inflight));
+	}
+	spin_unlock_irqrestore(&sess->req.lock, flags);
+
+	return len;
+}
+static struct sess_attribute sess_cmd_attr = {
+	.attr = {.name = "cmds", .mode = S_IRUGO, },
+	.show = sess_show_cmds,
+};
+
 static struct sess_attribute sess_dev_attr = {
 	.attr = {.name = "luns", .mode = S_IRUGO, },
 	.show = sess_show_devs,
@@ -38,6 +60,7 @@ static struct sess_attribute sess_dev_attr = {
 
 static struct attribute *sess_attrs[] = {
 	&sess_dev_attr.attr,
+	&sess_cmd_attr.attr,
 	NULL,
 };
 
@@ -99,6 +122,10 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 
 	INIT_LIST_HEAD(&sess->list);
 	INIT_LIST_HEAD(&sess->del_sess_list);
+	
+	spin_lock_init(&sess->req.lock);
+	INIT_LIST_HEAD(&sess->req.list);
+
 	sess->kobj.ktype = &sess_ktype;
 	sess->kobj.parent = &target.kobj;
 	sess->data = data;

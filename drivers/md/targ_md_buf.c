@@ -103,8 +103,9 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_req_t *req;
 	struct bio *bio, *hbio = NULL, *tbio = NULL;
 	sector_t remaining = blks;
-	int bios = 0;
+	int bios = 0, cmds;
 	sector_t len = 0;
+	unsigned long flags;
 
 	req = kmem_cache_zalloc(req_cache, GFP_ATOMIC);
 	req->dev   = dev;
@@ -114,8 +115,13 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 
-	debug("buf %p, req %p, %s, %04d @ %lld\n", &req->buf, req, 
-			rw ? "W" : "R", blks, blknr);
+	spin_lock_irqsave(&dev->sess->req.lock, flags);
+	cmds = dev->sess->req.cnts ++;
+	list_add_tail(&req->list, &dev->sess->req.list);
+	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
+
+	debug("buf %p, req %p, %s, %04d @ %lld, %d\n", &req->buf, req, 
+			rw ? "W" : "R", blks, blknr, cmds);
 	do {
 		sector_t split_io = dev->t->chunk_sectors;
 		sector_t offset   = blknr;
@@ -166,7 +172,14 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 int targ_buf_free(targ_buf_t *buf)
 {
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
-	debug("buf %p, req %p, %s\n", buf, req, req->rw ? "W" : "R");
+	targ_dev_t *dev = req->dev;
+	unsigned long flags;
+	int cmds;
+	spin_lock_irqsave(&dev->sess->req.lock, flags);
+	list_del(&req->list);
+	cmds = dev->sess->req.cnts --;
+	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
+	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
 	return 0;

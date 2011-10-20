@@ -98,6 +98,7 @@ struct targ_sess {
 	struct {
 		struct list_head list;
 		spinlock_t lock;
+		int cnts;
 	} req;
 };
 
