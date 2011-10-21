@@ -149,6 +149,7 @@ typedef struct target_req {
 } targ_req_t;
 
 #define BIO_REQ_BUF   16
+#define BIO_REQ_DONE  17
 #define debug(fmt, ...) pr_debug("%-15s:%04d: " fmt, __func__, __LINE__, ##__VA_ARGS__);
 
 void targ_md_buf_init(struct mddev_s *t);

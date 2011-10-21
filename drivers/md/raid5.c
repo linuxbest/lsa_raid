@@ -711,7 +711,8 @@ targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev,
 		else
 			page_offset = (signed)(sector - bio->bi_sector) * -512;
 
-		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+		if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
+			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
 		bio = bio->bi_next;
 #if 0
 		atomic_inc(&sh->count);
@@ -3894,16 +3895,6 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 }
 
 /* calling in interrupt context */
-static void add_bio_to_req_list(struct bio *bi, raid5_conf_t *conf)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	bio_list_add(&conf->target_list, bi);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-	md_wakeup_thread(conf->mddev->thread);
-}
-
 static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 {
 	struct bio *bi;
@@ -3914,6 +3905,72 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 		return bi;
 	}
 	return bio_list_pop(&conf->target_list);
+}
+
+static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
+{
+	sector_t sector;
+	int dd_idx;
+	const int rw = bio_data_dir(bi);
+	struct stripe_head *sh;
+	unsigned long flags;
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+
+	sector = raid5_compute_sector(conf, bi->bi_sector, 0, &dd_idx, NULL);
+	sh = __find_stripe(conf, sector, conf->generation);
+	if (!sh) {
+		if (!conf->inactive_blocked)
+			sh = get_free_stripe(conf);
+		if (!sh)
+			return 0;
+		init_stripe(sh, sector, 0);
+	} else {
+		if (atomic_read(&sh->count)) {
+			BUG_ON(!list_empty(&sh->lru) && !test_bit(STRIPE_EXPANDING, &sh->state));
+		} else {
+			if (!test_bit(STRIPE_HANDLE, &sh->state)) atomic_inc(&conf->active_stripes);
+			if (list_empty(&sh->lru) && !test_bit(STRIPE_EXPANDING, &sh->state))
+				BUG();
+			list_del_init(&sh->lru);
+		}
+	}
+	atomic_inc(&sh->count);
+	
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+	
+	if (!add_stripe_bio(sh, bi, dd_idx, rw)) {
+		release_stripe(sh);
+		return 0;
+	}
+
+	targ_page_add(sh, bi, &sh->dev[dd_idx], rw == WRITE ? 1 : 0, NULL);
+
+	set_bit(STRIPE_HANDLE, &sh->state);
+	clear_bit(STRIPE_DELAYED, &sh->state);
+	release_stripe(sh);
+
+	return 1;
+}
+
+static void raid_tasklet(unsigned long data)
+{
+	raid5_conf_t *conf  = (raid5_conf_t *)data;
+	struct bio_list reject;
+	struct bio *bio;
+	unsigned long flags;
+
+	bio_list_init(&reject);
+	while ((bio = bio_list_pop(&conf->target_tasklet_list))) {
+		if (_targ_page_req(conf, bio) == 0)
+			bio_list_add(&reject, bio);
+	}
+	
+	spin_lock_irqsave(&conf->device_lock, flags);
+	bio_list_merge_head(&conf->target_list, &reject);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+
+	md_wakeup_thread(conf->mddev->thread);
 }
 
 static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
@@ -3938,10 +3995,9 @@ static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
 		release_stripe(sh);
 		goto out;
 	}
-
-	handle_stripe(sh);
+	set_bit(STRIPE_HANDLE, &sh->state);
+	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe(sh);
-
 	return 1;
 out:
 	WARN_ON(conf->retry_target);
@@ -3962,41 +4018,13 @@ static int targ_page_put(struct stripe_head *sh, struct r5dev *dev)
 static int targ_page_req(mddev_t *mddev, struct bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
-#if 0
-	sector_t bi_sector;
-	mdk_rdev_t *rdev;
-	struct block_device *bdev = NULL;
-	int dd_idx, aligned_read = 1;
+	unsigned long flags;
 
-	if (bi->bi_rw == WRITE) {
-		goto out;
-	}
+	spin_lock_irqsave(&conf->device_lock, flags);
+	bio_list_add(&conf->target_tasklet_list, bi);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
-	bi_sector = raid5_compute_sector(conf, bi->bi_sector, 0, &dd_idx, NULL);
-
-	rcu_read_lock();
-	rdev = rcu_dereference(conf->disks[dd_idx].rdev);
-	if (rdev && test_bit(In_sync, &rdev->flags)) {
-		sector_t first_bad;
-		int bad_sectors;
-
-		bi->bi_flags &= ~(1 << BIO_SEG_VALID);
-		bi->bi_next  = (void*)rdev;
-		bi->bi_bdev  = rdev->bdev;
-		bi->bi_sector= rdev->data_offset + bi_sector;
-
-		if (!is_badblock(rdev, bi_sector, bi->bi_size>>9, 
-					&first_bad, &bad_sectors)) {
-			rcu_read_unlock();
-			return mddev->targ_remap_req(mddev, bi);
-		}
-	}
-	rcu_read_unlock();
-
-out:
-#endif
-	add_bio_to_req_list(bi, conf);
-
+	tasklet_schedule(&conf->tasklet);
 	return 0;
 }
 
@@ -4418,7 +4446,7 @@ static void raid5d(mddev_t *mddev)
 				break;
 			handled++;
 		}
-		
+
 		while ((bio = remove_bio_from_req(conf))) {
 			int ok;
 			spin_unlock_irq(&conf->device_lock);
@@ -4753,6 +4781,8 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 	atomic_set(&conf->preread_active_stripes, 0);
 	atomic_set(&conf->active_aligned_reads, 0);
 	conf->bypass_threshold = BYPASS_THRESHOLD;
+
+	tasklet_init(&conf->tasklet, raid_tasklet, (unsigned long)conf);
 
 	conf->raid_disks = mddev->raid_disks;
 	if (mddev->reshape_position == MaxSector)

@@ -382,6 +382,7 @@ struct raid5_private_data {
 	struct bio		*retry_read_aligned_list; /* aligned bios retry list  */
 	struct bio		*retry_target; /* aligned bios retry list  */
 	struct bio_list		target_list; /* aligned bios retry list  */
+	struct bio_list		target_tasklet_list; /* aligned bios retry list  */
 	atomic_t		preread_active_stripes; /* stripes with scheduled io */
 	atomic_t		active_aligned_reads;
 	atomic_t		pending_full_writes; /* full write backlog */
@@ -439,6 +440,7 @@ struct raid5_private_data {
 	 * the new thread here until we fully activate the array.
 	 */
 	struct mdk_thread_s	*thread;
+	struct tasklet_struct   tasklet;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
