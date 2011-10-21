@@ -712,7 +712,7 @@ targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev,
 			page_offset = (signed)(sector - bio->bi_sector) * -512;
 
 		if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
-			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page+262144, page_offset);
 		bio = bio->bi_next;
 #if 0
 		atomic_inc(&sh->count);
@@ -1754,7 +1754,7 @@ static void raid5_build_block(struct stripe_head *sh, int i, int previous)
 	dev->req.bi_io_vec = &dev->vec;
 	dev->req.bi_vcnt++;
 	dev->req.bi_max_vecs++;
-	dev->vec.bv_page = dev->page;
+	dev->vec.bv_page = dev->page + 262144;
 	dev->vec.bv_len = STRIPE_SIZE;
 	dev->vec.bv_offset = 0;
 
