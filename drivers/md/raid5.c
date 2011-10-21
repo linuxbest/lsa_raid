@@ -583,7 +583,8 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_io_vec[0].bv_offset = 0;
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
-			generic_make_request(bi);
+			/*generic_make_request(bi);*/
+			bi->bi_end_io(bi, 0);
 		} else {
 			if (rw & WRITE)
 				set_bit(STRIPE_DEGRADED, &sh->state);
@@ -3911,7 +3912,7 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 
 static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 {
-	sector_t sector;
+	sector_t sector, logical_sector;
 	int dd_idx;
 	const int rw = bio_data_dir(bi);
 	struct stripe_head *sh;
@@ -3919,7 +3920,11 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 
 	spin_lock_irqsave(&conf->device_lock, flags);
 
-	sector = raid5_compute_sector(conf, bi->bi_sector, 0, &dd_idx, NULL);
+	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
+	sector = raid5_compute_sector(conf, logical_sector, 0, &dd_idx, NULL);
+	pr_debug("targ_page_req: sector %llu logical %llu\n",
+			(unsigned long long)sector, 
+			(unsigned long long)logical_sector);
 	sh = __find_stripe(conf, sector, conf->generation);
 	if (!sh) {
 		if (!conf->inactive_blocked)
