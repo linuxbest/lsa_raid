@@ -3949,6 +3949,7 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	set_bit(STRIPE_HANDLE, &sh->state);
 	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe(sh);
+	md_wakeup_thread(conf->mddev->thread);
 
 	return 1;
 }
@@ -3958,14 +3959,22 @@ static void raid_tasklet(unsigned long data)
 	raid5_conf_t *conf  = (raid5_conf_t *)data;
 	struct bio_list reject;
 	struct bio *bio;
+	unsigned handle = 0, delay = 0;
 	unsigned long flags;
 
 	bio_list_init(&reject);
 	while ((bio = bio_list_pop(&conf->target_tasklet_list))) {
-		if (_targ_page_req(conf, bio) == 0)
+		if (_targ_page_req(conf, bio) == 0) {
 			bio_list_add(&reject, bio);
+			delay ++;
+		} else
+			handle ++;
 	}
-	
+
+	pr_debug("tasklet handle %d, reject %d\n", handle, delay);
+	if (bio_list_empty(&reject))
+		return;
+
 	spin_lock_irqsave(&conf->device_lock, flags);
 	bio_list_merge_head(&conf->target_list, &reject);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
