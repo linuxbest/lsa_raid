@@ -3971,7 +3971,7 @@ static void raid_tasklet(unsigned long data)
 			handle ++;
 	}
 
-	pr_debug("tasklet handle %d, reject %d\n", handle, delay);
+	pr_debug("tasklet handle %d, delay %d\n", handle, delay);
 	if (bio_list_empty(&reject))
 		return;
 
