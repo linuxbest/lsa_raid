@@ -498,7 +498,9 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 	raid5_conf_t *conf = sh->raid_conf;
 	int i, disks = sh->disks;
 
-	might_sleep();
+	pr_debug("%s: stripe %llu\n", __func__,
+		(unsigned long long)sh->sector);
+	/*might_sleep();*/
 
 	for (i = disks; i--; ) {
 		int rw;
@@ -712,7 +714,7 @@ targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev,
 			page_offset = (signed)(sector - bio->bi_sector) * -512;
 
 		if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
-			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page+262144, page_offset);
+			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
 		bio = bio->bi_next;
 #if 0
 		atomic_inc(&sh->count);
@@ -1754,7 +1756,7 @@ static void raid5_build_block(struct stripe_head *sh, int i, int previous)
 	dev->req.bi_io_vec = &dev->vec;
 	dev->req.bi_vcnt++;
 	dev->req.bi_max_vecs++;
-	dev->vec.bv_page = dev->page + 262144;
+	dev->vec.bv_page = dev->page;
 	dev->vec.bv_len = STRIPE_SIZE;
 	dev->vec.bv_offset = 0;
 
@@ -3198,9 +3200,9 @@ static void handle_stripe(struct stripe_head *sh)
 	}
 
 	pr_debug("locked=%d uptodate=%d to_read=%d"
-	       " to_write=%d failed=%d failed_num=%d,%d\n",
+	       " to_write=%d to_fill=%d failed=%d failed_num=%d,%d\n",
 	       s.locked, s.uptodate, s.to_read, s.to_write, s.failed,
-	       s.failed_num[0], s.failed_num[1]);
+	       s.to_fill, s.failed_num[0], s.failed_num[1]);
 	/* check if the array has lost more than max_degraded devices and,
 	 * if so, some requests might need to be failed.
 	 */
