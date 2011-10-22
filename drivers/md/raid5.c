@@ -599,6 +599,7 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_io_vec[0].bv_offset = 0;
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
+			bi->bi_rw |= REQ_NOMERGE;
 			bi->bi_xor_cb = raid5_ata_cb;
 			generic_make_request(bi);
 		} else {
