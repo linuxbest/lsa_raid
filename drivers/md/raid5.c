@@ -503,7 +503,8 @@ raid5_ata_cb(struct bio *bi, int error)
 	struct bio *bio = qc->bi_xor;
 	struct stripe_head *sh = bio->bi_private;
 	int i = bio->bi_xor_disk;
-	pr_debug("%s: %llu/%d tag %d\n", __func__, sh, i, qc->tag);
+	pr_debug("%s: %llu/%d tag %d\n", __func__,
+			(unsigned long long)sh->sector, i, qc->tag);
 	ata_qc_issue(qc);
 }
 
