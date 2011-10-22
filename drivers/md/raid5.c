@@ -585,9 +585,9 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			set_bit(STRIPE_IO_STARTED, &sh->state);
 
 			bi->bi_bdev = rdev->bdev;
-			pr_debug("%s: for %llu schedule op %ld on disc %d, bio %p\n",
+			pr_debug("%s: for %llu schedule op %ld on disc %d\n",
 				__func__, (unsigned long long)sh->sector,
-				bi->bi_rw, i, bi);
+				bi->bi_rw, i);
 			atomic_inc(&sh->count);
 			bi->bi_sector = sh->sector + rdev->data_offset;
 			bi->bi_flags = 1 << BIO_UPTODATE;
@@ -3205,8 +3205,8 @@ static void handle_stripe(struct stripe_head *sh)
 
 	pr_debug("locked=%d uptodate=%d to_read=%d"
 	       " to_write=%d to_fill=%d failed=%d failed_num=%d,%d\n",
-	       s.locked, s.uptodate, s.to_read, s.to_write, s.failed,
-	       s.to_fill, s.failed_num[0], s.failed_num[1]);
+	       s.locked, s.uptodate, s.to_read, s.to_write, s.to_fill,
+	       s.failed, s.failed_num[0], s.failed_num[1]);
 	/* check if the array has lost more than max_degraded devices and,
 	 * if so, some requests might need to be failed.
 	 */
