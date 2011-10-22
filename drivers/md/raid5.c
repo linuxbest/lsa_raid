@@ -58,9 +58,6 @@
 #include "bitmap.h"
 #include "target.h"
 
-#include <linux/libata.h>
-#include "../drivers/ata/libata.h"
-
 /*
  * Stripe cache
  */
@@ -496,18 +493,6 @@ raid5_end_read_request(struct bio *bi, int error);
 static void
 raid5_end_write_request(struct bio *bi, int error);
 
-static void
-raid5_ata_cb(struct bio *bi, int error)
-{
-	struct ata_queued_cmd *qc = (void *)bi;
-	struct bio *bio = qc->bi_xor;
-	struct stripe_head *sh = bio->bi_private;
-	int i = bio->bi_xor_disk;
-	pr_debug("%s: %llu/%d tag %d\n", __func__,
-			(unsigned long long)sh->sector, i, qc->tag);
-	ata_qc_issue(qc);
-}
-
 static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 {
 	raid5_conf_t *conf = sh->raid_conf;
@@ -600,7 +585,7 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
 			bi->bi_rw |= REQ_NOMERGE;
-			bi->bi_xor_cb = raid5_ata_cb;
+			bi->ata_tag = -1;
 			generic_make_request(bi);
 		} else {
 			if (rw & WRITE)
