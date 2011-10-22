@@ -58,6 +58,9 @@
 #include "bitmap.h"
 #include "target.h"
 
+#include <linux/libata.h>
+#include "../drivers/ata/libata.h"
+
 /*
  * Stripe cache
  */
@@ -493,6 +496,14 @@ raid5_end_read_request(struct bio *bi, int error);
 static void
 raid5_end_write_request(struct bio *bi, int error);
 
+static void
+raid5_ata_cb(struct bio *bi, int error)
+{
+	struct ata_queued_cmd *qc = (void *)bi;
+	pr_debug("%s: tag %d, bio %p\n", __func__, qc->tag, qc->bi_xor);
+	ata_qc_issue(qc);
+}
+
 static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 {
 	raid5_conf_t *conf = sh->raid_conf;
@@ -569,9 +580,9 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			set_bit(STRIPE_IO_STARTED, &sh->state);
 
 			bi->bi_bdev = rdev->bdev;
-			pr_debug("%s: for %llu schedule op %ld on disc %d\n",
+			pr_debug("%s: for %llu schedule op %ld on disc %d, bio %p\n",
 				__func__, (unsigned long long)sh->sector,
-				bi->bi_rw, i);
+				bi->bi_rw, i, bi);
 			atomic_inc(&sh->count);
 			bi->bi_sector = sh->sector + rdev->data_offset;
 			bi->bi_flags = 1 << BIO_UPTODATE;
@@ -583,11 +594,8 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_io_vec[0].bv_offset = 0;
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
-#if 1
+			bi->bi_xor_cb = raid5_ata_cb;
 			generic_make_request(bi);
-#else
-			bi->bi_end_io(bi, 0);
-#endif
 		} else {
 			if (rw & WRITE)
 				set_bit(STRIPE_DEGRADED, &sh->state);
