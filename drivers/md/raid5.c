@@ -500,7 +500,10 @@ static void
 raid5_ata_cb(struct bio *bi, int error)
 {
 	struct ata_queued_cmd *qc = (void *)bi;
-	pr_debug("%s: tag %d, bio %p\n", __func__, qc->tag, qc->bi_xor);
+	struct bio *bio = qc->bi_xor;
+	struct stripe_head *sh = bio->bi_private;
+	int i = bio->bi_xor_disk;
+	pr_debug("%s: %llu/%d tag %d\n", __func__, sh, i, qc->tag);
 	ata_qc_issue(qc);
 }
 
@@ -529,6 +532,7 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 
 		bi = &sh->dev[i].req;
 
+		bi->bi_xor_disk = i;
 		bi->bi_rw = rw;
 		if (rw & WRITE)
 			bi->bi_end_io = raid5_end_write_request;
@@ -1639,23 +1643,16 @@ static void raid5_end_read_request(struct bio * bi, int error)
 {
 	struct stripe_head *sh = bi->bi_private;
 	raid5_conf_t *conf = sh->raid_conf;
-	int disks = sh->disks, i;
+	int i = bi->bi_xor_disk;
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 	char b[BDEVNAME_SIZE];
 	mdk_rdev_t *rdev;
 
-
-	for (i=0 ; i<disks; i++)
-		if (bi == &sh->dev[i].req)
-			break;
+	BUG_ON(bi != &sh->dev[i].req);
 
 	pr_debug("end_read_request %llu/%d, count: %d, uptodate %d.\n",
 		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
 		uptodate);
-	if (i == disks) {
-		BUG();
-		return;
-	}
 
 	if (uptodate) {
 		set_bit(R5_UPTODATE, &sh->dev[i].flags);
@@ -1726,22 +1723,16 @@ static void raid5_end_write_request(struct bio *bi, int error)
 {
 	struct stripe_head *sh = bi->bi_private;
 	raid5_conf_t *conf = sh->raid_conf;
-	int disks = sh->disks, i;
+	int i = bi->bi_xor_disk;
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 	sector_t first_bad;
 	int bad_sectors;
 
-	for (i=0 ; i<disks; i++)
-		if (bi == &sh->dev[i].req)
-			break;
+	BUG_ON (bi != &sh->dev[i].req);
 
 	pr_debug("end_write_request %llu/%d, count %d, uptodate: %d.\n",
 		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
 		uptodate);
-	if (i == disks) {
-		BUG();
-		return;
-	}
 
 	if (!uptodate) {
 		set_bit(WriteErrorSeen, &conf->disks[i].rdev->flags);
