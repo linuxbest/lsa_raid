@@ -3930,8 +3930,10 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	if (!sh) {
 		if (!conf->inactive_blocked)
 			sh = get_free_stripe(conf);
-		if (!sh)
+		if (!sh) {
+			md_wakeup_thread(conf->mddev->thread);
 			return 0;
+		}
 		init_stripe(sh, sector, 0);
 	} else {
 		if (atomic_read(&sh->count)) {
