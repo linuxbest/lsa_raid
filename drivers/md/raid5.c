@@ -2222,7 +2222,6 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 		(unsigned long long)bi->bi_sector,
 		(unsigned long long)sh->sector);
 
-
 	spin_lock_irq(&conf->device_lock);
 	if (forwrite) {
 		bip = &sh->dev[dd_idx].towrite;
@@ -2245,6 +2244,7 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 	bi->bi_phys_segments++;
 
 	if (forwrite) {
+		unsigned int disks = 0;
 		/* check if page is covered */
 		sector_t sector = sh->dev[dd_idx].sector;
 		for (bi=sh->dev[dd_idx].towrite;
@@ -3955,29 +3955,16 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	}
 	if (rw == WRITE) {
 		int i;
-		for (i = sh->disks; 
-		     i-- && test_bit(R5_OVERWRITE, &sh->dev[i].flags);)
-			;
+		for (i = sh->disks; i; i --)
+			/* have data write to but not full device cache size */
+			if (!test_bit(R5_OVERWRITE, &sh->dev[i].flags) && sh->dev[i].towrite)
+				break;
 		wakeup = i == 0;
-
-		targ_page_add(sh, bi, &sh->dev[dd_idx], 1, NULL);
-	} else {
-#if 0
-		/* check if page is covered */
-		sector_t sector = sh->dev[dd_idx].sector;
-		for (bi=sh->dev[dd_idx].toread;
-		     sector < sh->dev[dd_idx].sector + STRIPE_SECTORS &&
-			     bi && bi->bi_sector <= sector;
-		     bi = r5_next_bio(bi, sh->dev[dd_idx].sector)) {
-			if (bi->bi_sector + (bi->bi_size>>9) >= sector)
-				sector = bi->bi_sector + (bi->bi_size>>9);
-		}
-		if (sector >= sh->dev[dd_idx].sector + STRIPE_SECTORS) {
-			handle_stripe(sh);
-			release_stripe(sh);
-			return 1;
-		}
-#endif
+		/* full device cache size write, adding page now */
+		if (test_bit(R5_OVERWRITE, &sh->dev[dd_idx].flags))
+			targ_page_add(sh, bi, &sh->dev[dd_idx], 1, NULL);
+		else
+			wakeup = 1;
 	}
 	set_bit(STRIPE_HANDLE, &sh->state);
 	clear_bit(STRIPE_DELAYED, &sh->state);
