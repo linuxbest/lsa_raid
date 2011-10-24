@@ -197,7 +197,7 @@ static int stripe_operations_active(struct stripe_head *sh)
 	       test_bit(STRIPE_COMPUTE_RUN, &sh->state);
 }
 
-static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh)
+static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh, int wakeup)
 {
 	if (atomic_dec_and_test(&sh->count)) {
 		BUG_ON(!list_empty(&sh->lru));
@@ -212,7 +212,8 @@ static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh)
 				clear_bit(STRIPE_BIT_DELAY, &sh->state);
 				list_add_tail(&sh->lru, &conf->handle_list);
 			}
-			md_wakeup_thread(conf->mddev->thread);
+			if (wakeup)
+				md_wakeup_thread(conf->mddev->thread);
 		} else {
 			BUG_ON(stripe_operations_active(sh));
 			if (test_and_clear_bit(STRIPE_PREREAD_ACTIVE, &sh->state)) {
@@ -237,7 +238,17 @@ static void release_stripe(struct stripe_head *sh)
 	unsigned long flags;
 
 	spin_lock_irqsave(&conf->device_lock, flags);
-	__release_stripe(conf, sh);
+	__release_stripe(conf, sh, 1);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+}
+
+static void release_stripe_wakeup(struct stripe_head *sh, int wakeup)
+{
+	raid5_conf_t *conf = sh->raid_conf;
+	unsigned long flags;
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+	__release_stripe(conf, sh, wakeup);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 }
 
@@ -3437,7 +3448,7 @@ static void activate_bit_delay(raid5_conf_t *conf)
 		struct stripe_head *sh = list_entry(head.next, struct stripe_head, lru);
 		list_del_init(&sh->lru);
 		atomic_inc(&sh->count);
-		__release_stripe(conf, sh);
+		__release_stripe(conf, sh, 1);
 	}
 }
 
@@ -3902,8 +3913,8 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 {
 	sector_t sector, logical_sector;
-	int dd_idx;
 	const int rw = bio_data_dir(bi);
+	int dd_idx, wakeup = rw == READ;
 	struct stripe_head *sh;
 	unsigned long flags;
 
@@ -3940,13 +3951,19 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 		release_stripe(sh);
 		return 0;
 	}
+	if (rw == WRITE) {
+		int i;
+		for (i = sh->disks; 
+		     i-- && test_bit(R5_OVERWRITE, &sh->dev[i].flags);)
+			;
+		wakeup = i == 0;
+	}
 
 	targ_page_add(sh, bi, &sh->dev[dd_idx], rw == WRITE ? 1 : 0, NULL);
 
 	set_bit(STRIPE_HANDLE, &sh->state);
 	clear_bit(STRIPE_DELAYED, &sh->state);
-	release_stripe(sh);
-	md_wakeup_thread(conf->mddev->thread);
+	release_stripe_wakeup(sh, wakeup);
 
 	return 1;
 }
@@ -5916,7 +5933,7 @@ static struct mdk_personality raid5_personality =
 	.hot_add_disk	= raid5_add_disk,
 	.hot_remove_disk= raid5_remove_disk,
 	.spare_active	= raid5_spare_active,
-	.sync_request	= sync_request,
+	/*.sync_request	= sync_request,*/
 	.resize		= raid5_resize,
 	.size		= raid5_size,
 	.check_reshape	= raid5_check_reshape,
