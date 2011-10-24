@@ -222,7 +222,7 @@ void dm_targ_exit(void)
 	kobject_put(&target.kobj);
 	req_cache_exit();
 }
-
+#if 0
 module_init(dm_targ_init);
 module_exit(dm_targ_exit);
 
@@ -230,3 +230,4 @@ MODULE_VERSION(GITVERSION);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Hu Gang <hugang@soulinfo.com>");
 MODULE_DESCRIPTION("Target");
+#endif
