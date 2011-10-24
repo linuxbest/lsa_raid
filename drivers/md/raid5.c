@@ -3910,6 +3910,10 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 	return bio_list_pop(&conf->target_list);
 }
 
+/* TODO
+ * 0) WRITE page must finished, before doing reconstruct & write
+ *
+ */
 static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 {
 	sector_t sector, logical_sector;
