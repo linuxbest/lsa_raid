@@ -155,6 +155,7 @@ targ_port_t *targ_port_find_by_data(void *data)
 int targ_port_sess_add(targ_port_t *port, targ_sess_t *sess)
 {
 	list_add_tail(&sess->list, &port->sess.list);
+	targ_group_sess_init(sess);
 	pr_info("targ_sess(%s:%s) registed.\n",
 			port->port.wwpn, sess->remote.wwpn);
 	return 0;

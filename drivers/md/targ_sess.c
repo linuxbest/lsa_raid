@@ -137,10 +137,6 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 			&port->kobj,
 			sess->remote.wwpn);
 	targ_port_sess_add(port, sess);
-	/* TODO more device support */
-	sess->dev.nr = 0;
-	sess->dev.array = kzalloc(sizeof(struct targ_dev)*32, GFP_ATOMIC);
-	md_for_each_device(targ_sess_mdev_assign, sess);
 out:
 	return sess;
 }

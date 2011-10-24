@@ -21,6 +21,8 @@
 
 struct raid_set;
 struct raid_req;
+struct dm_table;
+
 struct target {
 	struct kobject kobj;
 	struct completion done;
@@ -65,15 +67,8 @@ int args(char *frame, char *argv[], int argv_max);
 typedef struct targ_group {
 	struct kobject kobj;
 	struct list_head list;
-	struct {
-		struct list_head list;
-	} port;
-	struct {
-		struct list_head list;
-	} wwpn;
-	struct {
-		struct list_head list;
-	} device;
+
+	struct list_head head[3];
 } targ_group_t;
 
 int targ_group_init(void);
@@ -127,6 +122,7 @@ struct targ_sess {
 struct targ_dev {
 	int lun;
 	struct targ_sess *sess;
+	struct dm_table *table;
 	struct mddev_s *t;
 };
 
@@ -134,6 +130,8 @@ struct targ_port * targ_port_find_by_data (void *data);
 int                targ_port_sess_add     (struct targ_port *port, struct targ_sess *sess);
 void               targ_port_sess_remove  (struct targ_port *port, struct targ_sess *sess);
 struct targ_sess * targ_port_sess_find    (struct targ_port *port, const char *wwpn);
+
+int                targ_group_sess_init   (struct targ_sess *sess);
 
 int  req_cache_init(void);
 void req_cache_exit(void);

@@ -7,18 +7,117 @@ static ssize_t group_attr_store(struct kobject *kobj,
 		struct attribute *attr, const char *data, size_t len);
 static void group_release(struct kobject *kobj);
 
+typedef enum {
+	PORT   = 0,
+	WWPN   = 1,
+	DEVICE = 2,
+} attr_type_t;
+
+struct attr_list {
+	struct list_head list;
+	char data[128];
+};
+
 struct group_attribute {
 	struct attribute attr;
-	ssize_t (*show) (targ_group_t *group, char *page);
-	ssize_t (*store)(targ_group_t *group, char *page, ssize_t count);
+	ssize_t (*show) (targ_group_t *group,
+			struct group_attribute *attr, char *page);
+	ssize_t (*store)(targ_group_t *group,
+			struct group_attribute *attr, char *page, 
+			ssize_t count);
+	attr_type_t type;
 };
+
+static struct attr_list *group_attr_find(struct list_head *head, const char *name)
+{
+	struct attr_list *al;
+	list_for_each_entry(al, head, list) {
+		if (strcmp(al->data, name) == 0)
+			return al;
+	}
+	return NULL;
+}
+
+static void group_attr_clean(struct list_head *head)
+{
+	while (list_empty(head)) {
+		struct attr_list *al = list_entry(head->next, 
+				struct attr_list, list);
+		list_del(&al->list);
+		kfree(al);
+	}
+}
+static ssize_t group_show_attr(targ_group_t *group, 
+		struct group_attribute *attr, char *page)
+{
+	ssize_t len = 0;
+	struct attr_list *al;
+	int i = 0;
+
+	list_for_each_entry(al, &group->head[attr->type], list) {
+		len += sprintf(page+len, "%d,%s\n", i, al->data);
+		i ++;
+	}
+
+	return len;
+}
+
+static ssize_t group_store_attr(targ_group_t *group,
+		struct group_attribute *attr, char *page, ssize_t count)
+{
+	ssize_t res = count;
+	struct attr_list *al;
+
+	if (strcmp(page, "clean") == 0) {
+		group_attr_clean(&group->head[attr->type]);
+	} else {
+		if (group_attr_find(&group->head[attr->type], page)) {
+			res = -EEXIST;
+			goto out;
+		}
+
+		al = kzalloc(sizeof(*al), GFP_KERNEL);
+		if (al == NULL) {
+			res = -ENOMEM;
+			goto out;
+		}	
+		strcpy(al->data, page);
+		list_add_tail(&al->list, &group->head[attr->type]);
+	}
+out:
+	return res;
+}
 
 struct sysfs_ops group_sysfs_ops = {
 	.show = group_attr_show,
 	.store = group_attr_store,
 };
 
+static struct group_attribute group_attribute_port = {
+	.attr = {.name = "port", .mode = S_IRUGO | S_IWUGO, },
+	.show = group_show_attr,
+	.store = group_store_attr,
+	.type = PORT,
+};
+
+static struct group_attribute group_attribute_wwpn= {
+	.attr = {.name = "wwpn", .mode = S_IRUGO | S_IWUGO, },
+	.show = group_show_attr,
+	.store = group_store_attr,
+	.type = WWPN,
+};
+
+static struct group_attribute group_attribute_device = {
+	.attr = {.name = "device", .mode = S_IRUGO | S_IWUGO, },
+	.show = group_show_attr,
+	.store = group_store_attr,
+	.type = DEVICE,
+};
+
 static struct attribute *group_attrs[] = {
+	&group_attribute_port.attr,
+	&group_attribute_wwpn.attr,
+	&group_attribute_device.attr,
 	NULL,
 };
 
@@ -46,7 +145,7 @@ static ssize_t group_attr_show(struct kobject *kobj,
 	int len = 0;
 	if (group_attr->show)
 		len = group_attr->show(container_of(kobj, targ_group_t, kobj),
-				data);
+				group_attr, data);
 	return len;
 }
 
@@ -57,13 +156,16 @@ static ssize_t group_attr_store(struct kobject *kobj,
 		container_of(attr, struct group_attribute, attr);
 	if (group_attr->store)
 		len = group_attr->store(container_of(kobj, targ_group_t, kobj),
-				(char *)data, len);
+				group_attr, (char *)data, len);
 	return len;
 }
 
 static void group_release(struct kobject *kobj)
 {
 	targ_group_t *group = container_of(kobj, targ_group_t, kobj);
+	group_attr_clean(&group->head[0]);
+	group_attr_clean(&group->head[1]);
+	group_attr_clean(&group->head[2]);
 	kfree(group);
 }
 
@@ -82,9 +184,9 @@ static targ_group_t *targ_group_new(char *name)
 	group->kobj.ktype = &group_ktype;
 	group->kobj.parent = &root_group->kobj;
 
-	INIT_LIST_HEAD(&group->port.list);
-	INIT_LIST_HEAD(&group->wwpn.list);
-	INIT_LIST_HEAD(&group->device.list);
+	INIT_LIST_HEAD(&group->head[0]);
+	INIT_LIST_HEAD(&group->head[1]);
+	INIT_LIST_HEAD(&group->head[2]);
 
 	res = kobject_init_and_add(&group->kobj,
 			&group_ktype,
@@ -117,13 +219,13 @@ int targ_group_init(void)
 	INIT_LIST_HEAD(&group->list);
 	group->kobj.ktype = &root_group_ktype;
 	group->kobj.parent = &target.kobj;
-
-	INIT_LIST_HEAD(&group->port.list);
-	INIT_LIST_HEAD(&group->wwpn.list);
-	INIT_LIST_HEAD(&group->device.list);
+	
+	INIT_LIST_HEAD(&group->head[0]);
+	INIT_LIST_HEAD(&group->head[1]);
+	INIT_LIST_HEAD(&group->head[2]);
 
 	res = kobject_init_and_add(&group->kobj,
-			&group_ktype,
+			&root_group_ktype,
 			&target.kobj,
 			"groups");
 	
@@ -141,5 +243,10 @@ int targ_group_exit(void)
 	}
 	kobject_put(&root_group->kobj);
 
+	return 0;
+}
+
+int targ_group_sess_init(struct targ_sess *sess)
+{
 	return 0;
 }
