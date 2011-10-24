@@ -36,6 +36,10 @@ struct target {
 		struct list_head list;
 		spinlock_t lock;
 	} port;
+	struct {
+		struct list_head list;
+		spinlock_t lock;
+	} group;
 };
 
 extern struct target target;
@@ -56,6 +60,24 @@ struct raid_device {
 
 #define MAX_ARGS  16
 int args(char *frame, char *argv[], int argv_max);
+
+
+typedef struct targ_group {
+	struct kobject kobj;
+	struct list_head list;
+	struct {
+		struct list_head list;
+	} port;
+	struct {
+		struct list_head list;
+	} wwpn;
+	struct {
+		struct list_head list;
+	} device;
+} targ_group_t;
+
+int targ_group_init(void);
+int targ_group_exit(void);
 
 struct targ_port {
 	struct kobject kobj;

@@ -13,6 +13,9 @@ struct target target = {
 	.port = {
 		.list = LIST_HEAD_INIT(target.port.list),
 	},
+	.group = {
+		.list = LIST_HEAD_INIT(target.group.list),
+	},
 };
 
 struct target_attribute {
@@ -146,10 +149,12 @@ int dm_targ_init(void)
 
 	spin_lock_init(&target.device.lock);
 	spin_lock_init(&target.port.lock);
+	spin_lock_init(&target.group.lock);
 
 	req_cache_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
+	targ_group_init();
 
 	return 0;
 }
@@ -162,6 +167,7 @@ void dm_targ_exit(void)
 		list_del_init(&dev->list);
 		/* TODO clean the device */
 	}
+	targ_group_exit();
 	kobject_put(&target.kobj);
 	req_cache_exit();
 }
