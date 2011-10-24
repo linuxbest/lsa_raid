@@ -62,7 +62,7 @@ struct raid_device {
 
 #define MAX_ARGS  16
 int args(char *frame, char *argv[], int argv_max);
-
+int tokenize(char *buf, char *words[], int maxwords);
 
 typedef struct targ_group {
 	struct kobject kobj;

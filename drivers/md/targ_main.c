@@ -119,6 +119,57 @@ int args(char *frame, char *argv[], int argv_max)
         return argc;
 }
 
+/*
+ * Split the buffer `buf' into space-separated words.
+ * Handles simple " and ' quoting, i.e. without nested,
+ * embedded or escaped \".  Return the number of words
+ * or <0 on error.
+ */
+int tokenize(char *buf, char *words[], int maxwords)
+{
+	int nwords = 0;
+
+	while (*buf) {
+		char *end;
+
+		/* Skip leading whitespace */
+		buf = skip_spaces(buf);
+		if (!*buf)
+			break;	/* oh, it was trailing whitespace */
+
+		/* Run `end' over a word, either whitespace separated or quoted */
+		if (*buf == '"' || *buf == '\'') {
+			int quote = *buf++;
+			for (end = buf ; *end && *end != quote ; end++)
+				;
+			if (!*end)
+				return -EINVAL;	/* unclosed quote */
+		} else {
+			for (end = buf ; *end && !isspace(*end) ; end++)
+				;
+			BUG_ON(end == buf);
+		}
+		/* Here `buf' is the start of the word, `end' is one past the end */
+
+		if (nwords == maxwords)
+			return -EINVAL;	/* ran out of words[] before bytes */
+		if (*end)
+			*end++ = '\0';	/* terminate the word */
+		words[nwords++] = buf;
+		buf = end;
+	}
+
+	if (0) {
+		int i;
+		printk(KERN_INFO "%s: split into words:", __func__);
+		for (i = 0 ; i < nwords ; i++)
+			printk(" \"%s\"", words[i]);
+		printk("\n");
+	}
+
+	return nwords;
+}
+
 static ssize_t target_store_devices(char *data, ssize_t len)
 {
 	return len;

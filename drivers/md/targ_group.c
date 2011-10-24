@@ -40,9 +40,10 @@ static struct attr_list *group_attr_find(struct list_head *head, const char *nam
 
 static void group_attr_clean(struct list_head *head)
 {
-	while (list_empty(head)) {
+	while (!list_empty(head)) {
 		struct attr_list *al = list_entry(head->next, 
 				struct attr_list, list);
+		debug("clean %s\n", al->data);
 		list_del(&al->list);
 		kfree(al);
 	}
@@ -65,26 +66,49 @@ static ssize_t group_show_attr(targ_group_t *group,
 static ssize_t group_store_attr(targ_group_t *group,
 		struct group_attribute *attr, char *page, ssize_t count)
 {
+#define MAXWORDS 9
+	char *words[MAXWORDS];
+	char tmpbuf[256];
+	int nwords, i = 0, len = count;
+
 	ssize_t res = count;
 	struct attr_list *al;
 
-	if (strcmp(page, "clean") == 0) {
-		group_attr_clean(&group->head[attr->type]);
-	} else {
-		if (group_attr_find(&group->head[attr->type], page)) {
+	struct list_head *head;
+
+	if (len > sizeof(tmpbuf)-1)
+		return -E2BIG;
+	memcpy(tmpbuf, page, len);
+	tmpbuf[len] = '\0';
+
+	nwords = tokenize(tmpbuf, words, MAXWORDS);
+	if (nwords < 0)
+		return -EINVAL;
+	
+	head = &group->head[attr->type];
+
+	for (i = 0; i < nwords ; i ++) {
+		const char *name = words[i];
+		debug("%d, %s, %d\n", i, name, attr->type);
+		if (strcmp(name, "clean") == 0) {
+			group_attr_clean(head);
+			continue;
+		}
+
+		if (group_attr_find(head, name)) {
 			res = -EEXIST;
-			goto out;
+			break;
 		}
 
 		al = kzalloc(sizeof(*al), GFP_KERNEL);
 		if (al == NULL) {
 			res = -ENOMEM;
-			goto out;
+			break;
 		}	
-		strcpy(al->data, page);
-		list_add_tail(&al->list, &group->head[attr->type]);
+		strcpy(al->data, name);
+		list_add_tail(&al->list, head);
 	}
-out:
+
 	return res;
 }
 
