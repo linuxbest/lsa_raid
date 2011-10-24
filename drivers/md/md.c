@@ -8097,7 +8097,7 @@ static void md_geninit(void)
 	proc_create("mdstat", S_IRUGO, NULL, &md_seq_fops);
 }
 
-static int __init md_init(void)
+int md_init(void)
 {
 	int ret = -ENOMEM;
 
@@ -8205,7 +8205,7 @@ static void autostart_arrays(int part)
 
 #endif /* !MODULE */
 
-static __exit void md_exit(void)
+void md_exit(void)
 {
 	mddev_t *mddev;
 	struct list_head *tmp;
@@ -8225,10 +8225,10 @@ static __exit void md_exit(void)
 	destroy_workqueue(md_misc_wq);
 	destroy_workqueue(md_wq);
 }
-
+#if 0
 subsys_initcall(md_init);
 module_exit(md_exit)
-
+#endif
 static int get_ro(char *buffer, struct kernel_param *kp)
 {
 	return sprintf(buffer, "%d", start_readonly);
@@ -8259,20 +8259,9 @@ EXPORT_SYMBOL(md_register_thread);
 EXPORT_SYMBOL(md_unregister_thread);
 EXPORT_SYMBOL(md_wakeup_thread);
 EXPORT_SYMBOL(md_check_recovery);
+#if 0
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MD RAID framework");
 MODULE_ALIAS("md");
 MODULE_ALIAS_BLOCKDEV_MAJOR(MD_MAJOR);
-
-/* target extend functions */
-#include "target.h"
-void md_for_each_device(table_cb_t cb, void *priv)
-{
-	mddev_t *mddev;
-	struct list_head *tmp;
-
-	for_each_mddev(mddev, tmp) {
-		cb(mddev, priv);
-	}
-}
-EXPORT_SYMBOL_GPL(md_for_each_device);
+#endif

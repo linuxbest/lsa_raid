@@ -5977,7 +5977,7 @@ static struct mdk_personality raid4_personality =
 	.takeover	= raid4_takeover,
 };
 
-static int __init raid5_init(void)
+int raid5_init(void)
 {
 	register_md_personality(&raid6_personality);
 	register_md_personality(&raid5_personality);
@@ -5985,13 +5985,14 @@ static int __init raid5_init(void)
 	return 0;
 }
 
-static void raid5_exit(void)
+void raid5_exit(void)
 {
 	unregister_md_personality(&raid6_personality);
 	unregister_md_personality(&raid5_personality);
 	unregister_md_personality(&raid4_personality);
 }
 
+#if 0
 module_init(raid5_init);
 module_exit(raid5_exit);
 MODULE_LICENSE("GPL");
@@ -6008,3 +6009,4 @@ MODULE_ALIAS("md-level-6");
 /* This used to be two separate modules, they were: */
 MODULE_ALIAS("raid5");
 MODULE_ALIAS("raid6");
+#endif

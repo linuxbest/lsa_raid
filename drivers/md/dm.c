@@ -272,6 +272,8 @@ static void local_exit(void)
 }
 
 static int (*_inits[])(void) __initdata = {
+	md_init,
+	raid5_init,
 	local_init,
 	dm_target_init,
 	dm_linear_init,
@@ -283,6 +285,8 @@ static int (*_inits[])(void) __initdata = {
 };
 
 static void (*_exits[])(void) = {
+	md_exit,
+	raid5_exit,
 	local_exit,
 	dm_target_exit,
 	dm_linear_exit,

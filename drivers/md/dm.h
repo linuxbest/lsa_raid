@@ -159,6 +159,10 @@ void dm_free_md_mempools(struct dm_md_mempools *pools);
  */
 void dm_targ_init(void);
 void dm_targ_exit(void);
+void md_init(void);
+void md_exit(void);
+void raid5_init(void);
+void raid5_exit(void);
 
 struct dm_table *dm_table_from_bdev(struct block_device *bdev);
 

@@ -9,10 +9,12 @@ target-objs     += targ_md_buf.o
 
 #obj-m += target.o
 dm-mod-y        += ${target-objs}
+dm-mod-y        += ${md-mod-y}
+dm-mod-y        += ${raid456-y}
 
 obj-m += dm-mod.o
-obj-m += raid456.o
-obj-m += md-mod.o
+#obj-m += raid456.o
+#obj-m += md-mod.o
 
 raid456-y       += raid5.o
 md-mod-y        += md.o bitmap.o
