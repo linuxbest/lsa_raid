@@ -232,7 +232,9 @@ struct stripe_head {
 		struct bio	*toread, *read, *towrite, *written;
 		sector_t	sector;			/* sector of this page */
 		unsigned long	flags;
+		unsigned long   qc_allocated;
 	} dev[1]; /* allocated with extra space depending of RAID geometry */
+	unsigned int tag;
 };
 
 /* stripe_head_state - collects and tracks the dynamic state of a stripe_head
@@ -383,6 +385,7 @@ struct raid5_private_data {
 	struct bio		*retry_target; /* aligned bios retry list  */
 	struct bio_list		target_list; /* aligned bios retry list  */
 	struct bio_list		target_tasklet_list; /* aligned bios retry list  */
+	struct bio_list		rdev_list; /* aligned bios retry list  */
 	atomic_t		preread_active_stripes; /* stripes with scheduled io */
 	atomic_t		active_aligned_reads;
 	atomic_t		pending_full_writes; /* full write backlog */

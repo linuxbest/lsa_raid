@@ -500,7 +500,6 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 
 	pr_debug("%s: stripe %llu\n", __func__,
 		(unsigned long long)sh->sector);
-	/*might_sleep();*/
 
 	for (i = disks; i--; ) {
 		int rw;
@@ -585,7 +584,6 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
 			bi->bi_rw |= REQ_NOMERGE;
-			bi->ata_tag = -1;
 			generic_make_request(bi);
 		} else {
 			if (rw & WRITE)
@@ -1755,6 +1753,8 @@ static void raid5_build_block(struct stripe_head *sh, int i, int previous)
 
 	dev->flags = 0;
 	dev->sector = compute_blocknr(sh, i, previous);
+	/* 0 - 3 is reserved for ATA internal */
+	dev->qc_allocated = 0xf;
 }
 
 static void error(mddev_t *mddev, mdk_rdev_t *rdev)
