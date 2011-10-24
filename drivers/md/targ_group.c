@@ -486,6 +486,7 @@ int targ_group_sess_init(struct targ_sess *sess)
 		sess->dev.array[i].start = dl->device.start;
 		sess->dev.array[i].len   = dl->device.len;
 		sess->dev.array[i].t     = dl->device.mddev;
+		i ++;
 	}
 
 	return 0;
