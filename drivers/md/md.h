@@ -611,4 +611,6 @@ extern struct bio *bio_alloc_mddev(gfp_t gfp_mask, int nr_iovecs,
 				   mddev_t *mddev);
 extern int mddev_check_plugged(mddev_t *mddev);
 extern void md_trim_bio(struct bio *bio, int offset, int size);
+
+extern mddev_t *mddev_from_bdev(struct block_device *bdev);
 #endif /* _MD_MD_H */

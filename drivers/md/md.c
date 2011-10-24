@@ -8265,3 +8265,11 @@ MODULE_DESCRIPTION("MD RAID framework");
 MODULE_ALIAS("md");
 MODULE_ALIAS_BLOCKDEV_MAJOR(MD_MAJOR);
 #endif
+
+mddev_t *mddev_from_bdev(struct block_device *bdev)
+{
+	mddev_t *mddev = bdev->bd_disk->private_data;
+	if (bdev->bd_disk->fops != &md_fops)
+		return NULL;
+	return mddev;
+}

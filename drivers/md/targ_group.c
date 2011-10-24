@@ -4,6 +4,7 @@
 #include "target.h"
 #include "raid_if.h"
 #include "dm.h"
+#include "md.h"
 
 static ssize_t group_attr_show(struct kobject *kobj, 
 		struct attribute *attr, char *data);
@@ -23,10 +24,13 @@ struct attr_list {
 
 	union {
 		struct {
+			/* TODO
+			 * currectly we only support one target */
 			struct block_device *bdev;
 			struct dm_table *table;
 			struct mddev_s *mddev;
 			sector_t sector;
+			int targets;
 		} device;
 	};
 };
@@ -164,15 +168,40 @@ static void close_bdev_safe(struct block_device *d)
 	blkdev_put(d, FMODE_READ | FMODE_WRITE);
 }
 
+static int group_device_init_target(struct dm_target *ti, struct dm_dev *dev, 
+		sector_t start, sector_t len, void *data)
+{
+	struct attr_list *al = data;
+	struct mddev_s *mddev;
+
+	mddev = mddev_from_bdev(dev->bdev);
+	al->device.mddev = mddev;
+	al->device.targets ++;
+
+	return 0;
+}
+
 ssize_t group_device_init(struct attr_list *al)
 {
 	struct block_device *bdev;
+	int i = 0;
+
 	bdev = open_bdev_safe(al->data, 0, THIS_MODULE);
 	if (IS_ERR(bdev))
 		return -ENODEV;
+
 	al->device.bdev = bdev;
 	al->device.sector = i_size_read(bdev->bd_inode) >> 9;
 	al->device.table = dm_table_from_bdev(bdev);
+	al->device.targets = 0;
+	
+	while (i < dm_table_get_num_targets(al->device.table)) {
+		struct dm_target *ti = dm_table_get_target(al->device.table, i++);
+
+		if (ti->type->iterate_devices)
+			ti->type->iterate_devices(ti, group_device_init_target, al);
+	}
+
 	return 0;
 }
 
@@ -195,9 +224,15 @@ static int group_device_show_target(struct dm_target *ti, struct dm_dev *dev,
 {
 	struct group_buf *gb = data;
 	char b[BDEVNAME_SIZE];
+	struct mddev_s *mddev;
 
 	gb->len += sprintf(gb->page+gb->len, "%d:%s,%lld,%lld",
 			gb->i, bdevname(dev->bdev, b), start, len);
+	mddev = gb->al->device.mddev;
+	if (mddev)
+		gb->len += sprintf(gb->page+gb->len, ",(%s)", 
+				mddev->pers->name);
+	
 	gb->i ++;
 
 	return 0;
@@ -218,7 +253,7 @@ ssize_t group_device_show(struct attr_list *al, char *page, ssize_t len)
 	if (al->device.table == NULL)
 		return len;
 
-	len += sprintf(page+len, ",(");
+	len += sprintf(page+len, ",{");
 
 	buf.al = al;
 	buf.page = page;
@@ -232,7 +267,7 @@ ssize_t group_device_show(struct attr_list *al, char *page, ssize_t len)
 		if (ti->type->iterate_devices)
 			ti->type->iterate_devices(ti, group_device_show_target, &buf);
 	}
-	buf.len += sprintf(buf.page+buf.len, ")");
+	buf.len += sprintf(buf.page+buf.len, "}");
 
 	return buf.len;
 }
