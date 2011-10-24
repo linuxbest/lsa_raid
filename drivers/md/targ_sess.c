@@ -7,7 +7,6 @@ static ssize_t sess_attr_show(struct kobject *kobj,
 static ssize_t sess_attr_store(struct kobject *kobj,
 		struct attribute *attr, const char *data, size_t len);
 static void sess_release(struct kobject *kobj);
-static int targ_sess_mdev_assign(struct mddev_s *mdev, void *priv);
 
 struct sess_attribute {
 	struct attribute attr;
@@ -96,6 +95,7 @@ static ssize_t sess_attr_store(struct kobject *kobj,
 static void sess_release(struct kobject *kobj)
 {
 	targ_sess_t *sess = container_of(kobj, targ_sess_t, kobj);
+	targ_group_sess_exit(sess);
 	kfree(sess);
 }
 
@@ -156,22 +156,6 @@ void *targ_sess_get_data(targ_sess_t *sess)
 	return sess->remote.data;
 }
 
-/* assign the device to session */
-static int targ_sess_mdev_assign(struct mddev_s *t, void *priv)
-{
-	targ_sess_t *sess = priv;
-	struct targ_dev *dev = sess->dev.array + sess->dev.nr;
-
-	dev->lun = sess->dev.nr;
-	dev->sess= sess;
-	dev->t   = t;
-
-	sess->dev.nr ++;
-	targ_md_buf_init(t);
-
-	return 0;
-}
-
 int targ_sess_get_dev_nr(targ_sess_t *sess)
 {
 	return sess->dev.nr;
@@ -186,10 +170,7 @@ targ_dev_t *targ_sess_get_dev_by_nr(targ_sess_t *sess, int nr)
 
 uint64_t targ_dev_get_blocks(targ_dev_t *dev)
 {
-	if (dev->t)
-		return dev->t->array_sectors;
-	else
-		return 8388608; /* 4GB */
+	return dev->len;
 }
 
 EXPORT_SYMBOL(targ_sess_new);

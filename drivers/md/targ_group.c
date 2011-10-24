@@ -29,7 +29,7 @@ struct attr_list {
 			struct block_device *bdev;
 			struct dm_table *table;
 			struct mddev_s *mddev;
-			sector_t sector;
+			sector_t start, len;
 			int targets;
 		} device;
 	};
@@ -176,6 +176,8 @@ static int group_device_init_target(struct dm_target *ti, struct dm_dev *dev,
 
 	mddev = mddev_from_bdev(dev->bdev);
 	al->device.mddev = mddev;
+	al->device.start = start;
+	al->device.len   = len;
 	al->device.targets ++;
 
 	return 0;
@@ -191,7 +193,6 @@ ssize_t group_device_init(struct attr_list *al)
 		return -ENODEV;
 
 	al->device.bdev = bdev;
-	al->device.sector = i_size_read(bdev->bd_inode) >> 9;
 	al->device.table = dm_table_from_bdev(bdev);
 	al->device.targets = 0;
 	
@@ -232,7 +233,6 @@ static int group_device_show_target(struct dm_target *ti, struct dm_dev *dev,
 	if (mddev)
 		gb->len += sprintf(gb->page+gb->len, ",(%s)", 
 				mddev->pers->name);
-	
 	gb->i ++;
 
 	return 0;
@@ -248,7 +248,7 @@ ssize_t group_device_show(struct attr_list *al, char *page, ssize_t len)
 		return len;
 
 	len += sprintf(page+len, ",%s,%lld", bdevname(al->device.bdev, b),
-			al->device.sector);
+			al->device.len);
 
 	if (al->device.table == NULL)
 		return len;
@@ -433,7 +433,65 @@ int targ_group_exit(void)
 	return 0;
 }
 
+static targ_group_t * targ_group_sess_find(struct targ_sess *sess)
+{
+	targ_group_t *group = default_group;
+#if 0
+	list_for_each_entry(group, &target.group.list, list) {
+		struct attr_list *al, *pl;
+
+		list_for_each_entry(al, &group->head[PORT], list) {
+			if (strcmp(sess->kobj.name, al->data) != 0)
+				continue;
+			if (list_empty(&group->head[WWPN])) {
+				return group;
+			}
+			list_for_each_entry(pl, &group->head[WWPN], list) {
+				if (strcmp(sess->remote.wwpn, pl->data) != 0)
+					continue;
+				return group;
+			}
+		}
+
+		if (!list_empty(&group->head[PORT]))
+			continue;
+		list_for_each_entry(pl, &group->head[WWPN], list) {
+			if (strcmp(sess->remote.wwpn, pl->data) != 0)
+				continue;
+			return group;
+		}
+	}
+#endif
+	return group;
+}
+
 int targ_group_sess_init(struct targ_sess *sess)
 {
+	targ_group_t *group = targ_group_sess_find(sess);
+	struct attr_list *dl;
+	int i = 0;
+
+	list_for_each_entry(dl, &group->head[DEVICE], list) {
+		targ_md_buf_init(dl->device.mddev);
+		i ++;
+	}
+	sess->dev.nr = i;
+	sess->dev.array = kmalloc(sizeof(struct targ_dev)*i, GFP_ATOMIC);
+
+	i = 0;
+	list_for_each_entry(dl, &group->head[DEVICE], list) {
+		sess->dev.array[i].lun = i;
+		sess->dev.array[i].sess= sess;
+		sess->dev.array[i].dl  = dl;
+		sess->dev.array[i].start = dl->device.start;
+		sess->dev.array[i].len   = dl->device.len;
+	}
+
+	return 0;
+}
+
+int targ_group_sess_exit(struct targ_sess *sess)
+{
+	kfree(sess->dev.array);
 	return 0;
 }

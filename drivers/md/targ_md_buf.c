@@ -124,6 +124,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 
+	blknr += dev->start;
+
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
 	cmds = dev->sess->req.cnts ++;
 	list_add_tail(&req->list, &dev->sess->req.list);

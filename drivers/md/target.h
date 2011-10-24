@@ -119,12 +119,15 @@ struct targ_sess {
 	} req;
 };
 
+struct attr_list;
 struct targ_dev {
 	int lun;
 	struct targ_sess *sess;
-	struct dm_table *table;
+	struct attr_list *dl;
 	struct mddev_s *t;
+	sector_t start, len;
 };
+void targ_md_buf_init(struct mddev_s *t);
 
 struct targ_port * targ_port_find_by_data (void *data);
 int                targ_port_sess_add     (struct targ_port *port, struct targ_sess *sess);
@@ -132,14 +135,10 @@ void               targ_port_sess_remove  (struct targ_port *port, struct targ_s
 struct targ_sess * targ_port_sess_find    (struct targ_port *port, const char *wwpn);
 
 int                targ_group_sess_init   (struct targ_sess *sess);
+int                targ_group_sess_exit   (struct targ_sess *sess);
 
 int  req_cache_init(void);
 void req_cache_exit(void);
-
-struct raid_set *target_raid_get_by_dev   (unsigned int major, unsigned int minor);
-
-typedef int (*table_cb_t)(struct mddev_s *t, void *priv);
-void md_for_each_device(table_cb_t cb, void *priv);
 
 struct stripe_head;
 struct r5dev;
@@ -171,8 +170,6 @@ typedef struct target_req {
 #define BIO_REQ_BUF   16
 #define BIO_REQ_DONE  17
 #define debug(fmt, ...) pr_debug("%-15s:%04d: " fmt, __func__, __LINE__, ##__VA_ARGS__);
-
-void targ_md_buf_init(struct mddev_s *t);
 
 #define STRIPE_SS_SHIFT         16
 #define STRIPE_SHIFT            STRIPE_SS_SHIFT

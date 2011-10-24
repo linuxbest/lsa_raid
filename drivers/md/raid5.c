@@ -2244,7 +2244,6 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 	bi->bi_phys_segments++;
 
 	if (forwrite) {
-		unsigned int disks = 0;
 		/* check if page is covered */
 		sector_t sector = sh->dev[dd_idx].sector;
 		for (bi=sh->dev[dd_idx].towrite;
