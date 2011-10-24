@@ -3957,10 +3957,26 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 		     i-- && test_bit(R5_OVERWRITE, &sh->dev[i].flags);)
 			;
 		wakeup = i == 0;
+
+		targ_page_add(sh, bi, &sh->dev[dd_idx], 1, NULL);
+	} else {
+#if 0
+		/* check if page is covered */
+		sector_t sector = sh->dev[dd_idx].sector;
+		for (bi=sh->dev[dd_idx].toread;
+		     sector < sh->dev[dd_idx].sector + STRIPE_SECTORS &&
+			     bi && bi->bi_sector <= sector;
+		     bi = r5_next_bio(bi, sh->dev[dd_idx].sector)) {
+			if (bi->bi_sector + (bi->bi_size>>9) >= sector)
+				sector = bi->bi_sector + (bi->bi_size>>9);
+		}
+		if (sector >= sh->dev[dd_idx].sector + STRIPE_SECTORS) {
+			handle_stripe(sh);
+			release_stripe(sh);
+			return 1;
+		}
+#endif
 	}
-
-	targ_page_add(sh, bi, &sh->dev[dd_idx], rw == WRITE ? 1 : 0, NULL);
-
 	set_bit(STRIPE_HANDLE, &sh->state);
 	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe_wakeup(sh, wakeup);
