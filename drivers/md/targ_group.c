@@ -1,3 +1,6 @@
+#include <linux/namei.h>
+#include <linux/fs.h>
+
 #include "target.h"
 #include "raid_if.h"
 
@@ -16,6 +19,15 @@ typedef enum {
 struct attr_list {
 	struct list_head list;
 	char data[128];
+
+	union {
+		struct {
+			struct block_device *bdev;
+			struct dm_table *table;
+			struct mddev_s *mddev;
+			sector_t sector;
+		} device;
+	};
 };
 
 struct group_attribute {
@@ -25,6 +37,9 @@ struct group_attribute {
 	ssize_t (*store)(targ_group_t *group,
 			struct group_attribute *attr, char *page, 
 			ssize_t count);
+	ssize_t (*attr_init)(struct attr_list *al);
+	ssize_t (*attr_exit)(struct attr_list *al);
+	ssize_t (*attr_show)(struct attr_list *al, char *page, ssize_t len);
 	attr_type_t type;
 };
 
@@ -38,13 +53,16 @@ static struct attr_list *group_attr_find(struct list_head *head, const char *nam
 	return NULL;
 }
 
-static void group_attr_clean(struct list_head *head)
+static void group_attr_clean(struct list_head *head,
+		struct group_attribute *attr)
 {
 	while (!list_empty(head)) {
 		struct attr_list *al = list_entry(head->next, 
 				struct attr_list, list);
 		debug("clean %s\n", al->data);
 		list_del(&al->list);
+		if (attr->attr_exit)
+			attr->attr_exit(al);
 		kfree(al);
 	}
 }
@@ -56,7 +74,10 @@ static ssize_t group_show_attr(targ_group_t *group,
 	int i = 0;
 
 	list_for_each_entry(al, &group->head[attr->type], list) {
-		len += sprintf(page+len, "%d,%s\n", i, al->data);
+		len += sprintf(page+len, "%d,%s", i, al->data);
+		if (attr->attr_show)
+			len += attr->attr_show(al, page, len);
+		len += sprintf(page+len, "\n");
 		i ++;
 	}
 
@@ -91,7 +112,7 @@ static ssize_t group_store_attr(targ_group_t *group,
 		const char *name = words[i];
 		debug("%d, %s, %d\n", i, name, attr->type);
 		if (strcmp(name, "clean") == 0) {
-			group_attr_clean(head);
+			group_attr_clean(head, attr);
 			continue;
 		}
 
@@ -107,9 +128,62 @@ static ssize_t group_store_attr(targ_group_t *group,
 		}	
 		strcpy(al->data, name);
 		list_add_tail(&al->list, head);
+		if (attr->attr_init)
+			attr->attr_init(al);
 	}
 
 	return res;
+}
+
+static struct block_device * open_bdev_safe(const char *pathname, int f, void *holder)
+{
+        struct block_device *bdev;
+        struct inode *inode;
+	struct path path;
+	int error;
+
+	error = kern_path(pathname, LOOKUP_FOLLOW, &path);
+	if (error)
+		return ERR_PTR(-EINVAL);
+
+	inode = path.dentry->d_inode;
+	if (!S_ISBLK(inode->i_mode)) {
+		path_put(&path);
+		return ERR_PTR(-EINVAL);
+        }
+
+	bdev = blkdev_get_by_dev(inode->i_rdev, FMODE_READ|FMODE_WRITE, holder);
+	path_put(&path);
+
+        return bdev;
+}
+
+static void close_bdev_safe(struct block_device *d)
+{
+	blkdev_put(d, FMODE_READ | FMODE_WRITE);
+}
+
+ssize_t group_device_init(struct attr_list *al)
+{
+	struct block_device *bdev;
+	bdev = open_bdev_safe(al->data, 0, THIS_MODULE);
+	if (IS_ERR(bdev))
+		return -ENODEV;
+	al->device.bdev = bdev;
+	al->device.sector = i_size_read(bdev->bd_inode) >> 9;
+	return 0;
+}
+
+ssize_t group_device_show(struct attr_list *al, char *page, ssize_t len)
+{
+	char b[BDEVNAME_SIZE];
+
+	if (al->device.bdev == NULL) 
+		return len;
+
+	len += sprintf(page+len, ",%s,%lld", bdevname(al->device.bdev, b),
+			al->device.sector);
+	return len;
 }
 
 struct sysfs_ops group_sysfs_ops = {
@@ -135,6 +209,8 @@ static struct group_attribute group_attribute_device = {
 	.attr = {.name = "device", .mode = S_IRUGO | S_IWUGO, },
 	.show = group_show_attr,
 	.store = group_store_attr,
+	.attr_init = group_device_init,
+	.attr_show = group_device_show,
 	.type = DEVICE,
 };
 
@@ -187,9 +263,9 @@ static ssize_t group_attr_store(struct kobject *kobj,
 static void group_release(struct kobject *kobj)
 {
 	targ_group_t *group = container_of(kobj, targ_group_t, kobj);
-	group_attr_clean(&group->head[0]);
-	group_attr_clean(&group->head[1]);
-	group_attr_clean(&group->head[2]);
+	group_attr_clean(&group->head[PORT], &group_attribute_port);
+	group_attr_clean(&group->head[WWPN], &group_attribute_wwpn);
+	group_attr_clean(&group->head[DEVICE], &group_attribute_device);
 	kfree(group);
 }
 
