@@ -710,27 +710,30 @@ static void ops_complete_biofill(void *stripe_head_ref)
 	release_stripe(sh);
 }
 
-static struct dma_async_tx_descriptor *
-targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev, 
-		int frombio, struct dma_async_tx_descriptor *tx_pending)
+static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev)
 {
 	raid5_conf_t *conf = sh->raid_conf;
 	int page_offset = 0;
 	sector_t sector = dev->sector;
+
+	if (bio->bi_sector >= sector)
+		page_offset = (signed)(bio->bi_sector - sector) * 512;
+	else
+		page_offset = (signed)(sector - bio->bi_sector) * -512;
+
+	if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
+		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+}
+
+static struct dma_async_tx_descriptor *
+targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev, 
+		int frombio, struct dma_async_tx_descriptor *tx_pending)
+{
 	struct dma_async_tx_descriptor *tx = tx_pending;
 
 	while (bio) {
-		if (bio->bi_sector >= sector)
-			page_offset = (signed)(bio->bi_sector - sector) * 512;
-		else
-			page_offset = (signed)(sector - bio->bi_sector) * -512;
-
-		if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
-			conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+		do_targ_page_add(sh, bio, dev);
 		bio = bio->bi_next;
-#if 0
-		atomic_inc(&sh->count);
-#endif
 	}
 
 	return tx;
@@ -3963,6 +3966,14 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 		}
 	}
 	atomic_inc(&sh->count);
+	
+	if (rw == READ && test_bit(R5_UPTODATE, &sh->dev[dd_idx].flags)) {
+		do_targ_page_add(sh, bi, &sh->dev[dd_idx]);
+		release_stripe(sh);
+		spin_unlock_irqrestore(&conf->device_lock, flags);
+		bio_endio(bi, 0);
+		return 1;
+	}
 	
 	if (!_add_stripe_bio(sh, bi, dd_idx, rw)) {
 		release_stripe(sh);
