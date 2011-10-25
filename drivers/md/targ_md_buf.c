@@ -2,6 +2,8 @@
 #include "raid_if.h"
 #include "md.h"
 
+#define REQ_TIMEOUT (10*HZ)
+
 #include <linux/dma-mapping.h>
 
 enum {
@@ -14,12 +16,50 @@ enum {
 	IO_DONE = 6,
 };
 
+#define targ_bio_list_for_each(bio, bl) \
+	for (bio = (bl)->head; bio; bio = (struct bio *)bio->bi_bdev)
+
+static inline void targ_bio_list_add(struct bio_list *bl, struct bio *bio)
+{
+	bio->bi_next = NULL;
+
+	if (bl->tail)
+		bl->tail->bi_bdev = (void *)bio;
+	else
+		bl->head = bio;
+
+	bl->tail = bio;
+}
+
+static inline struct bio *targ_bio_list_pop(struct bio_list *bl)
+{
+	struct bio *bio = bl->head;
+
+	if (bio) {
+		bl->head = (void *)bl->head->bi_bdev;
+		if (!bl->head)
+			bl->tail = NULL;
+
+		bio->bi_next = NULL;
+	}
+
+	return bio;
+}
+
 int targ_req_show(targ_req_t *req, char *data, int len)
 {
+	struct bio *bio;
+
 	len += sprintf(data+len, "%s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
 			req->rw ? "W" : "R", req->num, req->state,
 			atomic_read(&req->bios_inflight), req->bios,
 			req->sector);
+	targ_bio_list_for_each(bio, &req->bio_list) {
+		len += sprintf(data+len, " #%d, state %d, %d, bi#%llu\n",
+				bio->bi_idx, bio->bi_max_vecs,
+				bio->bi_size>>9, bio->bi_sector);
+	}
+
 	return len;
 }
 
@@ -67,6 +107,7 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 	req->buf.nents ++;
 
 	WARN_ON(test_and_clear_bit(bio->bi_idx, &req->bios) == 0);
+	bio->bi_max_vecs = IO_PAGE;
 
 	targ_bio_put(req);
 
@@ -120,7 +161,8 @@ static void targ_bio_put(targ_req_t *req)
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
-	bio_put(bi);
+	targ_req_t *req = bi->bi_private;
+	WARN_ON(test_bit(bi->bi_idx, &req->bios));
 }
 
 static int targ_remap_req(struct mddev_s *t, struct bio *bio)
@@ -136,8 +178,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	sector_t remaining = blks;
 	int bios = 0, cmds;
 	sector_t len = 0;
-	unsigned long flags;
-	struct bio_list bio_list;
+	unsigned long flags, expiry;
 
 	if (rw == READ) {
 		dev->read_count ++;
@@ -156,11 +197,18 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->priv  = priv;
 	req->state = IO_INIT;
 	req->bios  = 0;
-	bio_list_init(&bio_list);
+	bio_list_init(&req->bio_list);
+	req->deadline = jiffies + REQ_TIMEOUT;
+	req->jiffies  = jiffies;
+	expiry = round_jiffies_up(req->deadline);
 
 	blknr += dev->start;
 
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
+	if (!timer_pending(&dev->sess->req.timer) || time_before(req->deadline, 
+				dev->sess->req.timer.expires)) {
+		mod_timer(&dev->sess->req.timer, expiry);
+	}
 	cmds = dev->sess->req.cnts ++;
 	list_add_tail(&req->list, &dev->sess->req.list);
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
@@ -187,9 +235,9 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_size     = len << 9;
 
 		bio->bi_vcnt     = 1;
-		bio->bi_max_vecs = 1;
+		bio->bi_max_vecs = IO_INIT; /* overload as state */
 
-		bio_list_add(&bio_list, bio);
+		targ_bio_list_add(&req->bio_list, bio);
 		bios ++;
 		blknr += len;
 	} while (remaining -= len);
@@ -198,8 +246,9 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_bio_init(req, bios);
 
 	req->state = IO_REQ;
-	while ((bio = bio_list_pop(&bio_list))) {
+	targ_bio_list_for_each(bio, &req->bio_list) {
 		set_bit(bio->bi_idx, &req->bios);
+		bio->bi_max_vecs = IO_REQ;
 		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 
@@ -214,11 +263,22 @@ int targ_buf_free(targ_buf_t *buf)
 	targ_dev_t *dev = req->dev;
 	unsigned long flags;
 	int cmds;
+	struct bio *bio;
 
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
 	list_del(&req->list);
 	cmds = dev->sess->req.cnts --;
+	if (!list_empty(&dev->sess->req.list)) {
+		targ_req_t *next = container_of(dev->sess->req.list.next, targ_req_t, list);
+		if (time_before(dev->sess->req.timer.expires, next->deadline))
+			mod_timer(&dev->sess->req.timer, next->deadline);
+	} else {
+		del_timer(&dev->sess->req.timer);
+	}
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
+
+	while ((bio = targ_bio_list_pop(&req->bio_list)))
+		bio_put(bio);
 
 	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
@@ -252,3 +312,20 @@ EXPORT_SYMBOL(targ_buf_map);
 EXPORT_SYMBOL(targ_buf_unmap);
 EXPORT_SYMBOL(targ_buf_free);
 EXPORT_SYMBOL(targ_buf_new);
+
+void targ_req_timeout(unsigned long data)
+{
+	struct targ_sess *sess = (struct targ_sess *)data;
+	targ_req_t *req;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sess->req.lock, flags);
+	del_timer(&sess->req.timer);
+	list_for_each_entry(req, &sess->req.list, list) {
+		pr_info("targ_timeout: %s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
+				req->rw ? "W" : "R", req->num, req->state,
+				atomic_read(&req->bios_inflight), req->bios,
+				req->sector);
+	}
+	spin_unlock_irqrestore(&sess->req.lock, flags);
+}

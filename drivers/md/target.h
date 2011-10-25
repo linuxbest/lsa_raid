@@ -118,6 +118,7 @@ struct targ_sess {
 		struct list_head list;
 		spinlock_t lock;
 		int cnts;
+		struct timer_list timer;
 	} req;
 };
 
@@ -169,10 +170,12 @@ typedef struct target_req {
 	buf_cb_t cb;
 	void *priv;
 	atomic_t bios_inflight;
-	unsigned long bios;
+	unsigned long bios, deadline, jiffies;
+	struct bio_list bio_list;
 } targ_req_t;
 
-int targ_req_show(targ_req_t *req, char *data, int len);
+int  targ_req_show(targ_req_t *req, char *data, int len);
+void targ_req_timeout(unsigned long data);
 
 #define BIO_REQ_BUF   16
 #define BIO_REQ_DONE  17

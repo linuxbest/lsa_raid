@@ -131,6 +131,10 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	sess->port = port;
 	strcpy(sess->remote.wwpn, wwpn);
 
+	init_timer(&sess->req.timer);
+	sess->req.timer.data = (unsigned long)sess;
+	sess->req.timer.function = targ_req_timeout;
+
 	res = kobject_init_and_add(&sess->kobj,
 			&sess_ktype,
 			&port->kobj,
