@@ -2242,6 +2242,11 @@ static int _add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, i
 	*bip = bi;
 	bi->bi_phys_segments++;
 
+	if (bio_flagged(bi, BIO_REQ_BUF)) {
+		bi->bi_io_vec = (void *)sh;
+		bi->bi_comp_cpu = dd_idx;
+	}
+
 	if (forwrite) {
 		/* check if page is covered */
 		sector_t sector = sh->dev[dd_idx].sector;
@@ -3978,7 +3983,6 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 			wakeup = 1;
 	}
 	set_bit(STRIPE_HANDLE, &sh->state);
-	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe_wakeup(sh, wakeup);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
@@ -4046,7 +4050,6 @@ static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
 		goto out;
 	}
 	set_bit(STRIPE_HANDLE, &sh->state);
-	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe(sh);
 	return 1;
 out:

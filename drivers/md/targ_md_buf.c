@@ -1,6 +1,7 @@
 #include "target.h"
 #include "raid_if.h"
 #include "md.h"
+#include "raid5.h"
 
 #define REQ_TIMEOUT (10*HZ)
 
@@ -57,10 +58,22 @@ int targ_req_show(targ_req_t *req, char *data, int len)
 			atomic_read(&req->bios_inflight), req->bios,
 			req->sector);
 	targ_bio_list_for_each(bio, &req->bio_list) {
-		len += sprintf(data+len, " #%d, state %d/%d, %d @ bi#%llu\n",
-				bio->bi_idx, bio->bi_max_vecs,
-				bio->bi_phys_segments,
-				bio->bi_size>>9, bio->bi_sector);
+		int i;
+		struct stripe_head *sh = (void *)bio->bi_io_vec;
+		len += sprintf(data+len, " #%d, state %d/%d, %d @ bi#%llu, dd_idx %d\n",
+				bio->bi_idx,
+				bio->bi_max_vecs, bio->bi_phys_segments,
+				bio->bi_size>>9, bio->bi_sector,
+				bio->bi_comp_cpu);
+		if (sh == NULL)
+			continue;
+		len += sprintf(data+len, "   sh %llu, pd_idx %d, state %ld\n",
+				(unsigned long long)sh->sector, sh->pd_idx, sh->state);
+		for (i = 0; i < sh->disks; i ++) {
+			struct r5dev *dev = &sh->dev[i];
+			len += sprintf(data+len, "   (%d: state 0x%lx read %p write %p written %p)\n",
+					i, dev->flags, dev->toread, dev->towrite, dev->written);
+		}
 	}
 
 	return len;
