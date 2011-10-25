@@ -128,6 +128,8 @@ struct targ_dev {
 	struct attr_list *dl;
 	struct mddev_s *t;
 	sector_t start, len;
+	uint32_t read_count, read_sectors;
+	uint32_t write_count, write_sectors;
 };
 void targ_md_buf_init(struct mddev_s *t);
 
@@ -167,6 +169,7 @@ typedef struct target_req {
 	buf_cb_t cb;
 	void *priv;
 	atomic_t bios_inflight;
+	unsigned long bios;
 } targ_req_t;
 
 int targ_req_show(targ_req_t *req, char *data, int len);

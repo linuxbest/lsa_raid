@@ -25,7 +25,10 @@ static ssize_t sess_show_devs(targ_sess_t *sess, char *data)
 	ssize_t len = 0;
 	for (i = 0; i < sess->dev.nr; i ++) {
 		targ_dev_t *dev = sess->dev.array + i;
-		len += sprintf(data + len, "%d %p\n", dev->lun, dev->t);
+		len += sprintf(data + len, "%d,%d/%d,%d/%d\n", 
+				dev->lun,
+				dev->read_count, dev->read_sectors,
+				dev->write_count, dev->write_sectors);
 	}
 	return len;
 }

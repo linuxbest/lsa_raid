@@ -476,7 +476,7 @@ int targ_group_sess_init(struct targ_sess *sess)
 		i ++;
 	}
 	sess->dev.nr = i;
-	sess->dev.array = kmalloc(sizeof(struct targ_dev)*i, GFP_ATOMIC);
+	sess->dev.array = kzalloc(sizeof(struct targ_dev)*i, GFP_ATOMIC);
 
 	i = 0;
 	list_for_each_entry(dl, &group->head[DEVICE], list) {

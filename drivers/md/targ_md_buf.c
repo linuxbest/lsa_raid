@@ -16,9 +16,10 @@ enum {
 
 int targ_req_show(targ_req_t *req, char *data, int len)
 {
-	len += sprintf(data+len, "%s, bi#%llu, %d, state %d, %d\n",
-			req->rw ? "W" : "R", req->sector, req->num, 
-			req->state, atomic_read(&req->bios_inflight));
+	len += sprintf(data+len, "%s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
+			req->rw ? "W" : "R", req->num, req->state,
+			atomic_read(&req->bios_inflight), req->bios,
+			req->sector);
 	return len;
 }
 
@@ -65,7 +66,8 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 
 	req->buf.nents ++;
 
-	bio->bi_comp_cpu = IO_PAGE;
+	WARN_ON(test_and_clear_bit(bio->bi_idx, &req->bios) == 0);
+
 	targ_bio_put(req);
 
 	return 0;
@@ -137,6 +139,14 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	unsigned long flags;
 	struct bio_list bio_list;
 
+	if (rw == READ) {
+		dev->read_count ++;
+		dev->read_sectors += blks;
+	} else {
+		dev->write_count ++;
+		dev->write_sectors += blks;
+	}
+
 	req = kmem_cache_zalloc(req_cache, GFP_ATOMIC);
 	req->dev   = dev;
 	req->sector= blknr;
@@ -145,6 +155,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 	req->state = IO_INIT;
+	req->bios  = 0;
 	bio_list_init(&bio_list);
 
 	blknr += dev->start;
@@ -188,6 +199,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 	req->state = IO_REQ;
 	while ((bio = bio_list_pop(&bio_list))) {
+		set_bit(bio->bi_idx, &req->bios);
 		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 

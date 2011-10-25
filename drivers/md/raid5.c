@@ -3935,6 +3935,7 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 			sh = get_free_stripe(conf);
 		if (!sh) {
 			md_wakeup_thread(conf->mddev->thread);
+			spin_unlock_irqrestore(&conf->device_lock, flags);
 			return 0;
 		}
 		init_stripe(sh, sector, 0);
@@ -3993,7 +3994,6 @@ static void raid_tasklet(unsigned long data)
 			handle ++;
 	}
 
-	pr_debug("tasklet handle %d, delay %d\n", handle, delay);
 	if (bio_list_empty(&reject))
 		return;
 
@@ -4497,7 +4497,7 @@ static void raid5d(mddev_t *mddev)
 		handled++;
 		handle_stripe(sh);
 		release_stripe(sh);
-		cond_resched();
+		/*cond_resched();*/
 
 		if (mddev->flags & ~(1<<MD_CHANGE_PENDING))
 			md_check_recovery(mddev);
