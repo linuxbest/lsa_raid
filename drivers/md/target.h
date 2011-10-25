@@ -5,6 +5,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/ctype.h>
+#include <linux/interrupt.h>
 
 #include <linux/workqueue.h>
 #include <linux/blkdev.h>
@@ -42,6 +43,11 @@ struct target {
 		struct list_head list;
 		spinlock_t lock;
 	} group;
+	struct {
+		struct list_head list;
+		spinlock_t lock;
+		struct tasklet_struct tasklet;
+	} task;
 };
 
 extern struct target target;
@@ -120,6 +126,7 @@ struct targ_sess {
 		int cnts;
 		struct timer_list timer;
 	} req;
+	char *buf;
 };
 
 struct attr_list;
@@ -162,6 +169,7 @@ struct targ_buf {
 
 typedef struct target_req {
 	struct list_head list;
+	struct list_head task_list;
 	struct targ_buf buf;
 	struct targ_dev *dev;
 	uint64_t sector;

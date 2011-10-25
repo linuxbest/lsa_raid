@@ -10,11 +10,12 @@ enum {
 	IO_INIT = 0,
 	IO_REQ  = 1,
 	IO_PAGE = 2,
-	IO_TARG = 3,
-	IO_MAP  = 4,
-	IO_UNMAP= 5,
-	IO_DONE = 6,
-	IO_END  = 7,
+	IO_TASK = 3,
+	IO_TARG = 4,
+	IO_MAP  = 5,
+	IO_UNMAP= 6,
+	IO_DONE = 7,
+	IO_END  = 8,
 };
 
 #define targ_bio_list_for_each(bio, bl) \
@@ -56,8 +57,9 @@ int targ_req_show(targ_req_t *req, char *data, int len)
 			atomic_read(&req->bios_inflight), req->bios,
 			req->sector);
 	targ_bio_list_for_each(bio, &req->bio_list) {
-		len += sprintf(data+len, " #%d, state %d, %d, bi#%llu\n",
+		len += sprintf(data+len, " #%d, state %d/%d, %d @ bi#%llu\n",
 				bio->bi_idx, bio->bi_max_vecs,
+				bio->bi_phys_segments,
 				bio->bi_size>>9, bio->bi_sector);
 	}
 
@@ -131,6 +133,7 @@ static void targ_buf_set_page(targ_buf_t *buf)
 }
 
 static struct kmem_cache *req_cache;
+static void targ_tasklet(unsigned long data);
 
 int req_cache_init(void)
 {
@@ -138,6 +141,11 @@ int req_cache_init(void)
 			0, 0, NULL);
 	if (!req_cache)
 		return -ENOMEM;
+
+	spin_lock_init(&target.task.lock);
+	INIT_LIST_HEAD(&target.task.list);
+	tasklet_init(&target.task.tasklet, targ_tasklet, (unsigned long)0);
+
 	return 0;
 }
 
@@ -155,8 +163,13 @@ static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
 		targ_buf_set_page(&req->buf);
-		req->state = IO_TARG;
-		req->cb(req->dev, &req->buf, req->priv, 0);
+		req->state = IO_TASK;
+
+		spin_lock_bh(&target.task.lock);
+		list_add_tail(&req->task_list, &target.task.list);
+		spin_unlock_bh(&target.task.lock);
+
+		tasklet_schedule(&target.task.tasklet);
 	}
 }
 
@@ -235,6 +248,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_io_vec   = NULL;
 		bio->bi_size     = len << 9;
 
+		bio->bi_phys_segments = 1;
 		bio->bi_vcnt     = 1;
 		bio->bi_max_vecs = IO_INIT; /* overload as state */
 
@@ -326,16 +340,19 @@ void targ_req_timeout(unsigned long data)
 	spin_lock_irqsave(&sess->req.lock, flags);
 	del_timer(&sess->req.timer);
 	list_for_each_entry(req, &sess->req.list, list) {
-		struct bio *bio;
-		pr_info("targ_timeout: %s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
-				req->rw ? "W" : "R", req->num, req->state,
-				atomic_read(&req->bios_inflight), req->bios,
-				req->sector);
-		targ_bio_list_for_each(bio, &req->bio_list) {
-			pr_info(" #%d, state %d, %d, bi#%llu\n",
-					bio->bi_idx, bio->bi_max_vecs,
-					bio->bi_size>>9, bio->bi_sector);
-		}
+		targ_req_show(req, sess->buf, 0);
+		printk("%s", sess->buf);
 	}
 	spin_unlock_irqrestore(&sess->req.lock, flags);
+}
+
+static void targ_tasklet(unsigned long data)
+{
+	while (!list_empty(&target.task.list)) {
+		targ_req_t *req = list_entry(target.task.list.next,
+				targ_req_t, task_list);
+		list_del(&req->task_list);
+		req->state = IO_TARG;
+		req->cb(req->dev, &req->buf, req->priv, 0);
+	}
 }

@@ -95,6 +95,7 @@ static void sess_release(struct kobject *kobj)
 {
 	targ_sess_t *sess = container_of(kobj, targ_sess_t, kobj);
 	targ_group_sess_exit(sess);
+	kfree(sess->buf);
 	kfree(sess);
 }
 
@@ -129,6 +130,7 @@ targ_sess_t *targ_sess_new(const char *wwpn, void *data)
 	sess->kobj.parent = &target.kobj;
 	sess->data = data;
 	sess->port = port;
+	sess->buf  = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	strcpy(sess->remote.wwpn, wwpn);
 
 	init_timer(&sess->req.timer);
