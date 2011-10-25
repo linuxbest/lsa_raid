@@ -51,12 +51,13 @@ static inline struct bio *targ_bio_list_pop(struct bio_list *bl)
 
 int targ_req_show(targ_req_t *req, char *data, int len)
 {
+	int detail = len == 0;
 	struct bio *bio;
 
-	len += sprintf(data+len, "%s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
+	len += sprintf(data+len, "%s, %d, state %d, flight %d/%d, bitmap %08lx, bi#%llu\n",
 			req->rw ? "W" : "R", req->num, req->state,
-			atomic_read(&req->bios_inflight), req->bios,
-			req->sector);
+			atomic_read(&req->bios_inflight), req->buf.bios, 
+			req->bios, req->sector);
 	targ_bio_list_for_each(bio, &req->bio_list) {
 		int i;
 		struct stripe_head *sh = (void *)bio->bi_io_vec;
@@ -65,9 +66,9 @@ int targ_req_show(targ_req_t *req, char *data, int len)
 				bio->bi_max_vecs, bio->bi_phys_segments,
 				bio->bi_size>>9, bio->bi_sector,
 				bio->bi_comp_cpu);
-		if (sh == NULL)
+		if (sh == NULL || detail == 0)
 			continue;
-		len += sprintf(data+len, "   sh %llu, pd_idx %d, state %ld\n",
+		len += sprintf(data+len, "   sh %llu, pd_idx %d, state %lx\n",
 				(unsigned long long)sh->sector, sh->pd_idx, sh->state);
 		for (i = 0; i < sh->disks; i ++) {
 			struct r5dev *dev = &sh->dev[i];
@@ -82,6 +83,7 @@ int targ_req_show(targ_req_t *req, char *data, int len)
 static int targ_buf_init(struct targ_buf *buf, int bios)
 {
 	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
+	buf->bios = bios;
 	buf->nents = 0; 
 	buf->sb = kmalloc(sizeof(struct stripe_buf)*bios, GFP_ATOMIC);
 	return res;

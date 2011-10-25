@@ -164,7 +164,7 @@ struct stripe_buf {
 struct targ_buf {
 	struct stripe_buf *sb;
 	struct sg_table sg_table;
-	int nents;
+	int nents, bios;
 };
 
 typedef struct target_req {
