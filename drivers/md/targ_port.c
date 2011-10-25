@@ -28,6 +28,16 @@ struct kobj_type port_ktype = {
 	.sysfs_ops = &port_sysfs_ops,
 };
 
+static struct attribute *port_root_attrs[] = {
+	NULL,
+};
+
+struct kobj_type port_root_ktype = {
+	.release = port_release,
+	.default_attrs = port_root_attrs,
+	.sysfs_ops = &port_sysfs_ops,
+};
+
 static ssize_t port_attr_show(struct kobject *kobj, 
 		struct attribute *attr, char *data)
 {
@@ -76,6 +86,38 @@ static void targ_port_del_sess_timer_fn(unsigned long arg)
 	}
 	spin_unlock_irqrestore(&port->sess.lock, flags);
 }
+	
+static targ_port_t *port_root;
+
+int targ_port_init(void)
+{
+	int res = 0;
+	targ_port_t *port;
+
+	port_root = port = kzalloc(sizeof(*port), GFP_KERNEL);
+	if (!port)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&port->list);
+	port->kobj.ktype = &port_root_ktype;
+	port->kobj.parent = &target.kobj;
+
+	spin_lock_init(&port->sess.lock);
+	INIT_LIST_HEAD(&port->sess.list);
+	strcpy(port->port.wwpn, "ports");
+
+	res = kobject_init_and_add(&port->kobj,
+			&port_root_ktype,
+			&target.kobj,
+			port->port.wwpn);
+	return 0;
+}
+
+int targ_port_exit(void)
+{
+	kobject_put(&port_root->kobj);
+	return 0;
+}
 
 targ_port_t *targ_port_new(const char *wwpn, void *data)
 {
@@ -88,7 +130,7 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 
 	INIT_LIST_HEAD(&port->list);
 	port->kobj.ktype = &port_ktype;
-	port->kobj.parent = &target.kobj;
+	port->kobj.parent = &port_root->kobj;
 	port->data = data;
 
 	spin_lock_init(&port->sess.lock);
@@ -102,7 +144,7 @@ targ_port_t *targ_port_new(const char *wwpn, void *data)
 
 	res = kobject_init_and_add(&port->kobj,
 			&port_ktype,
-			&target.kobj,
+			&port_root->kobj,
 			port->port.wwpn);
 	list_add_tail(&port->list, &target.port.list);
 	pr_info("targ_port(%s): registed.\n", port->port.wwpn);

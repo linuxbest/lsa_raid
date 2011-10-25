@@ -73,6 +73,8 @@ typedef struct targ_group {
 
 int targ_group_init(void);
 int targ_group_exit(void);
+int targ_port_init(void);
+int targ_port_exit(void);
 
 struct targ_port {
 	struct kobject kobj;

@@ -43,8 +43,6 @@ static struct target_attribute target_port_attr = {
 };
 
 static struct attribute *target_attr[] = {
-	&target_device_attr.attr,
-	&target_port_attr.attr,
 	NULL,
 };
 
@@ -205,6 +203,7 @@ int dm_targ_init(void)
 	req_cache_init();
 	res = kobject_init_and_add(&target.kobj, 
 			&target_ktype, NULL, "target");
+	targ_port_init();
 	targ_group_init();
 
 	return 0;
@@ -219,6 +218,7 @@ void dm_targ_exit(void)
 		/* TODO clean the device */
 	}
 	targ_group_exit();
+	targ_port_exit();
 	kobject_put(&target.kobj);
 	req_cache_exit();
 }
