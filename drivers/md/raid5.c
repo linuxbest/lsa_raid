@@ -3910,7 +3910,8 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 }
 
 /* TODO
- * 0) WRITE page must finished, before doing reconstruct & write
+ * 0) WRITE page must finished, before doing reconstruct & write.
+ * 1) READ  page must hold, until target put page.
  *
  */
 static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
