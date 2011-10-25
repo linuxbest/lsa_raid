@@ -14,6 +14,7 @@ enum {
 	IO_MAP  = 4,
 	IO_UNMAP= 5,
 	IO_DONE = 6,
+	IO_END  = 7,
 };
 
 #define targ_bio_list_for_each(bio, bl) \
@@ -161,8 +162,8 @@ static void targ_bio_put(targ_req_t *req)
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
-	targ_req_t *req = bi->bi_private;
-	WARN_ON(test_bit(bi->bi_idx, &req->bios));
+	bi->bi_max_vecs = IO_END;
+	bio_put(bi);
 }
 
 static int targ_remap_req(struct mddev_s *t, struct bio *bio)
@@ -249,6 +250,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_bio_list_for_each(bio, &req->bio_list) {
 		set_bit(bio->bi_idx, &req->bios);
 		bio->bi_max_vecs = IO_REQ;
+		bio_get(bio);
 		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 
@@ -277,8 +279,10 @@ int targ_buf_free(targ_buf_t *buf)
 	}
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
 
-	while ((bio = targ_bio_list_pop(&req->bio_list)))
+	while ((bio = targ_bio_list_pop(&req->bio_list))) {
+		bio->bi_max_vecs = IO_DONE;
 		bio_put(bio);
+	}
 
 	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
@@ -322,10 +326,16 @@ void targ_req_timeout(unsigned long data)
 	spin_lock_irqsave(&sess->req.lock, flags);
 	del_timer(&sess->req.timer);
 	list_for_each_entry(req, &sess->req.list, list) {
+		struct bio *bio;
 		pr_info("targ_timeout: %s, %d, state %d, flight %d, bitmap %08lx, bi#%llu\n",
 				req->rw ? "W" : "R", req->num, req->state,
 				atomic_read(&req->bios_inflight), req->bios,
 				req->sector);
+		targ_bio_list_for_each(bio, &req->bio_list) {
+			pr_info(" #%d, state %d, %d, bi#%llu\n",
+					bio->bi_idx, bio->bi_max_vecs,
+					bio->bi_size>>9, bio->bi_sector);
+		}
 	}
 	spin_unlock_irqrestore(&sess->req.lock, flags);
 }
