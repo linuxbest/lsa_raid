@@ -4,6 +4,29 @@
 
 #include <linux/dma-mapping.h>
 
+enum {
+	IO_INIT = 0,
+	IO_REQ  = 1,
+	IO_PAGE = 2,
+	IO_TARG = 3,
+	IO_MAP  = 4,
+	IO_UNMAP= 5,
+	IO_DONE = 6,
+};
+
+int targ_req_show(targ_req_t *req, char *data, int len)
+{
+	struct bio *bio;
+	len += sprintf(data+len, "%s, bi#%llu, %d, state %d\n",
+			req->rw ? "W" : "R", req->sector, req->num, 
+			req->state);
+	bio_list_for_each(bio, &req->bio_list)
+		len += sprintf(data+len, "  bi#%llu, %d, state %d\n",
+				bio->bi_sector, bio->bi_size>>9, 
+				bio->bi_max_vecs);
+	return len;
+}
+
 static int targ_buf_init(struct targ_buf *buf, int bios)
 {
 	int res = sg_alloc_table(&buf->sg_table, bios, GFP_ATOMIC);
@@ -47,6 +70,7 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 
 	req->buf.nents ++;
 
+	bio->bi_max_vecs = IO_PAGE;
 	targ_bio_put(req);
 
 	return 0;
@@ -92,13 +116,13 @@ static void targ_bio_put(targ_req_t *req)
 {
 	if (atomic_dec_and_test(&req->bios_inflight)) {
 		targ_buf_set_page(&req->buf);
+		req->state = IO_TARG;
 		req->cb(req->dev, &req->buf, req->priv, 0);
 	}
 }
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
-	bio_put(bi);
 }
 
 static int targ_remap_req(struct mddev_s *t, struct bio *bio)
@@ -110,7 +134,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
 	targ_req_t *req;
-	struct bio *bio, *hbio = NULL, *tbio = NULL;
+	struct bio *bio;
 	sector_t remaining = blks;
 	int bios = 0, cmds;
 	sector_t len = 0;
@@ -123,6 +147,8 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->rw    = rw;
 	req->cb    = cb;
 	req->priv  = priv;
+	req->state = IO_INIT;
+	bio_list_init(&req->bio_list);
 
 	blknr += dev->start;
 
@@ -152,14 +178,10 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_io_vec   = NULL;
 		bio->bi_size     = len << 9;
 
-		bio->bi_vcnt     = 1;
-		bio->bi_max_vecs = 1;
+		bio->bi_vcnt     = 0;
+		bio->bi_max_vecs = IO_INIT; /* overload as state */
 
-		if (!hbio)
-			hbio = tbio = bio;
-		else
-			tbio = tbio->bi_next = bio;
-
+		bio_list_add(&req->bio_list, bio);
 		bios ++;
 		blknr += len;
 	} while (remaining -= len);
@@ -167,10 +189,9 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_buf_init(&req->buf, bios);
 	targ_bio_init(req, bios);
 
-	while (hbio) {
-		bio = hbio;
-		hbio = hbio->bi_next;
-		bio->bi_next = NULL;
+	req->state = IO_REQ;
+	bio_list_for_each(bio, &req->bio_list) {
+		bio->bi_max_vecs = IO_REQ;
 		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 
@@ -185,10 +206,16 @@ int targ_buf_free(targ_buf_t *buf)
 	targ_dev_t *dev = req->dev;
 	unsigned long flags;
 	int cmds;
+	struct bio *bio;
+
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
 	list_del(&req->list);
 	cmds = dev->sess->req.cnts --;
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
+
+	while ((bio = bio_list_pop(&req->bio_list)))
+		bio_put(bio);
+
 	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
@@ -203,13 +230,17 @@ void targ_md_buf_init(struct mddev_s *t)
 
 targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)
 {
+	targ_req_t *req = container_of(buf, targ_req_t, buf);
 	debug("buf %p, sg %p, nents %d\n", buf, buf->sg_table.sgl, buf->nents);
+	req->state = IO_MAP;
 	*sg_cnt = dma_map_sg(dev, buf->sg_table.sgl, buf->nents, dir);
 	return buf->sg_table.sgl;
 }
 
 void targ_buf_unmap(targ_buf_t *buf, struct device *dev, int dir)
 {
+	targ_req_t *req = container_of(buf, targ_req_t, buf);
+	req->state = IO_DONE;
 	dma_unmap_sg(dev, buf->sg_table.sgl, buf->nents, dir);
 }
 

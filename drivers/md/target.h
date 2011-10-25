@@ -163,11 +163,14 @@ typedef struct target_req {
 	struct targ_dev *dev;
 	uint64_t sector;
 	uint16_t num;
-	int rw;
+	int rw, state;
 	buf_cb_t cb;
 	void *priv;
+	struct bio_list bio_list;
 	atomic_t bios_inflight;
 } targ_req_t;
+
+int targ_req_show(targ_req_t *req, char *data, int len);
 
 #define BIO_REQ_BUF   16
 #define BIO_REQ_DONE  17

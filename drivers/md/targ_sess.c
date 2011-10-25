@@ -37,12 +37,8 @@ static ssize_t sess_show_cmds(targ_sess_t *sess, char *data)
 	targ_req_t *req;
 	
 	spin_lock_irqsave(&sess->req.lock, flags);
-	list_for_each_entry(req, &sess->req.list, list) {
-		len += sprintf(data + len, "buf %p, %d bi#%lld %s, %d\n",
-				&req->buf, req->num, req->sector, 
-				req->rw ? "W" : "R",
-				atomic_read(&req->bios_inflight));
-	}
+	list_for_each_entry(req, &sess->req.list, list)
+		len += targ_req_show(req, data, len);
 	spin_unlock_irqrestore(&sess->req.lock, flags);
 
 	return len;
