@@ -161,13 +161,15 @@ static void targ_bio_init(targ_req_t *req, int bios)
 
 static void targ_bio_put(targ_req_t *req)
 {
+	unsigned long flags;
+
 	if (atomic_dec_and_test(&req->bios_inflight)) {
 		targ_buf_set_page(&req->buf);
 		req->state = IO_TASK;
 
-		spin_lock_bh(&target.task.lock);
+		spin_lock_irqsave(&target.task.lock, flags);
 		list_add_tail(&req->task_list, &target.task.list);
-		spin_unlock_bh(&target.task.lock);
+		spin_unlock_irqrestore(&target.task.lock, flags);
 
 		tasklet_schedule(&target.task.tasklet);
 	}
@@ -348,11 +350,19 @@ void targ_req_timeout(unsigned long data)
 
 static void targ_tasklet(unsigned long data)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&target.task.lock, flags);
 	while (!list_empty(&target.task.list)) {
 		targ_req_t *req = list_entry(target.task.list.next,
 				targ_req_t, task_list);
 		list_del(&req->task_list);
 		req->state = IO_TARG;
+		spin_unlock_irqrestore(&target.task.lock, flags);
+		
 		req->cb(req->dev, &req->buf, req->priv, 0);
+
+		spin_lock_irqsave(&target.task.lock, flags);
 	}
+	spin_unlock_irqrestore(&target.task.lock, flags);
 }
