@@ -166,7 +166,6 @@ typedef struct target_req {
 	int rw, state;
 	buf_cb_t cb;
 	void *priv;
-	struct bio_list bio_list;
 	atomic_t bios_inflight;
 } targ_req_t;
 

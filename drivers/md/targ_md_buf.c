@@ -16,14 +16,9 @@ enum {
 
 int targ_req_show(targ_req_t *req, char *data, int len)
 {
-	struct bio *bio;
-	len += sprintf(data+len, "%s, bi#%llu, %d, state %d\n",
+	len += sprintf(data+len, "%s, bi#%llu, %d, state %d, %d\n",
 			req->rw ? "W" : "R", req->sector, req->num, 
-			req->state);
-	bio_list_for_each(bio, &req->bio_list)
-		len += sprintf(data+len, "  bi#%llu, %d, state %d\n",
-				bio->bi_sector, bio->bi_size>>9, 
-				bio->bi_max_vecs);
+			req->state, atomic_read(&req->bios_inflight));
 	return len;
 }
 
@@ -70,7 +65,7 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 
 	req->buf.nents ++;
 
-	bio->bi_max_vecs = IO_PAGE;
+	bio->bi_comp_cpu = IO_PAGE;
 	targ_bio_put(req);
 
 	return 0;
@@ -123,6 +118,7 @@ static void targ_bio_put(targ_req_t *req)
 
 static void targ_bio_end_io(struct bio *bi, int error)
 {
+	bio_put(bi);
 }
 
 static int targ_remap_req(struct mddev_s *t, struct bio *bio)
@@ -139,6 +135,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	int bios = 0, cmds;
 	sector_t len = 0;
 	unsigned long flags;
+	struct bio_list bio_list;
 
 	req = kmem_cache_zalloc(req_cache, GFP_ATOMIC);
 	req->dev   = dev;
@@ -148,7 +145,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->cb    = cb;
 	req->priv  = priv;
 	req->state = IO_INIT;
-	bio_list_init(&req->bio_list);
+	bio_list_init(&bio_list);
 
 	blknr += dev->start;
 
@@ -178,10 +175,10 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_io_vec   = NULL;
 		bio->bi_size     = len << 9;
 
-		bio->bi_vcnt     = 0;
-		bio->bi_max_vecs = IO_INIT; /* overload as state */
+		bio->bi_vcnt     = 1;
+		bio->bi_max_vecs = 1;
 
-		bio_list_add(&req->bio_list, bio);
+		bio_list_add(&bio_list, bio);
 		bios ++;
 		blknr += len;
 	} while (remaining -= len);
@@ -190,8 +187,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_bio_init(req, bios);
 
 	req->state = IO_REQ;
-	bio_list_for_each(bio, &req->bio_list) {
-		bio->bi_max_vecs = IO_REQ;
+	while ((bio = bio_list_pop(&bio_list))) {
 		dev->t->pers->targ_page_req(dev->t, bio);
 	}
 
@@ -206,15 +202,11 @@ int targ_buf_free(targ_buf_t *buf)
 	targ_dev_t *dev = req->dev;
 	unsigned long flags;
 	int cmds;
-	struct bio *bio;
 
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
 	list_del(&req->list);
 	cmds = dev->sess->req.cnts --;
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
-
-	while ((bio = bio_list_pop(&req->bio_list)))
-		bio_put(bio);
 
 	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
