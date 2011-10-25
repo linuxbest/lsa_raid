@@ -2212,7 +2212,7 @@ schedule_reconstruction(struct stripe_head *sh, struct stripe_head_state *s,
  * toread/towrite point to the first in a chain.
  * The bi_next chain must be in order.
  */
-static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, int forwrite)
+static int _add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, int forwrite)
 {
 	struct bio **bip;
 	raid5_conf_t *conf = sh->raid_conf;
@@ -2222,7 +2222,6 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 		(unsigned long long)bi->bi_sector,
 		(unsigned long long)sh->sector);
 
-	spin_lock_irq(&conf->device_lock);
 	if (forwrite) {
 		bip = &sh->dev[dd_idx].towrite;
 		if (*bip == NULL && sh->dev[dd_idx].written == NULL)
@@ -2256,7 +2255,6 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 		if (sector >= sh->dev[dd_idx].sector + STRIPE_SECTORS)
 			set_bit(R5_OVERWRITE, &sh->dev[dd_idx].flags);
 	}
-	spin_unlock_irq(&conf->device_lock);
 
 	pr_debug("added bi b#%llu to stripe s#%llu, disk %d.\n",
 		(unsigned long long)(*bip)->bi_sector,
@@ -2272,8 +2270,17 @@ static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, in
 
  overlap:
 	set_bit(R5_Overlap, &sh->dev[dd_idx].flags);
-	spin_unlock_irq(&conf->device_lock);
 	return 0;
+}
+
+static int add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, int forwrite)
+{
+	raid5_conf_t *conf = sh->raid_conf;
+	int res;
+	spin_lock_irq(&conf->device_lock);
+	res = _add_stripe_bio(sh, bi, dd_idx, forwrite);
+	spin_unlock_irq(&conf->device_lock);
+	return res;
 }
 
 static void end_reshape(raid5_conf_t *conf);
@@ -3952,10 +3959,9 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	}
 	atomic_inc(&sh->count);
 	
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-	
-	if (!add_stripe_bio(sh, bi, dd_idx, rw)) {
+	if (!_add_stripe_bio(sh, bi, dd_idx, rw)) {
 		release_stripe(sh);
+		spin_unlock_irqrestore(&conf->device_lock, flags);
 		return 0;
 	}
 	if (rw == WRITE) {
@@ -3974,6 +3980,7 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	set_bit(STRIPE_HANDLE, &sh->state);
 	clear_bit(STRIPE_DELAYED, &sh->state);
 	release_stripe_wakeup(sh, wakeup);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	return 1;
 }
@@ -3986,14 +3993,24 @@ static void raid_tasklet(unsigned long data)
 	unsigned handle = 0, delay = 0;
 	unsigned long flags;
 
+	if (bio_list_empty(&conf->target_tasklet_list))
+		return;
+
 	bio_list_init(&reject);
-	while ((bio = bio_list_pop(&conf->target_tasklet_list))) {
+	do {
+		spin_lock_irqsave(&conf->device_lock, flags);
+		bio = bio_list_pop(&conf->target_tasklet_list);
+		spin_unlock_irqrestore(&conf->device_lock, flags);
+
+		if (bio == NULL)
+			break;
+
 		if (_targ_page_req(conf, bio) == 0) {
 			bio_list_add(&reject, bio);
 			delay ++;
 		} else
 			handle ++;
-	}
+	} while (bio);
 
 	if (bio_list_empty(&reject))
 		return;
@@ -4002,7 +4019,8 @@ static void raid_tasklet(unsigned long data)
 	bio_list_merge_head(&conf->target_list, &reject);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
-	md_wakeup_thread(conf->mddev->thread);
+	if (!bio_list_empty(&conf->target_list))
+		md_wakeup_thread(conf->mddev->thread);
 }
 
 static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
