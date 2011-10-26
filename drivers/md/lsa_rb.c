@@ -13,7 +13,7 @@ struct lsa_root {
 	struct rb_root root;
 
 	unsigned long **bitmap;
-	int cnt;
+	uint32_t cnt, seg, mseg;
 };
 
 struct lsa_node {
@@ -40,7 +40,9 @@ lsa_init(uint32_t cnt)
 		return NULL;
 
 	lsa_root->root = RB_ROOT;
-	lsa_root->cnt = cnt;
+	lsa_root->cnt  = cnt;
+	lsa_root->mseg = cnt;
+	lsa_root->seg  = 0;
 
 	cnt = cnt >> (PAGE_SHIFT+3);
 	cnt ++;
@@ -167,6 +169,14 @@ static void lsa_entry_copy(lsa_entry_t *n, lsa_entry_t *o)
 	n->length       = o->length;
 }
 
+static void lsa_entry_show(lsa_entry_t *n, char *prefix)
+{
+	pr_debug("%s: %d, offset %d, length %d, seg %d, colum %d\n",
+			prefix, n->log_vol_id, n->offset, n->length,
+			n->seg_id, n->seg_column);
+}
+
+#if 0
 static void lsa_entry_swap(lsa_entry_t *n, lsa_entry_t *o)
 {
 	lsa_entry_t t;
@@ -174,14 +184,13 @@ static void lsa_entry_swap(lsa_entry_t *n, lsa_entry_t *o)
 	lsa_entry_copy(o, n);
 	lsa_entry_copy(n, &t);
 }
-
+#endif
 static int lsa_entry_insert(struct lsa_node *n, lsa_entry_t *le)
 {
 	lsa_entry_t **bip = &n->next;
 
 	while (*bip && (*bip)->offset < le->offset) {
-		pr_debug(" 0: %d, offset %d, length %d\n",
-				(*bip)->log_vol_id, (*bip)->offset, (*bip)->length);
+		lsa_entry_show(*bip, "0");
 		if ((*bip)->offset + ((*bip)->length) > le->offset) {
 			lsa_entry_t *new = kzalloc(sizeof(*new), GFP_ATOMIC);
 			int len = (*bip)->length + (*bip)->offset - le->offset - le->length;
@@ -204,8 +213,7 @@ static int lsa_entry_insert(struct lsa_node *n, lsa_entry_t *le)
 
 	if (*bip && (*bip)->offset < le->offset + le->length) {
 		int len = le->offset + le->length - (*bip)->offset;
-		pr_debug(" 1: %d, offset %d, length %d\n",
-				(*bip)->log_vol_id, (*bip)->offset, (*bip)->length);
+		lsa_entry_show(*bip, "1");
 		len = min_t(int, len, (*bip)->length);
 		(*bip)->length -= len;
 		(*bip)->offset += len;
@@ -222,7 +230,7 @@ static int lsa_entry_insert(struct lsa_node *n, lsa_entry_t *le)
 		}
 	}
 
-	BUG_ON(*bip && le->next && (*bip) != le->next);
+	WARN_ON(*bip && le->next && (*bip) != le->next);
 	if (*bip)
 		le->next = *bip;
 	*bip = le;
@@ -238,8 +246,7 @@ lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 	struct lsa_node *new = kzalloc(sizeof(*new), GFP_ATOMIC), *o;
 	int res = 0;
 
-	pr_debug("lsa_insert: nti %d, offset %d, length %d\n",
-			le->log_vol_id, le->offset, le->length);
+	lsa_entry_show(le, "lsa_insert");
 	if (new == NULL)
 		return -ENOMEM;
 	if (root->cnt < ti)
@@ -257,4 +264,15 @@ lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 	spin_unlock_irqrestore(&root->lock, flags);
 
 	return res;
+}
+
+uint32_t
+lsa_seg_alloc(struct lsa_root *root)
+{
+	uint32_t seg;
+	unsigned long flags;
+	spin_lock_irqsave(&root->lock, flags);
+	seg = root->seg ++;
+	spin_unlock_irqrestore(&root->lock, flags);
+	return seg;
 }

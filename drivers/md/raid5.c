@@ -716,12 +716,12 @@ static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5d
 	raid5_conf_t *conf = sh->raid_conf;
 	int page_offset = 0;
 	sector_t sector = dev->sector;
-
+#if 0
 	if (bio->bi_sector >= sector)
 		page_offset = (signed)(bio->bi_sector - sector) * 512;
 	else
 		page_offset = (signed)(sector - bio->bi_sector) * -512;
-
+#endif
 	if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags)) {
 		pr_debug("%s: stripe %llu, bio %llu, offset %d\n", __func__,
 				(unsigned long long)sh->sector, 
@@ -1432,6 +1432,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
 	conf->lsa_root = lsa_init(raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
+	conf->lsa_dd_idx = conf->raid_disks;
 	return 1;
 }
 
@@ -3967,125 +3968,84 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 	return bio_list_pop(&conf->target_list);
 }
 
-/* TODO
- * 0) WRITE page must finished, before doing reconstruct & write.
- * 1) READ  page must hold, until target put page.
- *
- */
-static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
-{
-	sector_t sector, logical_sector;
-	const int rw = bio_data_dir(bi);
-	int dd_idx, wakeup = rw == READ, res = 0;
-	struct stripe_head *sh;
-	unsigned long flags;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-
-	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
-	sector = raid5_compute_sector(conf, logical_sector, 0, &dd_idx, NULL);
-	pr_debug("targ_page_req: sector %llu logical %llu, %s, %d\n",
-			(unsigned long long)sector, 
-			(unsigned long long)logical_sector,
-			rw == WRITE ? "W" : "R", bi->bi_size>>9);
-	sh = __find_stripe(conf, sector, conf->generation);
-	if (!sh) {
-		if (!conf->inactive_blocked)
-			sh = get_free_stripe(conf);
-		if (!sh) {
-			md_wakeup_thread(conf->mddev->thread);
-			res = 0;
-			goto out;
-		}
-		init_stripe(sh, sector, 0);
-	} else {
-		if (atomic_read(&sh->count)) {
-			BUG_ON(!list_empty(&sh->lru) && !test_bit(STRIPE_EXPANDING, &sh->state));
-		} else {
-			if (!test_bit(STRIPE_HANDLE, &sh->state)) atomic_inc(&conf->active_stripes);
-			if (list_empty(&sh->lru) && !test_bit(STRIPE_EXPANDING, &sh->state))
-				BUG();
-			list_del_init(&sh->lru);
-		}
-	}
-	atomic_inc(&sh->count);
-	
-	if (rw == READ && test_bit(R5_UPTODATE, &sh->dev[dd_idx].flags)) {
-		do_targ_page_add(sh, bi, &sh->dev[dd_idx]);
-		release_stripe(sh);
-		bio_endio(bi, 0);
-		res = 1;
-		goto out;
-	}
-	
-	if (!_add_stripe_bio(sh, bi, dd_idx, rw)) {
-		release_stripe(sh);
-		res = 0;
-		goto out;
-	}
-	if (rw == WRITE) {
-		int i;
-		for (i = sh->disks; i; i --)
-			/* have data write to but not full device cache size */
-			if (!test_bit(R5_OVERWRITE, &sh->dev[i].flags) && sh->dev[i].towrite)
-				break;
-		wakeup = i == 0;
-		/* full device cache size write, adding page now */
-		if (test_bit(R5_OVERWRITE, &sh->dev[dd_idx].flags))
-			targ_page_add(sh, bi, &sh->dev[dd_idx], 1, NULL);
-		else
-			wakeup = 1;
-	}
-	set_bit(STRIPE_HANDLE, &sh->state);
-	release_stripe_wakeup(sh, wakeup);
-	pr_debug("targ_page_req: res %d, wakeup %d\n", res, wakeup);
-out:
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-
-	return 1;
-}
-
-static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, lsa_entry_t *le)
+static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, sector_t sector,
+		unsigned int chunk_offset)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
+	lsa_entry_t *le = lsa_find_by_ti(conf->lsa_root, sector);
 
 	if (le == NULL) {
 		struct r5dev *dev = &sh->dev[0];
 		dev->sector = bio->bi_sector;
-		do_targ_page_add(sh, bio, &sh->dev[0]);
+		do_targ_page_add(sh, bio, dev);
 		bio_endio(bio, 0);
 	}
 
 	return 0;
 }
 
-static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, lsa_entry_t *le)
+static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, sector_t sector,
+		unsigned int chunk_offset)
 {
+	struct stripe_head *sh = conf->lsa_seg_sh;
+	struct r5dev *dev;
+	int dd_idx;
+	uint32_t seg_id;
+	unsigned long flags;
+	lsa_entry_t *le = kmalloc(sizeof(*le), GFP_ATOMIC);
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+	if (conf->lsa_dd_idx == conf->raid_disks) {
+		conf->lsa_seg_id = lsa_seg_alloc(conf->lsa_root);
+		conf->lsa_dd_idx = 0;
+		sh = NULL;
+	}
+	dd_idx = conf->lsa_dd_idx;
+	seg_id = conf->lsa_seg_id;
+
+	if (sh)
+		sh = __find_stripe(conf, seg_id, 0);
+	if (!sh) {
+		sh = get_free_stripe(conf);
+		BUG_ON(!sh);
+		init_stripe(sh, seg_id, 0);
+	}
+
+	dev = &sh->dev[dd_idx];
+	do_targ_page_add(sh, bio, dev);
+	conf->lsa_dd_idx ++;
+	conf->lsa_seg_sh = sh;
+
+	le->log_vol_id   = sector;
+	le->log_track_id = seg_id;
+	le->seg_id       = seg_id;
+	le->seg_column   = dd_idx;
+	le->offset       = bio->bi_sector & ((sector_t)STRIPE_SECTORS-1);
+	le->length       = bio->bi_size>>9;
+	lsa_insert(conf->lsa_root, le);
+
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+
 	return 0;
 }
 
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 {
-	lsa_root_t *lsa_root = conf->lsa_root;
-	lsa_entry_t *le;
 	const int rw = bio_data_dir(bi);
-	uint32_t ti;
 	unsigned int chunk_offset;
 	sector_t logical_sector;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
-	ti = logical_sector;
 
-	le = lsa_find_by_ti(lsa_root, ti);
-	pr_debug("lsa_bio_req: sector %llu logic %llu, ti %d, %s, %p\n",
+	pr_debug("lsa_bio_req: sector %llu logic %llu, %s\n",
 			(unsigned long long)bi->bi_sector,
 			(unsigned long long)logical_sector,
-			ti, rw == WRITE ? "W" : "R", le);
+			rw == WRITE ? "W" : "R");
 	if (rw == READ)
-		return lsa_read_req(conf, bi, le);
+		return lsa_read_req(conf, bi, logical_sector, chunk_offset);
 
-	return lsa_write_req(conf, bi, le);
+	return lsa_write_req(conf, bi, logical_sector, chunk_offset);
 }
 
 static void raid_tasklet(unsigned long data)

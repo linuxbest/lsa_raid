@@ -21,4 +21,6 @@ lsa_root_t  *lsa_init       (uint32_t cnt);
 lsa_entry_t *lsa_find_by_ti (lsa_root_t *, uint32_t ti);
 int          lsa_insert     (lsa_root_t *, lsa_entry_t *le);
 
+uint32_t     lsa_seg_alloc  (lsa_root_t *);
+
 #endif

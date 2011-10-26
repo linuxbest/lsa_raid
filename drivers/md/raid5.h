@@ -446,6 +446,9 @@ struct raid5_private_data {
 	struct tasklet_struct   tasklet;
 	struct lsa_root     *lsa_root;
 	struct stripe_head  *lsa_zero_sh;
+	int      lsa_dd_idx;
+	uint32_t lsa_seg_id;
+	struct stripe_head  *lsa_seg_sh;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
