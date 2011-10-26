@@ -195,6 +195,16 @@ ssize_t group_device_init(struct attr_list *al)
 	al->device.bdev = bdev;
 	al->device.table = dm_table_from_bdev(bdev);
 	al->device.targets = 0;
+
+	if (al->device.table == NULL) {
+		struct mddev_s *mddev = mddev_from_bdev(bdev);
+		al->device.mddev = mddev;
+		al->device.start = 0;
+		al->device.len   = mddev ? mddev->array_sectors : 0;
+		if (mddev)
+			al->device.targets ++;
+		return 0;
+	}
 	
 	while (i < dm_table_get_num_targets(al->device.table)) {
 		struct dm_target *ti = dm_table_get_target(al->device.table, i++);
@@ -480,9 +490,9 @@ int targ_group_sess_init(struct targ_sess *sess)
 
 	i = 0;
 	list_for_each_entry(dl, &group->head[DEVICE], list) {
-		sess->dev.array[i].lun = i;
-		sess->dev.array[i].sess= sess;
-		sess->dev.array[i].dl  = dl;
+		sess->dev.array[i].lun   = i;
+		sess->dev.array[i].sess  = sess;
+		sess->dev.array[i].dl    = dl;
 		sess->dev.array[i].start = dl->device.start;
 		sess->dev.array[i].len   = dl->device.len;
 		sess->dev.array[i].t     = dl->device.mddev;

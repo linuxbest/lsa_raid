@@ -1399,6 +1399,42 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 #define raid_run_ops __raid_run_ops
 #endif
 
+static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
+
+static int lsa_stripe_exit(raid5_conf_t *conf)
+{
+	struct stripe_head *sh = conf->lsa_zero_sh;
+	shrink_buffers(sh);
+	kmem_cache_free(conf->slab_cache, sh);
+	return 1;
+}
+
+static int lsa_stripe_init(raid5_conf_t *conf)
+{
+	struct stripe_head *sh;
+	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
+	if (!sh)
+		return 0;
+
+	sh->raid_conf = conf;
+	#ifdef CONFIG_MULTICORE_RAID456
+	init_waitqueue_head(&sh->ops.wait_for_ops);
+	#endif
+
+	if (grow_buffers(sh)) {
+		shrink_buffers(sh);
+		kmem_cache_free(conf->slab_cache, sh);
+		return 0;
+	}
+	memset(page_address(sh->dev[0].page), 0, STRIPE_SIZE);
+	/* we just created an active stripe so... */
+	atomic_set(&sh->count, 1);
+	atomic_inc(&conf->active_stripes);
+	conf->lsa_zero_sh = sh;
+	conf->lsa_root = lsa_init(raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
+	return 1;
+}
+
 static int grow_one_stripe(raid5_conf_t *conf)
 {
 	struct stripe_head *sh;
@@ -4009,12 +4045,54 @@ out:
 	return 1;
 }
 
+static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, lsa_entry_t *le)
+{
+	struct stripe_head *sh = conf->lsa_zero_sh;
+
+	if (le == NULL) {
+		struct r5dev *dev = &sh->dev[0];
+		dev->sector = bio->bi_sector;
+		do_targ_page_add(sh, bio, &sh->dev[0]);
+		bio_endio(bio, 0);
+	}
+
+	return 0;
+}
+
+static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, lsa_entry_t *le)
+{
+	return 0;
+}
+
+static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
+{
+	lsa_root_t *lsa_root = conf->lsa_root;
+	lsa_entry_t *le;
+	const int rw = bio_data_dir(bi);
+	uint32_t ti;
+	unsigned int chunk_offset;
+	sector_t logical_sector;
+
+	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
+	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
+	ti = logical_sector;
+
+	le = lsa_find_by_ti(lsa_root, ti);
+	pr_debug("lsa_bio_req: sector %llu logic %llu, ti %d, %s, %p\n",
+			(unsigned long long)bi->bi_sector,
+			(unsigned long long)logical_sector,
+			ti, rw == WRITE ? "W" : "R", le);
+	if (rw == READ)
+		return lsa_read_req(conf, bi, le);
+
+	return lsa_write_req(conf, bi, le);
+}
+
 static void raid_tasklet(unsigned long data)
 {
 	raid5_conf_t *conf  = (raid5_conf_t *)data;
 	struct bio_list reject;
 	struct bio *bio;
-	unsigned handle = 0, delay = 0;
 	unsigned long flags;
 
 	if (bio_list_empty(&conf->target_tasklet_list))
@@ -4029,22 +4107,8 @@ static void raid_tasklet(unsigned long data)
 		if (bio == NULL)
 			break;
 
-		if (_targ_page_req(conf, bio) == 0) {
-			bio_list_add(&reject, bio);
-			delay ++;
-		} else
-			handle ++;
+		lsa_bio_req(conf, bio);
 	} while (bio);
-
-	if (bio_list_empty(&reject))
-		return;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	bio_list_merge_head(&conf->target_list, &reject);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-
-	if (!bio_list_empty(&conf->target_list))
-		md_wakeup_thread(conf->mddev->thread);
 }
 
 static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
@@ -4100,8 +4164,6 @@ static int targ_page_req(mddev_t *mddev, struct bio * bi)
 	tasklet_schedule(&conf->tasklet);
 	return 0;
 }
-
-static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
 static sector_t reshape_request(mddev_t *mddev, sector_t sector_nr, int *skipped)
 {
@@ -4914,7 +4976,6 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 		conf->prev_algo = mddev->layout;
 	}
 
-	conf->lsa_root = lsa_init(raid5_size(mddev, 0, 0)/STRIPE_SECTORS);
 
 	memory = conf->max_nr_stripes * (sizeof(struct stripe_head) +
 		 max_disks * ((sizeof(struct bio) + (1<<STRIPE_ORDER) * PAGE_SIZE))) / 1024;
@@ -5067,6 +5128,8 @@ static int run(mddev_t *mddev)
 	mddev->thread = conf->thread;
 	conf->thread = NULL;
 	mddev->private = conf;
+	
+	lsa_stripe_init(conf);
 
 	/*
 	 * 0 for a fully functional array, 1 or 2 for a degraded array.
@@ -5216,6 +5279,7 @@ static int stop(mddev_t *mddev)
 {
 	raid5_conf_t *conf = mddev->private;
 
+	lsa_stripe_exit(conf);
 	md_unregister_thread(mddev->thread);
 	mddev->thread = NULL;
 	if (mddev->queue)
