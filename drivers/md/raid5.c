@@ -3968,6 +3968,82 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 	return bio_list_pop(&conf->target_list);
 }
 
+static void
+lsa_end_write_request(struct bio *bi, int error)
+{
+	struct stripe_head *sh = bi->bi_private;
+	raid5_conf_t *conf = sh->raid_conf;
+	int i = bi->bi_xor_disk;
+	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
+	sector_t first_bad;
+	int bad_sectors;
+
+	BUG_ON (bi != &sh->dev[i].req);
+
+	pr_debug("end_write_request %llu/%d, count %d, uptodate: %d.\n",
+		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
+		uptodate);
+
+	if (!uptodate) {
+		set_bit(WriteErrorSeen, &conf->disks[i].rdev->flags);
+		set_bit(R5_WriteError, &sh->dev[i].flags);
+	} else if (is_badblock(conf->disks[i].rdev, sh->sector, STRIPE_SECTORS,
+			       &first_bad, &bad_sectors))
+		set_bit(R5_MadeGood, &sh->dev[i].flags);
+}
+
+static void lsa_stripe_write(struct stripe_head *sh)
+{
+	raid5_conf_t *conf = sh->raid_conf;
+	int i, disks = sh->disks;
+
+	pr_debug("%s: stripe %llu\n", __func__,
+		(unsigned long long)sh->sector);
+
+	for (i = disks; i--; ) {
+		int rw;
+		struct bio *bi;
+		mdk_rdev_t *rdev;
+
+		bi = &sh->dev[i].req;
+
+		bi->bi_xor_disk = i;
+		bi->bi_rw = WRITE;
+		bi->bi_end_io = lsa_end_write_request;
+
+		rcu_read_lock();
+		rdev = rcu_dereference(conf->disks[i].rdev);
+		if (rdev && test_bit(Faulty, &rdev->flags))
+			rdev = NULL;
+		rcu_read_unlock();
+
+		if (rdev) {
+			set_bit(STRIPE_IO_STARTED, &sh->state);
+
+			bi->bi_bdev = rdev->bdev;
+			pr_debug("%s: for %llu schedule op %ld on disc %d\n",
+				__func__, (unsigned long long)sh->sector,
+				bi->bi_rw, i);
+			atomic_inc(&sh->count);
+			bi->bi_sector = sh->sector + rdev->data_offset;
+			bi->bi_flags = 1 << BIO_UPTODATE;
+			bi->bi_vcnt = 1;
+			bi->bi_max_vecs = 1;
+			bi->bi_idx = 0;
+			bi->bi_io_vec = &sh->dev[i].vec;
+			bi->bi_io_vec[0].bv_len = STRIPE_SIZE;
+			bi->bi_io_vec[0].bv_offset = 0;
+			bi->bi_size = STRIPE_SIZE;
+			bi->bi_next = NULL;
+			bi->bi_rw |= REQ_NOMERGE;
+			generic_make_request(bi);
+		} else {
+			pr_debug("skip op %ld on disc %d for sector %llu\n",
+				bi->bi_rw, i, (unsigned long long)sh->sector);
+		}
+	}
+}
+
 static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, sector_t sector,
 		unsigned int chunk_offset)
 {
@@ -3998,6 +4074,8 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, sector_t sector,
 	if (conf->lsa_dd_idx == conf->raid_disks) {
 		conf->lsa_seg_id = lsa_seg_alloc(conf->lsa_root);
 		conf->lsa_dd_idx = 0;
+		if (sh)
+			lsa_stripe_write(sh);
 		sh = NULL;
 	}
 	dd_idx = conf->lsa_dd_idx;
