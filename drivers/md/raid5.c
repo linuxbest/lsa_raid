@@ -4907,12 +4907,14 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 	else
 		conf->max_degraded = 1;
 	conf->algorithm = mddev->new_layout;
-	conf->max_nr_stripes = (256*1024*1024>>STRIPE_SS_SHIFT)/max_disks;
+	conf->max_nr_stripes = NR_STRIPES;
 	conf->reshape_progress = mddev->reshape_position;
 	if (conf->reshape_progress != MaxSector) {
 		conf->prev_chunk_sectors = mddev->chunk_sectors;
 		conf->prev_algo = mddev->layout;
 	}
+
+	conf->lsa_root = lsa_init(raid5_size(mddev, 0, 0)/STRIPE_SECTORS);
 
 	memory = conf->max_nr_stripes * (sizeof(struct stripe_head) +
 		 max_disks * ((sizeof(struct bio) + (1<<STRIPE_ORDER) * PAGE_SIZE))) / 1024;

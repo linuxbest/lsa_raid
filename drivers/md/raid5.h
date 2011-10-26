@@ -444,6 +444,7 @@ struct raid5_private_data {
 	 */
 	struct mdk_thread_s	*thread;
 	struct tasklet_struct   tasklet;
+	struct lsa_root *lsa_root;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
