@@ -721,8 +721,13 @@ static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5d
 	else
 		page_offset = (signed)(sector - bio->bi_sector) * -512;
 
-	if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags))
+	if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags)) {
+		pr_debug("%s: stripe %llu, bio %llu, offset %d\n", __func__,
+				(unsigned long long)sh->sector, 
+				(unsigned long long)bio->bi_sector,
+				page_offset);
 		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
+	}
 }
 
 static struct dma_async_tx_descriptor *
@@ -2264,9 +2269,10 @@ static int _add_stripe_bio(struct stripe_head *sh, struct bio *bi, int dd_idx, i
 			set_bit(R5_OVERWRITE, &sh->dev[dd_idx].flags);
 	}
 
-	pr_debug("added bi b#%llu to stripe s#%llu, disk %d.\n",
+	pr_debug("added bi b#%llu to stripe s#%llu, disk %d, %08lx.\n",
 		(unsigned long long)(*bip)->bi_sector,
-		(unsigned long long)sh->sector, dd_idx);
+		(unsigned long long)sh->sector, dd_idx,
+		sh->dev[dd_idx].flags);
 
 	if (conf->mddev->bitmap && firstwrite) {
 		bitmap_startwrite(conf->mddev->bitmap, sh->sector,
@@ -3933,7 +3939,7 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 {
 	sector_t sector, logical_sector;
 	const int rw = bio_data_dir(bi);
-	int dd_idx, wakeup = rw == READ;
+	int dd_idx, wakeup = rw == READ, res = 0;
 	struct stripe_head *sh;
 	unsigned long flags;
 
@@ -3941,18 +3947,18 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	sector = raid5_compute_sector(conf, logical_sector, 0, &dd_idx, NULL);
-	pr_debug("targ_page_req: sector %llu logical %llu, %s\n",
+	pr_debug("targ_page_req: sector %llu logical %llu, %s, %d\n",
 			(unsigned long long)sector, 
 			(unsigned long long)logical_sector,
-			rw == WRITE ? "W" : "R");
+			rw == WRITE ? "W" : "R", bi->bi_size>>9);
 	sh = __find_stripe(conf, sector, conf->generation);
 	if (!sh) {
 		if (!conf->inactive_blocked)
 			sh = get_free_stripe(conf);
 		if (!sh) {
 			md_wakeup_thread(conf->mddev->thread);
-			spin_unlock_irqrestore(&conf->device_lock, flags);
-			return 0;
+			res = 0;
+			goto out;
 		}
 		init_stripe(sh, sector, 0);
 	} else {
@@ -3970,15 +3976,15 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	if (rw == READ && test_bit(R5_UPTODATE, &sh->dev[dd_idx].flags)) {
 		do_targ_page_add(sh, bi, &sh->dev[dd_idx]);
 		release_stripe(sh);
-		spin_unlock_irqrestore(&conf->device_lock, flags);
 		bio_endio(bi, 0);
-		return 1;
+		res = 1;
+		goto out;
 	}
 	
 	if (!_add_stripe_bio(sh, bi, dd_idx, rw)) {
 		release_stripe(sh);
-		spin_unlock_irqrestore(&conf->device_lock, flags);
-		return 0;
+		res = 0;
+		goto out;
 	}
 	if (rw == WRITE) {
 		int i;
@@ -3995,6 +4001,8 @@ static int _targ_page_req(raid5_conf_t *conf, struct bio * bi)
 	}
 	set_bit(STRIPE_HANDLE, &sh->state);
 	release_stripe_wakeup(sh, wakeup);
+	pr_debug("targ_page_req: res %d, wakeup %d\n", res, wakeup);
+out:
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	return 1;
@@ -4530,7 +4538,7 @@ static void raid5d(mddev_t *mddev)
 		handled++;
 		handle_stripe(sh);
 		release_stripe(sh);
-		/*cond_resched();*/
+		cond_resched();
 
 		if (mddev->flags & ~(1<<MD_CHANGE_PENDING))
 			md_check_recovery(mddev);
