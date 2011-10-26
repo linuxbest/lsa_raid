@@ -176,68 +176,6 @@ static void lsa_entry_show(lsa_entry_t *n, char *prefix)
 			n->seg_id, n->seg_column);
 }
 
-#if 0
-static void lsa_entry_swap(lsa_entry_t *n, lsa_entry_t *o)
-{
-	lsa_entry_t t;
-	lsa_entry_copy(&t, o);
-	lsa_entry_copy(o, n);
-	lsa_entry_copy(n, &t);
-}
-#endif
-static int lsa_entry_insert(struct lsa_node *n, lsa_entry_t *le)
-{
-	lsa_entry_t **bip = &n->next;
-
-	while (*bip && (*bip)->offset < le->offset) {
-		lsa_entry_show(*bip, "0");
-		if ((*bip)->offset + ((*bip)->length) > le->offset) {
-			lsa_entry_t *new = kzalloc(sizeof(*new), GFP_ATOMIC);
-			int len = (*bip)->length + (*bip)->offset - le->offset - le->length;
-
-			new->next = (*bip)->next;
-
-			(*bip)->length = le->offset;
-			(*bip)->next = le;
-
-			le->next = new;
-
-			lsa_entry_copy(new, le);
-			new->offset = le->offset + le->length;
-			new->length = len;
-
-			return 0;
-		}
-		bip = &(*bip)->next;
-	}
-
-	if (*bip && (*bip)->offset < le->offset + le->length) {
-		int len = le->offset + le->length - (*bip)->offset;
-		lsa_entry_show(*bip, "1");
-		len = min_t(int, len, (*bip)->length);
-		(*bip)->length -= len;
-		(*bip)->offset += len;
-		if ((*bip)->length == 0) {
-			le->next = (*bip)->next;
-			kfree(*bip);
-			*bip = le;
-			if (le->next && le->length + le->offset > le->next->offset) {
-				len = le->length + le->offset - le->next->offset;
-				le->next->offset += len;
-				le->next->length -= len;
-			}
-			return 0;
-		}
-	}
-
-	WARN_ON(*bip && le->next && (*bip) != le->next);
-	if (*bip)
-		le->next = *bip;
-	*bip = le;
-
-	return 0;
-}
-
 int 
 lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 {
@@ -253,12 +191,12 @@ lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 		return -EINVAL;
 
 	new->log_vol_id = ti;
-	new->next = le;
 	spin_lock_irqsave(&root->lock, flags);
 	o = lsa_rb_insert(root, new);
 	if (o) {
+		memcpy(o, le, sizeof(*o));
 		kfree(new);
-		lsa_entry_insert(o, le);
+		kfree(le);
 	}
 	lsa_set_bit(root, ti);
 	spin_unlock_irqrestore(&root->lock, flags);

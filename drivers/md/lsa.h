@@ -11,8 +11,6 @@ typedef struct lsa_entry {
 	uint8_t  age;
 	uint8_t  status;       /* IDLE, GC */
 	uint16_t activity;
-
-	struct   lsa_entry *next;
 } lsa_entry_t;
 
 typedef struct lsa_root lsa_root_t;
