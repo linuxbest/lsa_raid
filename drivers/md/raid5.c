@@ -1406,6 +1406,13 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	shrink_buffers(sh);
 	kmem_cache_free(conf->slab_cache, sh);
+
+	sh = conf->lsa_seg_sh;
+	if (sh) {
+		shrink_buffers(sh);
+		list_del_init(&sh->lru);
+		kmem_cache_free(conf->slab_cache, sh);
+	}
 	return 1;
 }
 
