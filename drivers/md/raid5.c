@@ -4181,13 +4181,14 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 
 	spin_lock_irqsave(&conf->device_lock, flags);
 	if (conf->lsa_dd_idx == conf->raid_disks) {
-		conf->lsa_seg_id = lsa_seg_alloc(conf->lsa_root);
-		conf->lsa_dd_idx = 0;
 		if (sh) {
 			atomic_inc(&sh->count);
+			list_del_init(&sh->lru);
 			lsa_stripe_rw(sh);
 			__lsa_release_stripe(conf, sh);
 		}
+		conf->lsa_seg_id = lsa_seg_alloc(conf->lsa_root);
+		conf->lsa_dd_idx = 0;
 	}
 	dd_idx = conf->lsa_dd_idx;
 	seg_id = conf->lsa_seg_id;
