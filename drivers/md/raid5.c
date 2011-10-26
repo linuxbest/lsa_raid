@@ -715,8 +715,8 @@ static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5d
 {
 	raid5_conf_t *conf = sh->raid_conf;
 	int page_offset = 0;
-	sector_t sector = dev->sector;
 #if 0
+	sector_t sector = dev->sector;
 	if (bio->bi_sector >= sector)
 		page_offset = (signed)(bio->bi_sector - sector) * 512;
 	else
@@ -4019,7 +4019,7 @@ static void
 lsa_end_read_request(struct bio *bi, int error)
 {
 	struct stripe_head *sh = bi->bi_private;
-	raid5_conf_t *conf = sh->raid_conf;
+//	raid5_conf_t *conf = sh->raid_conf;
 	int i = bi->bi_xor_disk;
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 
