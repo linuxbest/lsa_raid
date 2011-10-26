@@ -57,6 +57,7 @@
 #include "raid0.h"
 #include "bitmap.h"
 #include "target.h"
+#include "lsa.h"
 
 /*
  * Stripe cache
