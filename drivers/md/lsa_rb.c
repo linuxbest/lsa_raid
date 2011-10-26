@@ -151,7 +151,7 @@ lsa_find_by_ti(struct lsa_root *root, uint32_t ti)
 
 	spin_lock_irqsave(&root->lock, flags);
 
-	if (root->cnt < ti && lsa_test_bit(root, ti))
+	if (ti < root->cnt && lsa_test_bit(root, ti))
 		node = lsa_rb_find_by_ti(root, ti);
 
 	spin_unlock_irqrestore(&root->lock, flags);
@@ -171,7 +171,7 @@ static void lsa_entry_copy(lsa_entry_t *n, lsa_entry_t *o)
 
 static void lsa_entry_show(lsa_entry_t *n, char *prefix)
 {
-	pr_debug("%s: %d, offset %d, length %d, seg %d, colum %d\n",
+	pr_debug("%s: %u, offset %d, length %d, seg %d, colum %d\n",
 			prefix, n->log_vol_id, n->offset, n->length,
 			n->seg_id, n->seg_column);
 }
@@ -191,6 +191,8 @@ lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 		return -EINVAL;
 
 	new->log_vol_id = ti;
+	new->next = le;
+
 	spin_lock_irqsave(&root->lock, flags);
 	o = lsa_rb_insert(root, new);
 	if (o) {
