@@ -1,7 +1,7 @@
 #ifndef _LOG_STRUCTED_ARRAY_
 #define _LOG_STRUCTED_ARRAY_
 
-typedef struct {
+typedef struct lsa_entry {
 	uint32_t log_vol_id;   /* logic track address */
 	uint32_t log_track_id; /* segment number */
 	uint8_t  seg_id;       /* segment id */
@@ -12,7 +12,7 @@ typedef struct {
 	uint8_t  status;       /* IDLE, GC */
 	uint16_t activity;
 
-	struct   rb_node node;
+	struct   lsa_entry *next;
 } lsa_entry_t;
 
 typedef struct lsa_root lsa_root_t;
