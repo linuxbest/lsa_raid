@@ -1418,6 +1418,9 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 		shrink_buffers(sh);
 		kmem_cache_free(conf->slab_cache, sh);
 	}
+	kfifo_free(&conf->wr_data_fifo);
+	kfifo_free(&conf->wr_free_fifo);
+
 	return 1;
 }
 
@@ -1443,7 +1446,7 @@ static void lsa_init_stripe(struct stripe_head *sh, sector_t sector)
 
 static int lsa_stripe_init(raid5_conf_t *conf)
 {
-	int i, res;
+	int i, res, lsa_seg_nr;
 	struct stripe_head *sh;
 	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
 	if (!sh)
@@ -1467,20 +1470,22 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	conf->lsa_root = lsa_init(raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 	conf->lsa_dd_idx = 0;
 	conf->lsa_seg_sh = NULL;
+	
+	lsa_seg_nr = (256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks;
 
 	if (kfifo_alloc(&conf->wr_free_fifo, sizeof(struct stripe_head *) *
-				conf->max_nr_stripes, GFP_KERNEL)) {
+				lsa_seg_nr, GFP_KERNEL)) {
 		pr_info("alloc wr_free_fifo failed\n");
 		return 0;
 	}
 
 	if (kfifo_alloc(&conf->wr_data_fifo, sizeof(struct stripe_head *) *
-				conf->max_nr_stripes, GFP_KERNEL)) {
+				lsa_seg_nr, GFP_KERNEL)) {
 		pr_info("alloc wr_data_fifo failed\n");
 		return 0;
 	}
 
-	for (i = 0; i < conf->max_nr_stripes; i ++) {
+	for (i = 0; i < lsa_seg_nr; i ++) {
 		sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
 		if (!sh) {
 			pr_info("alloc data stripe failed\n");
@@ -4039,7 +4044,7 @@ static struct bio *remove_bio_from_req(raid5_conf_t *conf)
 		conf->retry_target = NULL;
 		return bi;
 	}
-	return bio_list_pop(&conf->target_list);
+	return NULL;
 }
 
 static struct stripe_head *
@@ -4106,6 +4111,8 @@ lsa_end_read_request(struct bio *bi, int error)
 	lsa_release_stripe(sh);
 }
 
+static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi);
+
 static void
 lsa_end_write_request(struct bio *bi, int error)
 {
@@ -4133,6 +4140,9 @@ lsa_end_write_request(struct bio *bi, int error)
 				sizeof(sh),
 				&conf->device_lock);
 		WARN_ON(ret != sizeof(sh));
+
+		if (!bio_list_empty(&conf->target_list))
+			tasklet_schedule(&conf->tasklet);
 	}
 }
 
@@ -4201,7 +4211,7 @@ static void lsa_stripe_rw(struct stripe_head *sh)
 static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
-	lsa_entry_t *le = lsa_find_by_ti(conf->lsa_root, sector);
+	lsa_entry_t *le = /*lsa_find_by_ti(conf->lsa_root, sector)*/NULL;
 	struct r5dev *dev;
 	int dd_idx, seg_id, offset, rlen;
 	unsigned long flags;
@@ -4265,17 +4275,23 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 		sh = NULL;
 		conf->lsa_dd_idx = 0;
 	}
-	dd_idx = conf->lsa_dd_idx++;
+	if (sh == NULL) {
+		if (!kfifo_is_empty(&conf->wr_free_fifo)) {
+			res = kfifo_out(&conf->wr_free_fifo, 
+					(unsigned char *)&sh,
+					sizeof(sh));
+			WARN_ON(res != sizeof(sh));
+			conf->lsa_seg_sh = sh;
+		} else {
+			bio_list_add(&conf->target_list, bio);
+		}
+	}
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
-	if (sh == NULL) {
-		res = kfifo_out_locked(&conf->wr_free_fifo, 
-				(unsigned char *)&sh,
-				sizeof(sh),
-				&conf->device_lock);
-		WARN_ON(res != sizeof(sh));
-		conf->lsa_seg_sh = sh;
-	}
+	if (sh == NULL)
+		goto out;
+
+	dd_idx = conf->lsa_dd_idx++;
 
 	seg_id = sh->sector;
 	dev = &sh->dev[dd_idx];
@@ -4283,6 +4299,7 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	set_bit(R5_LOCKED,    &dev->flags);
 	set_bit(R5_Wantwrite, &dev->flags);
 	do_targ_page_add(sh, bio, dev);
+	bio_endio(bio, 0);
 
 	pr_debug("lsa_write_req: ti %u, seg %d,%d, offset %d,%d, %lx\n",
 		sector, seg_id, dd_idx, offset, wlen, dev->flags);
@@ -4300,7 +4317,7 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	le->offset       = offset;
 	le->length       = bio->bi_size>>9;
 #endif
-
+out:
 	return 0;
 }
 
@@ -4323,9 +4340,27 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 	return lsa_write_req(conf, bi, (uint32_t)logical_sector);
 }
 
+static struct bio *lsa_retry_pop(raid5_conf_t *conf)
+{
+	struct bio *bio;
+	unsigned long flags;
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+	bio = bio_list_pop(&conf->target_list);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+
+	return bio;
+}
+
 static void raid_tasklet(unsigned long data)
 {
-	raid5_conf_t *conf  = (raid5_conf_t *)data;
+	raid5_conf_t *conf = (raid5_conf_t *)data;
+	struct bio *bio;
+
+	while ((bio = lsa_retry_pop(conf))) {
+		pr_debug("retry bio %p\n", bio);
+		lsa_bio_req(conf, bio);
+	}
 
 	while (kfifo_len(&conf->wr_data_fifo)) {
 		struct stripe_head *sh;

@@ -181,7 +181,7 @@ static void targ_bio_put(targ_req_t *req)
 	if (atomic_dec_and_test(&req->bios_inflight)) {
 		targ_buf_set_page(&req->buf);
 		req->state = IO_TASK;
-#if 0
+#if 1
 		spin_lock_irqsave(&target.task.lock, flags);
 		list_add_tail(&req->task_list, &target.task.list);
 		spin_unlock_irqrestore(&target.task.lock, flags);
