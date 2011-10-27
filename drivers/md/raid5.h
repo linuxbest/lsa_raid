@@ -3,6 +3,7 @@
 
 #include <linux/raid/xor.h>
 #include <linux/dmaengine.h>
+#include <linux/kfifo.h>
 
 /*
  *
@@ -449,6 +450,9 @@ struct raid5_private_data {
 	int      lsa_dd_idx;
 	uint32_t lsa_seg_id;
 	struct stripe_head  *lsa_seg_sh;
+
+	struct kfifo wr_free_fifo;
+	struct kfifo wr_data_fifo;
 };
 
 typedef struct raid5_private_data raid5_conf_t;

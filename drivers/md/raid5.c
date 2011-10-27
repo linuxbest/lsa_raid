@@ -243,16 +243,6 @@ static void release_stripe(struct stripe_head *sh)
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 }
 
-static void release_stripe_wakeup(struct stripe_head *sh, int wakeup)
-{
-	raid5_conf_t *conf = sh->raid_conf;
-	unsigned long flags;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	__release_stripe(conf, sh, wakeup);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-}
-
 static inline void remove_hash(struct stripe_head *sh)
 {
 	pr_debug("remove_hash(), stripe %llu\n",
@@ -1410,14 +1400,50 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	sh = conf->lsa_seg_sh;
 	if (sh) {
 		shrink_buffers(sh);
-		list_del_init(&sh->lru);
+		kmem_cache_free(conf->slab_cache, sh);
+	}
+	while (kfifo_len(&conf->wr_data_fifo)) {
+		int ret = kfifo_out(&conf->wr_data_fifo, 
+				(unsigned char *)&sh,
+				sizeof(sh));
+		WARN_ON(ret != sizeof(sh));
+		shrink_buffers(sh);
+		kmem_cache_free(conf->slab_cache, sh);
+	}
+	while (kfifo_len(&conf->wr_free_fifo)) {
+		int ret = kfifo_out(&conf->wr_free_fifo, 
+				(unsigned char *)&sh,
+				sizeof(sh));
+		WARN_ON(ret != sizeof(sh));
+		shrink_buffers(sh);
 		kmem_cache_free(conf->slab_cache, sh);
 	}
 	return 1;
 }
 
+static void lsa_init_stripe(struct stripe_head *sh, sector_t sector)
+{
+	raid5_conf_t *conf = sh->raid_conf;
+	int i;
+
+	pr_debug("lsa_init_stripe called, stripe %llu\n",
+		(unsigned long long)sh->sector);
+
+	sh->disks = conf->raid_disks;
+	sh->sector = sector;
+	sh->state = 0;
+	stripe_set_idx(sector, conf, 0, sh);
+
+	for (i = sh->disks; i--; ) {
+		struct r5dev *dev = &sh->dev[i];
+		dev->flags = 0;
+		raid5_build_block(sh, i, 0);
+	}
+}
+
 static int lsa_stripe_init(raid5_conf_t *conf)
 {
+	int i, res;
 	struct stripe_head *sh;
 	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
 	if (!sh)
@@ -1439,7 +1465,48 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
 	conf->lsa_root = lsa_init(raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
-	conf->lsa_dd_idx = conf->raid_disks;
+	conf->lsa_dd_idx = 0;
+	conf->lsa_seg_sh = NULL;
+
+	if (kfifo_alloc(&conf->wr_free_fifo, sizeof(struct stripe_head *) *
+				conf->max_nr_stripes, GFP_KERNEL)) {
+		pr_info("alloc wr_free_fifo failed\n");
+		return 0;
+	}
+
+	if (kfifo_alloc(&conf->wr_data_fifo, sizeof(struct stripe_head *) *
+				conf->max_nr_stripes, GFP_KERNEL)) {
+		pr_info("alloc wr_data_fifo failed\n");
+		return 0;
+	}
+
+	for (i = 0; i < conf->max_nr_stripes; i ++) {
+		sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
+		if (!sh) {
+			pr_info("alloc data stripe failed\n");
+			return 0;
+		}
+		sh->raid_conf = conf;
+		if (grow_buffers(sh)) {
+			pr_info("alloc page stripe failed\n");
+			shrink_buffers(sh);
+			kmem_cache_free(conf->slab_cache, sh);
+			return 0;
+		}
+		lsa_init_stripe(sh, lsa_seg_alloc(conf->lsa_root));
+		if (conf->lsa_seg_sh == NULL) {
+			conf->lsa_seg_sh = sh;
+			continue;
+		}
+		res = kfifo_in(&conf->wr_free_fifo, 
+				(unsigned char *)&sh, 
+				sizeof(sh));
+		if (res != sizeof(sh)) {
+			pr_info("kfifo into free failed\n");
+			return 0;
+		}
+	}
+
 	return 1;
 }
 
@@ -4058,7 +4125,15 @@ lsa_end_write_request(struct bio *bi, int error)
 		set_bit(R5_WriteError, &sh->dev[i].flags);
 	}
 	
-	lsa_release_stripe(sh);
+	if (atomic_dec_and_test(&sh->count)) {
+		int ret;
+		lsa_init_stripe(sh, lsa_seg_alloc(conf->lsa_root));
+		ret = kfifo_in_locked(&conf->wr_free_fifo,
+				(unsigned char *)&sh,
+				sizeof(sh),
+				&conf->device_lock);
+		WARN_ON(ret != sizeof(sh));
+	}
 }
 
 static void lsa_stripe_rw(struct stripe_head *sh)
@@ -4148,6 +4223,7 @@ static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 
 	spin_lock_irqsave(&conf->device_lock, flags);
 	sh = __lsa_find_stripe(conf, seg_id);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	dev = &sh->dev[dd_idx];
 	if (test_bit(R5_UPTODATE, &dev->flags)) {
@@ -4161,8 +4237,6 @@ static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 		lsa_stripe_rw(sh);
 	}
 
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-	
 	lsa_release_stripe(sh);
 	
 	return 0;
@@ -4172,36 +4246,38 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 {
 	struct stripe_head *sh = conf->lsa_seg_sh;
 	struct r5dev *dev;
-	int dd_idx, insert = 0, offset, wlen;
+	int dd_idx, offset, wlen, res;
 	uint32_t seg_id;
 	unsigned long flags;
-	lsa_entry_t *le;
 
 	offset = bio->bi_sector & ((sector_t)STRIPE_SECTORS-1);
 	wlen   = bio->bi_size >> 9;
 	
-	le = lsa_find_by_ti(conf->lsa_root, sector);
-	if (le == NULL) {
-		le = kzalloc(sizeof(*le), GFP_ATOMIC);
-		insert = 1;
-	}
-
 	spin_lock_irqsave(&conf->device_lock, flags);
 	if (conf->lsa_dd_idx == conf->raid_disks) {
 		if (sh) {
-			atomic_inc(&sh->count);
-			list_del_init(&sh->lru);
-			lsa_stripe_rw(sh);
-			__lsa_release_stripe(conf, sh);
+			res = kfifo_in(&conf->wr_data_fifo, 
+					(unsigned char *)&sh, 
+					sizeof(sh));
+			BUG_ON(res != sizeof(sh));
+			tasklet_schedule(&conf->tasklet);
 		}
-		conf->lsa_seg_id = lsa_seg_alloc(conf->lsa_root);
+		sh = NULL;
 		conf->lsa_dd_idx = 0;
 	}
-	dd_idx = conf->lsa_dd_idx;
-	seg_id = conf->lsa_seg_id;
+	dd_idx = conf->lsa_dd_idx++;
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
-	sh = __lsa_find_stripe(conf, seg_id);
+	if (sh == NULL) {
+		res = kfifo_out_locked(&conf->wr_free_fifo, 
+				(unsigned char *)&sh,
+				sizeof(sh),
+				&conf->device_lock);
+		WARN_ON(res != sizeof(sh));
+		conf->lsa_seg_sh = sh;
+	}
 
+	seg_id = sh->sector;
 	dev = &sh->dev[dd_idx];
 
 	set_bit(R5_LOCKED,    &dev->flags);
@@ -4210,6 +4286,7 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 
 	pr_debug("lsa_write_req: ti %u, seg %d,%d, offset %d,%d, %lx\n",
 		sector, seg_id, dd_idx, offset, wlen, dev->flags);
+#if 0
 	if (le && insert == 0 && (offset != 0 || wlen != STRIPE_SIZE)) {
 		pr_debug(" le: ti %u, seg %d,%d, offset %d,%d\n",
 				le->log_vol_id, le->seg_id, le->seg_column, 
@@ -4222,16 +4299,8 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	le->seg_column   = dd_idx;
 	le->offset       = offset;
 	le->length       = bio->bi_size>>9;
+#endif
 
-	conf->lsa_dd_idx ++;
-	conf->lsa_seg_sh = sh;
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-	
-	if (insert) 
-		lsa_insert(conf->lsa_root, le);
-	
-	lsa_release_stripe(sh);
-	
 	return 0;
 }
 
@@ -4257,24 +4326,17 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 static void raid_tasklet(unsigned long data)
 {
 	raid5_conf_t *conf  = (raid5_conf_t *)data;
-	struct bio_list reject;
-	struct bio *bio;
-	unsigned long flags;
 
-	if (bio_list_empty(&conf->target_tasklet_list))
-		return;
+	while (kfifo_len(&conf->wr_data_fifo)) {
+		struct stripe_head *sh;
+		int ret = kfifo_out_locked(&conf->wr_data_fifo, 
+				(unsigned char *)&sh,
+				sizeof(sh),
+				&conf->device_lock);
+		WARN_ON(ret != sizeof(sh));
 
-	bio_list_init(&reject);
-	do {
-		spin_lock_irqsave(&conf->device_lock, flags);
-		bio = bio_list_pop(&conf->target_tasklet_list);
-		spin_unlock_irqrestore(&conf->device_lock, flags);
-
-		if (bio == NULL)
-			break;
-
-		lsa_bio_req(conf, bio);
-	} while (bio);
+		lsa_stripe_rw(sh);
+	}
 }
 
 static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
@@ -4322,13 +4384,8 @@ static int targ_page_put(struct stripe_head *sh, struct r5dev *dev)
 static int targ_page_req(mddev_t *mddev, struct bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
-	unsigned long flags;
+	lsa_bio_req(conf, bi);
 
-	spin_lock_irqsave(&conf->device_lock, flags);
-	bio_list_add(&conf->target_tasklet_list, bi);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-
-	tasklet_schedule(&conf->tasklet);
 	return 0;
 }
 
