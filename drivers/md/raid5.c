@@ -58,6 +58,7 @@
 #include "bitmap.h"
 #include "target.h"
 #include "lsa.h"
+#include "lsa_segment.h"
 
 /*
  * Stripe cache
@@ -4266,8 +4267,11 @@ static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	spin_lock_irqsave(&conf->device_lock, flags);
 	if (conf->lsa_dd_idx == conf->raid_disks) {
 		if (sh) {
+			dd_idx = conf->lsa_dd_idx++;
+			dev = &sh->dev[dd_idx];
+			set_bit(R5_Wantwrite, &dev->flags);
 			res = kfifo_in(&conf->wr_data_fifo, 
-					(unsigned char *)&sh, 
+					(unsigned char *)&sh,
 					sizeof(sh));
 			BUG_ON(res != sizeof(sh));
 			tasklet_schedule(&conf->tasklet);
@@ -4423,6 +4427,33 @@ static int targ_page_req(mddev_t *mddev, struct bio * bi)
 
 	return 0;
 }
+
+/* LSA API */
+struct lsa_segment {
+};
+
+struct lsa_segment * 
+lsa_segment_init(lsa_segment_new_t *layout)
+{
+	return NULL;
+}
+
+void 
+lsa_segment_exit(struct lsa_segment *seg)
+{
+}
+
+/*
+ * data == 0 means meta read/write
+ * data == 1 means data read/write
+ *
+ */
+int 
+lsa_segment_rw(struct lsa_segment *seg, lsa_segment_buf_t *buf)
+{
+	return 0;
+}
+/* LSA API END */
 
 static sector_t reshape_request(mddev_t *mddev, sector_t sector_nr, int *skipped)
 {
