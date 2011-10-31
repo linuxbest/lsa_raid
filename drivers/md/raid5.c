@@ -4035,19 +4035,8 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
+/* LSA API */
 /* calling in interrupt context */
-static struct bio *remove_bio_from_req(raid5_conf_t *conf)
-{
-	struct bio *bi;
-
-	bi = conf->retry_target;
-	if (bi) {
-		conf->retry_target = NULL;
-		return bi;
-	}
-	return NULL;
-}
-
 static struct stripe_head *
 __lsa_find_stripe(raid5_conf_t *conf, uint32_t sector)
 {
@@ -4368,7 +4357,7 @@ static void raid_tasklet(unsigned long data)
 
 	while (kfifo_len(&conf->wr_data_fifo)) {
 		struct stripe_head *sh;
-		int ret = kfifo_out_locked(&conf->wr_data_fifo, 
+		int ret = kfifo_out_locked(&conf->wr_data_fifo,
 				(unsigned char *)&sh,
 				sizeof(sh),
 				&conf->device_lock);
@@ -4376,37 +4365,6 @@ static void raid_tasklet(unsigned long data)
 
 		lsa_stripe_rw(sh);
 	}
-}
-
-static int targ_page_bio(raid5_conf_t *conf, struct bio *bi)
-{
-	int dd_idx;
-	sector_t sector, logical_sector, last_sector;
-	struct stripe_head *sh;
-	const int rw = bio_data_dir(bi);
-
-	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
-	last_sector = bi->bi_sector + (bi->bi_size>>9);
-	bi->bi_next = NULL;
-	bi->bi_phys_segments = 1;	/* over-loaded to count active stripes */
-
-	sector = raid5_compute_sector(conf, logical_sector, 0, &dd_idx, NULL);
-	sh = get_active_stripe(conf, sector, 0, 1, 0);
-
-	if (!sh) 
-		goto out;
-
-	if (!add_stripe_bio(sh, bi, dd_idx, rw)) {
-		release_stripe(sh);
-		goto out;
-	}
-	set_bit(STRIPE_HANDLE, &sh->state);
-	release_stripe(sh);
-	return 1;
-out:
-	WARN_ON(conf->retry_target);
-	conf->retry_target = bi;
-	return 0;
 }
 
 static int targ_page_put(struct stripe_head *sh, struct r5dev *dev)
@@ -4428,7 +4386,6 @@ static int targ_page_req(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
-/* LSA API */
 struct lsa_segment {
 };
 
@@ -4870,16 +4827,6 @@ static void raid5d(mddev_t *mddev)
 			if (!ok)
 				break;
 			handled++;
-		}
-
-		while ((bio = remove_bio_from_req(conf))) {
-			int ok;
-			spin_unlock_irq(&conf->device_lock);
-			ok = targ_page_bio(conf, bio);
-			spin_lock_irq(&conf->device_lock);
-			if (!ok)
-				break;
-			handled ++;
 		}
 
 		sh = __get_priority_stripe(conf);
