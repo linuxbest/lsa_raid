@@ -1393,13 +1393,14 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
 static void
-lsa_meta_page_put(struct lsa_meta *meta, struct page *page)
+lsa_meta_page_put(struct lsa_meta *meta, struct page *page, spinlock_t *lock)
 {
 	int res;
 
-	res = kfifo_in(&meta->free_fifo,
+	res = kfifo_in_locked(&meta->free_fifo,
 			(unsigned char *)&page,
-			sizeof(page));
+			sizeof(page), 
+			lock);
 	BUG_ON(res != sizeof(page));
 }
 
@@ -4218,7 +4219,9 @@ lsa_end_write_request(struct bio *bi, int error)
 	}
 
 	if (dev->meta_page) {
-		lsa_meta_page_put(&conf->lsa_meta, dev->meta_page);
+		lsa_meta_page_put(&conf->lsa_meta,
+				dev->meta_page,
+				&conf->device_lock);
 		dev->meta_page = NULL;
 	}
 
