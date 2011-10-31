@@ -4365,6 +4365,10 @@ lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
 			dev = &sh->dev[dd_idx];
 			set_bit(R5_Wantwrite,   &dev->flags);
 			set_bit(R5_Wantcompute, &dev->flags);
+			/* TODO
+			 * 0) compute the parity
+			 * 1) make sure the data is uptodate 
+			 */
 			res = kfifo_in(&conf->wr_data_fifo,
 					(unsigned char *)&sh,
 					sizeof(sh));
