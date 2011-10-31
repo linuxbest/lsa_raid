@@ -1392,6 +1392,100 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
+static void
+lsa_meta_page_put(struct lsa_meta *meta, struct page *page)
+{
+	int res;
+
+	res = kfifo_in(&meta->free_fifo,
+			(unsigned char *)&page,
+			sizeof(page));
+	BUG_ON(res != sizeof(page));
+}
+
+/* 
+ * head 8 byte
+ * entry[]
+ * tail 8 byte
+ */
+static int
+lsa_meta_page_get(struct lsa_meta *meta, struct lsa_entry **le, struct r5dev *dev)
+{
+	struct page *page = meta->page;
+
+	if (meta->page == NULL) {
+		int res;
+		BUG_ON(kfifo_is_empty(&meta->free_fifo));
+		res = kfifo_out(&meta->free_fifo,
+				(unsigned char *)&page,
+				sizeof(page));
+		BUG_ON(res != sizeof(page));
+		meta->page  = page;
+		meta->i     = 0;
+		meta->entry = page_address(page);
+	}
+
+	*le = &meta->entry[meta->i];
+	meta->i ++;
+
+	if (meta->i < meta->max) 
+		return 0;
+
+	/* TODO fill the tail */
+	set_bit(R5_LOCKED,    &dev->flags);
+	set_bit(R5_Wantwrite, &dev->flags);
+	dev->meta_page = meta->page;
+	meta->page = NULL;
+
+	return 1;
+}
+
+static int lsa_meta_init(struct lsa_meta *meta, int nr)
+{
+	int i;
+	struct page *page;
+
+	meta->page  = NULL;
+	meta->max   = STRIPE_SIZE/sizeof(lsa_entry_t);
+
+	/* we alloc double size of meta page, to make sure the meta insert
+	 * always have page */
+	nr *= 2;
+	if (kfifo_alloc(&meta->free_fifo, sizeof(struct page *) * nr, 
+				GFP_KERNEL)) {
+		pr_info("alloc meta free_fifo failed\n");
+		return 0;
+	}
+
+	for (i = 0; i < nr; i ++) {
+		int res;
+		if (!(page = alloc_pages(GFP_KERNEL, STRIPE_ORDER))) {
+			return 0;
+		}
+		res = kfifo_in(&meta->free_fifo, 
+				(unsigned char *)&page,
+				sizeof(page));
+		if (res != sizeof(page)) {
+			pr_info("kfifo into meta free failed\n");
+		}
+	}
+
+	return 1;
+}
+
+static int lsa_meta_exit(struct lsa_meta *meta)
+{
+	while (kfifo_len(&meta->free_fifo)) {
+		struct page *page;
+		int res = kfifo_out(&meta->free_fifo,
+				(unsigned char *)&page,
+				sizeof(page));
+		WARN_ON(res != sizeof(page));
+		__free_pages(page, STRIPE_ORDER);
+	}
+
+	return 1;
+}
 static int lsa_stripe_exit(raid5_conf_t *conf)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
@@ -1422,7 +1516,7 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	kfifo_free(&conf->wr_data_fifo);
 	kfifo_free(&conf->wr_free_fifo);
 
-	return 1;
+	return lsa_meta_exit(&conf->lsa_meta);
 }
 
 static void lsa_init_stripe(struct stripe_head *sh, sector_t sector)
@@ -1513,7 +1607,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 		}
 	}
 
-	return 1;
+	return lsa_meta_init(&conf->lsa_meta, lsa_seg_nr);
 }
 
 static int grow_one_stripe(raid5_conf_t *conf)
@@ -4110,6 +4204,7 @@ lsa_end_write_request(struct bio *bi, int error)
 	raid5_conf_t *conf = sh->raid_conf;
 	int i = bi->bi_xor_disk;
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
+	struct r5dev *dev = &sh->dev[bi->bi_xor_disk];
 
 	BUG_ON (bi != &sh->dev[i].req);
 
@@ -4121,7 +4216,12 @@ lsa_end_write_request(struct bio *bi, int error)
 		set_bit(WriteErrorSeen, &conf->disks[i].rdev->flags);
 		set_bit(R5_WriteError, &sh->dev[i].flags);
 	}
-	
+
+	if (dev->meta_page) {
+		lsa_meta_page_put(&conf->lsa_meta, dev->meta_page);
+		dev->meta_page = NULL;
+	}
+
 	if (atomic_dec_and_test(&sh->count)) {
 		int ret;
 		lsa_init_stripe(sh, lsa_seg_alloc(conf->lsa_root));
@@ -4148,6 +4248,7 @@ static void lsa_stripe_rw(struct stripe_head *sh)
 		int rw;
 		struct bio *bi;
 		mdk_rdev_t *rdev;
+		struct r5dev *dev = &sh->dev[i];
 
 		if (test_and_clear_bit(R5_Wantwrite, &sh->dev[i].flags))
 			rw = WRITE;
@@ -4187,6 +4288,8 @@ static void lsa_stripe_rw(struct stripe_head *sh)
 			bi->bi_io_vec = &sh->dev[i].vec;
 			bi->bi_io_vec[0].bv_len = STRIPE_SIZE;
 			bi->bi_io_vec[0].bv_offset = 0;
+			bi->bi_io_vec[0].bv_page = dev->meta_page ?
+				dev->meta_page : dev->page;
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
 			bi->bi_rw |= REQ_NOMERGE;
@@ -4198,7 +4301,7 @@ static void lsa_stripe_rw(struct stripe_head *sh)
 	}
 }
 
-static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
+static int lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	lsa_entry_t *le = /*lsa_find_by_ti(conf->lsa_root, sector)*/NULL;
@@ -4242,74 +4345,105 @@ static int lsa_read_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	return 0;
 }
 
-static int lsa_write_req(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
+/* call under device_lock hold with IRQ off */
+static struct stripe_head *
+lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
 {
 	struct stripe_head *sh = conf->lsa_seg_sh;
 	struct r5dev *dev;
-	int dd_idx, offset, wlen, res;
-	uint32_t seg_id;
-	unsigned long flags;
+	int dd_idx, res;
 
-	offset = bio->bi_sector & ((sector_t)STRIPE_SECTORS-1);
-	wlen   = bio->bi_size >> 9;
-	
-	spin_lock_irqsave(&conf->device_lock, flags);
+	/* if have sh, try get meta data buffer */
+	if (conf->lsa_dd_idx != conf->raid_disks && sh) {
+		dev = &sh->dev[conf->lsa_dd_idx];
+		if (lsa_meta_page_get(&conf->lsa_meta, le, dev))
+			conf->lsa_dd_idx ++;
+	}
 	if (conf->lsa_dd_idx == conf->raid_disks) {
 		if (sh) {
 			dd_idx = conf->lsa_dd_idx++;
 			dev = &sh->dev[dd_idx];
-			set_bit(R5_Wantwrite, &dev->flags);
-			res = kfifo_in(&conf->wr_data_fifo, 
+			set_bit(R5_Wantwrite,   &dev->flags);
+			set_bit(R5_Wantcompute, &dev->flags);
+			res = kfifo_in(&conf->wr_data_fifo,
 					(unsigned char *)&sh,
 					sizeof(sh));
 			BUG_ON(res != sizeof(sh));
 			tasklet_schedule(&conf->tasklet);
 		}
-		sh = NULL;
+		sh = conf->lsa_seg_sh = NULL;
 		conf->lsa_dd_idx = 0;
+		*le = NULL;
 	}
-	if (sh == NULL) {
-		if (!kfifo_is_empty(&conf->wr_free_fifo)) {
-			res = kfifo_out(&conf->wr_free_fifo, 
-					(unsigned char *)&sh,
-					sizeof(sh));
-			WARN_ON(res != sizeof(sh));
-			conf->lsa_seg_sh = sh;
-		} else {
-			bio_list_add(&conf->target_list, bio);
-		}
+
+	if (sh == NULL && kfifo_is_empty(&conf->wr_free_fifo)) 
+		return NULL;
+
+	res = kfifo_out(&conf->wr_free_fifo,
+			(unsigned char *)&sh,
+			sizeof(sh));
+	WARN_ON(res != sizeof(sh));
+	conf->lsa_seg_sh = sh;
+
+	if (*le == NULL) {
+		dev = &sh->dev[conf->lsa_dd_idx];
+		if (lsa_meta_page_get(&conf->lsa_meta, le, dev))
+			conf->lsa_dd_idx ++;
 	}
+	*dd_idx_p = conf->lsa_dd_idx;
+
+	conf->lsa_dd_idx++;
+
+	return sh;
+}
+
+/*
+ * TODO:
+ *  1) support multiple stream buffer.
+ *  2) raid parity buffer rotate.
+ *
+ */
+static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
+{
+	struct stripe_head *sh;
+	struct r5dev *dev;
+	int dd_idx = 0, offset, wlen;
+	uint32_t seg_id;
+	unsigned long flags;
+
+	struct lsa_entry *le;
+
+	offset = bio->bi_sector & ((sector_t)STRIPE_SECTORS-1);
+	wlen   = bio->bi_size >> 9;
+	
+	spin_lock_irqsave(&conf->device_lock, flags);
+	sh = lsa_write_begin(conf, &le, &dd_idx);
+	if (!sh)
+		bio_list_add(&conf->target_list, bio);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	if (sh == NULL)
 		goto out;
 
-	dd_idx = conf->lsa_dd_idx++;
-
 	seg_id = sh->sector;
 	dev = &sh->dev[dd_idx];
-
+	
 	set_bit(R5_LOCKED,    &dev->flags);
 	set_bit(R5_Wantwrite, &dev->flags);
+	
 	do_targ_page_add(sh, bio, dev);
 	bio_endio(bio, 0);
 
 	pr_debug("lsa_write_req: ti %u, seg %d,%d, offset %d,%d, %lx\n",
 		sector, seg_id, dd_idx, offset, wlen, dev->flags);
-#if 0
-	if (le && insert == 0 && (offset != 0 || wlen != STRIPE_SIZE)) {
-		pr_debug(" le: ti %u, seg %d,%d, offset %d,%d\n",
-				le->log_vol_id, le->seg_id, le->seg_column, 
-				le->offset, le->length);
-	}
 
 	le->log_vol_id   = sector;
 	le->log_track_id = seg_id;
 	le->seg_id       = seg_id;
 	le->seg_column   = dd_idx;
 	le->offset       = offset;
-	le->length       = bio->bi_size>>9;
-#endif
+	le->length       = wlen;
+
 out:
 	return 0;
 }
@@ -4328,9 +4462,9 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 			(unsigned long long)logical_sector,
 			rw == WRITE ? "W" : "R");
 	if (rw == READ)
-		return lsa_read_req(conf, bi, (uint32_t)logical_sector);
+		return lsa_page_read(conf, bi, (uint32_t)logical_sector);
 
-	return lsa_write_req(conf, bi, (uint32_t)logical_sector);
+	return lsa_page_write(conf, bi, (uint32_t)logical_sector);
 }
 
 static struct bio *lsa_retry_pop(raid5_conf_t *conf)

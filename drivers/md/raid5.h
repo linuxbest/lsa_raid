@@ -229,7 +229,7 @@ struct stripe_head {
 	struct r5dev {
 		struct bio	req;
 		struct bio_vec	vec;
-		struct page	*page;
+		struct page	*page, *meta_page;
 		struct bio	*toread, *read, *towrite, *written;
 		sector_t	sector;			/* sector of this page */
 		unsigned long	flags;
@@ -453,6 +453,13 @@ struct raid5_private_data {
 
 	struct kfifo wr_free_fifo;
 	struct kfifo wr_data_fifo;
+
+	struct lsa_meta {
+		struct kfifo free_fifo;
+		struct page *page;
+		unsigned int i, max;
+		struct lsa_entry *entry;
+	} lsa_meta;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
