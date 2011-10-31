@@ -6,21 +6,80 @@
 #include <linux/slab.h>
 #include <linux/err.h>
 
+#include "target.h"
 #include "lsa.h"
 
+/*
+ * as 64k block size.
+ *
+ * 1T
+ *  strip  16,777,216 
+ *  bitmap  2,097,152 byte
+ *  table 268,435,456 byte
+ *
+ */
 struct lsa_root {
 	spinlock_t lock;
-	struct rb_root root;
+	meta_page_op_t ops;
 
 	unsigned long **bitmap;
 	uint32_t cnt, seg, mseg;
+
+	struct {
+		struct hlist_head *hashtbl;
+		struct list_head dirty_list;
+		struct list_head inactive_list;
+		atomic_t active_entry;
+	} entry;
+	struct {
+		struct list_head inactive_list;
+		struct radix_tree_root root;
+	} page;
 };
 
-struct lsa_node {
+struct lsa_buffer_head {
 	uint32_t log_vol_id;
-	struct   rb_node node;
-	struct   lsa_entry *next;
+	struct hlist_node hash;
+	struct list_head lru;
+
+	struct lsa_entry *data;
+	struct lsa_node *b_this_page;
 };
+
+#define NR_HASH    (PAGE_SIZE/sizeof(struct hlist_head))
+#define HASH_MASK  (NR_HASH-1)
+#define entry_hash(root, lba) \
+	(&((root)->entry.hashtbl[((lba) >> STRIPE_SHIFT) & HASH_MASK]))
+
+static inline void 
+remove_hash(struct lsa_buffer_head *lh)
+{
+	hlist_del_init(&lh->hash);
+}
+
+static inline void 
+insert_hash(struct lsa_root *root,  struct lsa_buffer_head *lh)
+{
+	struct hlist_head *hp = entry_hash(root, lh->log_vol_id);
+	hlist_add_head(&lh->hash, hp);
+}
+
+static struct lsa_buffer_head *
+get_free_lsa_buffer(struct lsa_root *root)
+{
+	struct lsa_buffer_head *lh = NULL;
+	struct list_head *first;
+
+	if (list_empty(&root->entry.inactive_list))
+		goto out;
+	first = root->entry.inactive_list.next;
+	lh = list_entry(first, struct lsa_buffer_head, lru);
+	list_del_init(first);
+	remove_hash(lh);
+	atomic_inc(&root->entry.active_entry);
+out:
+	return lh;
+}
 
 enum {
 	LSA_BIT_SHIFT = PAGE_SHIFT+3,
@@ -29,17 +88,17 @@ enum {
 };
 
 struct lsa_root *
-lsa_init(uint32_t cnt)
+lsa_init(meta_page_op_t *ops)
 {
 	struct lsa_root *lsa_root;
-	int i;
+	int i, cnt = ops->stripe_nr;
 
 	pr_debug("lsa_init: nr is %d\n", cnt);
 	lsa_root = kzalloc(sizeof(*lsa_root), GFP_KERNEL);
 	if (lsa_root == NULL)
 		return NULL;
 
-	lsa_root->root = RB_ROOT;
+	lsa_root->ops  = *ops;
 	lsa_root->cnt  = cnt;
 	lsa_root->mseg = cnt;
 	lsa_root->seg  = 0;
@@ -47,7 +106,8 @@ lsa_init(uint32_t cnt)
 	cnt = cnt >> (PAGE_SHIFT+3);
 	cnt ++;
 
-	lsa_root->bitmap = kmalloc(sizeof(unsigned long *)*cnt, GFP_KERNEL);
+	lsa_root->bitmap = kmalloc(sizeof(unsigned long *)*cnt,
+			GFP_KERNEL);
 	if (lsa_root->bitmap == NULL)
 		return NULL;
 
@@ -58,6 +118,22 @@ lsa_init(uint32_t cnt)
 			return NULL;
 		lsa_root->bitmap[i] = bitmap;
 	}
+
+	lsa_root->entry.hashtbl = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (lsa_root->entry.hashtbl == NULL)
+		return NULL;
+
+	INIT_LIST_HEAD(&lsa_root->entry.dirty_list);
+	INIT_LIST_HEAD(&lsa_root->entry.inactive_list);
+	atomic_set(&lsa_root->entry.active_entry, 0);
+
+	for (i = 0; i < 65536; i ++) {
+		struct lsa_buffer_head *lh = kzalloc(sizeof(*lh), GFP_KERNEL);
+		list_add_tail(&lh->lru, &lsa_root->entry.inactive_list);
+	}
+
+	INIT_LIST_HEAD(&lsa_root->page.inactive_list);
+	INIT_RADIX_TREE(&lsa_root->page.root, GFP_KERNEL);
 
 	return lsa_root;
 }
@@ -88,122 +164,30 @@ lsa_set_bit(struct lsa_root *root, uint32_t ti)
 	__set_bit(offset, bitmap);
 }
 
-static struct lsa_node *
-lsa_rb_find_by_ti(struct lsa_root *root, uint32_t ti)
-{
-	struct rb_node * n = root->root.rb_node;
-	struct lsa_node * le;
-
-	while (n) {
-		le = rb_entry(n, struct lsa_node, node);
-
-		if (ti < le->log_vol_id)
-			n = n->rb_left;
-		else if (ti > le->log_vol_id)
-			n = n->rb_right;
-		else
-			return le;
-	}
-
-	return NULL;
-}
-
-static struct lsa_node *
-__lsa_rb_insert(struct lsa_root *root, struct lsa_node *new)
-{
-	struct rb_node ** p = &root->root.rb_node;
-	struct rb_node * parent = NULL;
-	struct lsa_node * le;
-	uint32_t ti = new->log_vol_id;
-
-	while (*p) {
-		parent = *p;
-		le = rb_entry(parent, struct lsa_node, node);
-
-		if (ti < le->log_vol_id)
-			p = &(*p)->rb_left;
-		else if (ti > le->log_vol_id)
-			p = &(*p)->rb_right;
-		else
-			return le;
-	}
-
-	rb_link_node(&new->node, parent, p);
-	return NULL;
-}
-
-static struct lsa_node *
-lsa_rb_insert(struct lsa_root *root, struct lsa_node *new)
-{
-	struct lsa_node * le = __lsa_rb_insert(root, new);
-	if (le)
-		goto out;
-	rb_insert_color(&new->node, &root->root);
-out:
-	return le;
-}
-
 lsa_entry_t *
 lsa_find_by_ti(struct lsa_root *root, uint32_t ti)
 {
-	struct lsa_node *node = NULL;
+	struct lsa_buffer_head *lh = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&root->lock, flags);
-
 	if (ti < root->cnt && lsa_test_bit(root, ti))
-		node = lsa_rb_find_by_ti(root, ti);
-
+		lh = NULL;
 	spin_unlock_irqrestore(&root->lock, flags);
 
-	return node ? node->next : NULL;
-}
-
-static void lsa_entry_copy(lsa_entry_t *n, lsa_entry_t *o)
-{
-	n->log_vol_id   = o->log_vol_id;
-	n->log_track_id = o->log_track_id;
-	n->seg_id       = o->seg_id;
-	n->seg_column   = o->seg_column;
-	n->offset       = o->offset;
-	n->length       = o->length;
-}
-
-static void lsa_entry_show(lsa_entry_t *n, char *prefix)
-{
-	pr_debug("%s: %u, offset %d, length %d, seg %d, colum %d\n",
-			prefix, n->log_vol_id, n->offset, n->length,
-			n->seg_id, n->seg_column);
+	return lh ? lh->data : NULL;
 }
 
 int 
 lsa_insert(struct lsa_root *root, lsa_entry_t *le)
 {
-	uint32_t ti = le->log_vol_id;
+	struct lsa_buffer_head *lh = NULL;
 	unsigned long flags;
-	struct lsa_node *new = kzalloc(sizeof(*new), GFP_ATOMIC), *o;
-	int res = 0;
-
-	lsa_entry_show(le, "lsa_insert");
-	if (new == NULL)
-		return -ENOMEM;
-	if (root->cnt < ti)
-		return -EINVAL;
-
-	new->log_vol_id = ti;
-	new->next = le;
 
 	spin_lock_irqsave(&root->lock, flags);
-	o = lsa_rb_insert(root, new);
-	if (o) {
-		memcpy(o, le, sizeof(*o));
-		kfree(new);
-		kfree(le);
-	}
-	lsa_set_bit(root, ti);
 	spin_unlock_irqrestore(&root->lock, flags);
 
-	return res;
+	return lh ? 0 : -1;
 }
 
 uint32_t

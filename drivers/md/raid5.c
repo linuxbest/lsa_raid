@@ -1392,6 +1392,18 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
+static int
+meta_read_page(struct mddev_s *mddev, int strip,  struct page *page)
+{
+	return 0;
+}
+
+static int
+meta_write_page(struct mddev_s *mddev, int stripe, struct page **page)
+{
+	return 0;
+}
+
 static void
 lsa_meta_page_put(struct lsa_meta *meta, struct page *page, spinlock_t *lock)
 {
@@ -1544,6 +1556,14 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 {
 	int i, res, lsa_seg_nr;
 	struct stripe_head *sh;
+	struct meta_page_op meta_ops = {
+		.mddev = conf->mddev,
+		.stripe_nr = raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS,
+		.disks = conf->raid_disks,
+		.read_page = meta_read_page,
+		.write_page = meta_write_page,
+	};
+
 	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
 	if (!sh)
 		return 0;
@@ -1563,7 +1583,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_set(&sh->count, 1);
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
-	conf->lsa_root = lsa_init(raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
+	conf->lsa_root = lsa_init(&meta_ops);
 	conf->lsa_dd_idx = 0;
 	conf->lsa_seg_sh = NULL;
 	
@@ -4414,7 +4434,7 @@ static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 {
 	struct stripe_head *sh;
 	struct r5dev *dev;
-	int dd_idx = 0, offset, wlen;
+	int dd_idx = 0, offset, wlen, res = 0;
 	uint32_t seg_id;
 	unsigned long flags;
 
@@ -4451,8 +4471,9 @@ static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	le->offset       = offset;
 	le->length       = wlen;
 
+	res = lsa_insert(conf->lsa_root, le);
 out:
-	return 0;
+	return res;
 }
 
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
