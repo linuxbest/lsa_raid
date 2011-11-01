@@ -2026,8 +2026,9 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 			list_del_init(&eh->lru);
 		else
 			res = -EBUSY;
-	} else {
+	} else { /* alloc new entry, schedule it doing IO request */
 		*lep = eh = __lsa_entry_freed(dir);
+		BUG_ON(!eh);
 		/* TODO handle when LRU is empty */
 		eh->e.log_vol_id = log_vol_id;
 		list_add_tail(&dir->queue, &dir->queue);
