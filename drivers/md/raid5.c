@@ -1413,7 +1413,7 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
 struct entry_head {
 	struct rb_node node;
-	struct list_head lru, dirty;
+	struct list_head lru, dirty, queue;
 	unsigned long flags;
 	atomic_t count;
 #define EH_TREE  0
@@ -1589,6 +1589,11 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_head **
 		else
 			res = EBUSY;
 		atomic_inc(&eh->count);
+	} else {
+		eh = __lsa_entry_freed(dir);
+		eh->e.log_vol_id = log_vol_id;
+		list_add_tail(&dir->queue, &dir->queue);
+		tasklet_schedule(&dir->tasklet);
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 	if (*lep == NULL) {
@@ -1629,6 +1634,23 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_head *eh)
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
+static void lsa_dirtory_tasklet(unsigned long data)
+{
+	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dir->lock, flags);
+	while (!list_empty(&dir->queue)) {
+		struct entry_head *eh = list_entry(dir->queue.next,
+				struct entry_head, queue);
+		list_del_init(&eh->queue);
+		spin_unlock_irqrestore(&dir->lock, flags);
+		/* TODO */
+		spin_lock_irqsave(&dir->lock, flags);
+	}
+	spin_unlock_irqrestore(&dir->lock, flags);
+}
+
 static int
 __entry_head_free(struct lsa_dirtory *dir, struct entry_head *eh)
 {
@@ -1649,6 +1671,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 	dir->seg  = 0;
 	INIT_LIST_HEAD(&dir->dirty);
 	INIT_LIST_HEAD(&dir->lru);
+	tasklet_init(&dir->tasklet, lsa_dirtory_tasklet, (unsigned long)dir);
 
 	for (i = 0; i < ENTRY_HEAD_NR; i ++) {
 		struct entry_head *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
