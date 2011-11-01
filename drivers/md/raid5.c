@@ -1995,7 +1995,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 		set_entry_dirty(eh);
 		set_entry_uptodate(eh);
 		list_add_tail(&dir->dirty, &eh->dirty);
-		lsa_entry_set_bit(dir, le->e.log_vol_id);
+		lsa_entry_set_bit(dir, eh->e.log_vol_id);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
 		else 
@@ -2089,6 +2089,9 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	return 0;
 }
 
+static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
+		struct entry_buffer *eb);
+
 static int
 lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se)
@@ -2117,12 +2120,9 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		return 0;
 
 	/* moving the bio into target list then doing retry */
-	spin_lock_irqsave(&conf->device_lock, flags);
 	while ((bio = bio_list_pop(&bio_list))) {
-		bio_list_add(&conf->target_list, bio);
+		__lsa_bio_req(conf, bio, eh);
 	}
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-	tasklet_schedule(&conf->tasklet);
 
 	return 0;
 }
@@ -5359,9 +5359,26 @@ lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
 	return lsa_entry_insert(&conf->lsa_dirtory, le);
 }
 
+static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
+		struct entry_buffer *eb)
+{
+	int res;
+	const int rw = bio_data_dir(bi);
+
+	pr_debug("%s: sector %llu logic %u, %s, %d\n",
+			__func__, (unsigned long long)bi->bi_sector,
+			eb->e.log_vol_id, rw == WRITE ? "W" : "R",
+			eb ? entry_uptodate(eb) : 0);
+	if (rw == READ)
+		res = lsa_page_read(conf, bi, eb->e.log_vol_id, eb);
+	else
+		res = lsa_page_write(conf, bi, eb->e.log_vol_id, eb);
+
+	return res;
+}
+
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 {
-	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
 	struct entry_buffer *eb = NULL;
@@ -5373,20 +5390,12 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 	res = lsa_entry_get(&conf->lsa_dirtory, (uint32_t)logical_sector,
 			&eb, bi);
 
-	pr_debug("lsa_bio_req: sector %llu logic %llu, %s, %d\n",
-			(unsigned long long)bi->bi_sector,
-			(unsigned long long)logical_sector,
-			rw == WRITE ? "W" : "R", entry_uptodate(eb));
-
 	if (eb && !entry_uptodate(eb)) {
 		lsa_entry_put(&conf->lsa_dirtory, eb);
 		return 0;
 	}
 
-	if (rw == READ)
-		res = lsa_page_read(conf, bi, (uint32_t)logical_sector, eb);
-	else
-		res = lsa_page_write(conf, bi, (uint32_t)logical_sector, eb);
+	res = __lsa_bio_req(conf, bi, eb);
 
 	if (eb)
 		lsa_entry_put(&conf->lsa_dirtory, eb);
