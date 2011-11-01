@@ -1713,7 +1713,7 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	BUG_ON(!list_empty(&eh->dirty));
 	BUG_ON(entry_dirty(eh));
 	list_del_init(&eh->lru);
-	if (entry_tree(eh)) 
+	if (test_clear_entry_tree(eh))
 		__lsa_entry_delete(dir, eh);
 
 	return eh;
@@ -1724,16 +1724,21 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 {
 	unsigned long flags;
 	struct entry_buffer *eh = NULL;
-	
+	int res = 0;
+
 	spin_lock_irqsave(&dir->lock, flags);
 	eh = __lsa_entry_freed(dir);
 	BUG_ON(!eh);
 	/* TODO handling when lru is empty */
 	if (eh) {
 		memcpy(&eh->e, le, sizeof(*le));
-		__lsa_entry_insert(dir, eh);
 		set_entry_dirty(eh);
 		list_add_tail(&dir->dirty, &eh->dirty);
+		if (!test_set_entry_tree(eh))
+			res = __lsa_entry_insert(dir, eh);
+		else 
+			res = -1;
+		BUG_ON(res != 1);
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 
