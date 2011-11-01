@@ -81,6 +81,10 @@ static inline sector_t SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
 	return lba << seg->shift_sector;
 }
 
+#ifndef SECTOR_SHIFT
+#define SECTOR_SHIFT 9
+#endif
+
 /*
  * Stripe cache
  */
@@ -1751,7 +1755,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr)
 	INIT_LIST_HEAD(&seg->lru);
 	INIT_LIST_HEAD(&seg->active);
 	spin_lock_init(&seg->lock);
-	seg->shift_sector = 3;
+	seg->shift_sector = PAGE_SHIFT - SECTOR_SHIFT;
 	seg->disks = disks;
 
 	for (i = 0; i < nr; i ++) {
