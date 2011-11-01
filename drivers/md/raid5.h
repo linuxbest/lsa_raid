@@ -473,6 +473,13 @@ struct raid5_private_data {
 		struct list_head queue;
 		struct tasklet_struct tasklet;
 	} lsa_dirtory;
+
+	struct lsa_segment {
+		spinlock_t lock;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head active;
+	} lsa_segment;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
