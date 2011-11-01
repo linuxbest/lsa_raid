@@ -62,7 +62,8 @@
 
 struct entry_buffer;
 static uint32_t lsa_seg_alloc   (struct lsa_dirtory *dir);
-static int      lsa_entry_get   (struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_buffer **eh);
+static int      lsa_entry_get   (struct lsa_dirtory *dir, uint32_t log_vol_id, 
+		struct entry_buffer **eh, struct bio *bio);
 static void     lsa_entry_put   (struct lsa_dirtory *dir, struct entry_buffer *eh);
 static void     lsa_entry_dirty (struct lsa_dirtory *dir, struct entry_buffer *eh);
 static int      lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le);
@@ -1825,13 +1826,14 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 
 struct entry_buffer {
 	struct segment_buffer_entry segbuf_entry;
-	unsigned long flags;
 	struct rb_node node;
 	struct list_head lru, dirty, queue;
 	atomic_t count;
+	struct bio_list bio;
 #define EH_TREE     0
 #define EH_DIRTY    1
 #define EH_UPTODATE 2
+	unsigned long flags;
 	struct lsa_entry e;
 };
 
@@ -1965,6 +1967,18 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	return eh;
 }
 
+static void 
+__lsa_entry_bio_push(struct entry_buffer *eb, struct bio *bio)
+{
+	bio_list_add(&eb->bio, bio);
+}
+
+static struct bio *
+__lsa_entry_bio_pop(struct entry_buffer *eb)
+{
+	return bio_list_pop(&eb->bio);
+}
+
 static int
 lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 {
@@ -1993,7 +2007,8 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 }
 
 static int
-lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_buffer **lep)
+lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
+		struct entry_buffer **lep, struct bio *bio)
 {
 	int res = 0;
 	unsigned long flags;
@@ -2004,24 +2019,26 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_buffer 
 		return -ENOENT;
 
 	spin_lock_irqsave(&dir->lock, flags);
-	eh = *lep = __lsa_entry_search(dir, log_vol_id);
+	*lep = eh = __lsa_entry_search(dir, log_vol_id);
 	if (eh) {
 		if (!list_empty(&eh->lru))
 			list_del_init(&eh->lru);
 		else
-			res = EBUSY;
+			res = -EBUSY;
 	} else {
-		eh = __lsa_entry_freed(dir);
+		*lep = eh = __lsa_entry_freed(dir);
 		eh->e.log_vol_id = log_vol_id;
 		list_add_tail(&dir->queue, &dir->queue);
+		if (!test_set_entry_tree(eh))
+			__lsa_entry_insert(dir, eh);
 		tasklet_schedule(&dir->tasklet);
 	}
-	spin_unlock_irqrestore(&dir->lock, flags);
-	if (*lep == NULL) {
-		res = EAGAIN;
+	if (!entry_uptodate(eh)) {
+		__lsa_entry_bio_push(eh, bio);
 	}
-	if (eh)
-		atomic_inc(&eh->count);
+	spin_unlock_irqrestore(&dir->lock, flags);
+	
+	atomic_inc(&eh->count);
 
 	return res;
 }
@@ -2078,7 +2095,10 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	unsigned long flags;
+	struct bio_list bio_list;
+	struct bio *bio;
 
+	bio_list_init(&bio_list);
 	lsa_dirtory_copy(seg, segbuf, eh);
 
 	/* schedule retry */
@@ -2086,7 +2106,21 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	if (!list_empty(&dir->retry)) {
 		tasklet_schedule(&dir->tasklet);
 	}
+	while ((bio = __lsa_entry_bio_pop(eh))) {
+		bio_list_add(&bio_list, bio);
+	}
 	spin_unlock_irqrestore(&dir->lock, flags);
+
+	if (bio_list_empty(&bio_list))
+		return 0;
+
+	/* moving the bio into target list then doing retry */
+	spin_lock_irqsave(&conf->device_lock, flags);
+	while ((bio = bio_list_pop(&bio_list))) {
+		bio_list_add(&conf->target_list, bio);
+	}
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+	tasklet_schedule(&conf->tasklet);
 
 	return 0;
 }
@@ -2189,6 +2223,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		struct entry_buffer *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
 		if (eh == NULL)
 			return -1;
+		bio_list_init(&eh->bio);
 		list_add_tail(&eh->lru, &dir->lru);
 	}
 
@@ -5162,7 +5197,9 @@ static void lsa_stripe_rw(struct stripe_head *sh)
 	}
 }
 
-static int lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
+static int 
+lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
+		struct entry_buffer *eh)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	lsa_entry_t *le = /*lsa_find_by_ti(conf->lsa_root, sector)*/NULL;
@@ -5268,11 +5305,13 @@ lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
  *  2) raid parity buffer rotate.
  *
  */
-static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
+static int 
+lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
+		struct entry_buffer *eh)
 {
 	struct stripe_head *sh;
 	struct r5dev *dev;
-	int dd_idx = 0, offset, wlen, res = 0;
+	int dd_idx = 0, offset, wlen;
 	uint32_t seg_id;
 	unsigned long flags;
 
@@ -5288,7 +5327,7 @@ static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	if (sh == NULL)
-		goto out;
+		return 0;
 
 	seg_id = sh->sector;
 	dev = &sh->dev[dd_idx];
@@ -5309,9 +5348,13 @@ static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	le->offset       = offset;
 	le->length       = wlen;
 
-	res = lsa_entry_insert(&conf->lsa_dirtory, le);
-out:
-	return res;
+	if (eh) {
+		memcpy(&eh->e, le, sizeof(*le));
+		lsa_entry_dirty(&conf->lsa_dirtory, eh);
+		return 0;
+	} 
+
+	return lsa_entry_insert(&conf->lsa_dirtory, le);
 }
 
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
@@ -5319,18 +5362,34 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
+	struct entry_buffer *eb = NULL;
+	int res;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
-	pr_debug("lsa_bio_req: sector %llu logic %llu, %s\n",
+	res = lsa_entry_get(&conf->lsa_dirtory, (uint32_t)logical_sector,
+			&eb, bi);
+
+	pr_debug("lsa_bio_req: sector %llu logic %llu, %s, %d\n",
 			(unsigned long long)bi->bi_sector,
 			(unsigned long long)logical_sector,
-			rw == WRITE ? "W" : "R");
-	if (rw == READ)
-		return lsa_page_read(conf, bi, (uint32_t)logical_sector);
+			rw == WRITE ? "W" : "R", entry_uptodate(eb));
 
-	return lsa_page_write(conf, bi, (uint32_t)logical_sector);
+	if (eb && !entry_uptodate(eb)) {
+		lsa_entry_put(&conf->lsa_dirtory, eb);
+		return 0;
+	}
+
+	if (rw == READ)
+		res = lsa_page_read(conf, bi, (uint32_t)logical_sector, eb);
+	else
+		res = lsa_page_write(conf, bi, (uint32_t)logical_sector, eb);
+
+	if (eb)
+		lsa_entry_put(&conf->lsa_dirtory, eb);
+
+	return res;
 }
 
 static struct bio *lsa_retry_pop(raid5_conf_t *conf)
