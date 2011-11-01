@@ -67,6 +67,20 @@ static void     lsa_entry_put   (struct lsa_dirtory *dir, struct entry_buffer *e
 static void     lsa_entry_dirty (struct lsa_dirtory *dir, struct entry_buffer *eh);
 static int      lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le);
 
+static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_vol_id)
+{
+	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
+	int data_disks = conf->raid_disks - conf->max_degraded;
+	return log_vol_id / data_disks;
+}
+
+static inline sector_t SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
+{
+	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	sector_t lba = seg_id;
+	return lba << seg->shift_sector;
+}
+
 /*
  * Stripe cache
  */
@@ -1404,11 +1418,12 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  */
 struct segment_buffer {
 	struct rb_node   node;
-	struct list_head lru;
+	struct list_head lru, active, meta;
 	unsigned long    flags;
 	atomic_t         count;
 	unsigned int     blen;
 	uint32_t         seg_id;
+	struct lsa_segment *seg;
 	struct column {
 		struct bio     req;
 		struct bio_vec vec;
@@ -1419,7 +1434,9 @@ struct segment_buffer {
 };
 
 enum {
-	SEGBUF_TREE = 0,
+	SEGBUF_TREE     = 0,
+	SEGBUF_UPTODATE = 1,
+	SEGBUF_DIRTY    = 2,
 };
 
 #define SEGBUF_FNS(bit, name) \
@@ -1444,7 +1461,9 @@ static inline int test_clear_segbuf_##name(struct segment_buffer *eh) \
 	return test_and_clear_bit(SEGBUF_##bit, &eh->flags); \
 }
 
-SEGBUF_FNS(TREE,  tree)
+SEGBUF_FNS(TREE,     tree)
+SEGBUF_FNS(DIRTY,    dirty)
+SEGBUF_FNS(UPTODATE, uptodate)
 
 static void 
 __segbuf_tree_delete(struct lsa_segment *seg, struct segment_buffer *segbuf)
@@ -1498,14 +1517,215 @@ __segbuf_tree_insert(struct lsa_segment *seg, struct segment_buffer *data)
 	return 1;
 }
 
+static void
+__lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
+{
+	bio_init(&dev->req);
+	dev->req.bi_io_vec = &dev->vec;
+	dev->req.bi_vcnt++;
+	dev->req.bi_max_vecs++;
+	dev->vec.bv_page = dev->page;
+	dev->vec.bv_len = PAGE_SIZE;
+	dev->vec.bv_offset = 0;
+
+	dev->req.bi_private = segbuf;
+}
+
+static int 
+__lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	struct column *column = segbuf->column;
+	int i;
+
+	for (i = 0; i < conf->raid_disks; i ++, column ++) {
+		column->sector = SEG2PSECTOR(seg, segbuf->seg_id);
+		column->flags  = 0;
+		column->req.bi_xor_disk = i;
+	}
+
+	return 0;
+}
+
 static int
-lsa_column_alloc(struct column *column, int disks)
+lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf);
+
+static void 
+lsa_column_end_write(struct bio *bi, int error)
+{
+	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
+	struct segment_buffer *segbuf = bi->bi_private;
+	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
+	int disks = bi->bi_xor_disk;
+	/*struct column *column = &segbuf->column[disks];*/
+
+	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
+			segbuf->seg_id, disks, atomic_read(&segbuf->count),
+			uptodate);
+
+	/* TODO */
+
+	lsa_segment_release(segbuf->seg, segbuf);
+}
+
+static void 
+lsa_column_end_read(struct bio *bi, int error)
+{
+	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
+	struct segment_buffer *segbuf = bi->bi_private;
+	raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);
+	int disks = bi->bi_xor_disk;
+	struct column *column = &segbuf->column[disks];
+
+	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
+			segbuf->seg_id, disks, atomic_read(&segbuf->count),
+			uptodate);
+
+	if (!uptodate) {
+		set_bit(WriteErrorSeen, &conf->disks[disks].rdev->flags);
+		set_bit(R5_WriteError, &column->flags);
+	}
+
+	lsa_segment_release(segbuf->seg, segbuf);
+}
+
+static struct segment_buffer *
+__lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
+{
+	struct segment_buffer *segbuf = NULL;
+
+	if (list_empty(&seg->lru))
+		return NULL;
+
+	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru);
+	/* must not in active */
+	BUG_ON(!list_empty(&segbuf->active));
+	list_del_init(&segbuf->lru);
+	if (test_clear_segbuf_tree(segbuf))
+		__segbuf_tree_delete(seg, segbuf);
+	clear_segbuf_uptodate(segbuf);
+
+	segbuf->seg_id = seg_id;
+	__lsa_column_init(seg, segbuf);
+
+	return segbuf;
+}
+
+static struct segment_buffer *
+lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id)
+{
+	struct segment_buffer *segbuf;
+	unsigned long flags;
+
+	spin_lock_irqsave(&seg->lock, flags);
+	segbuf = __segbuf_tree_search(seg, seg_id);
+	if (segbuf) {
+		if (!list_empty(&segbuf->lru))
+			list_del_init(&segbuf->lru);
+	} else {
+		segbuf = __lsa_segment_freed(seg, seg_id);
+		__segbuf_tree_insert(seg, segbuf);
+	}
+	spin_unlock_irqrestore(&seg->lock, flags);
+
+	if (segbuf)
+		atomic_inc(&segbuf->count);
+	return segbuf;
+}
+
+/* 
+ * TODO:
+ * 0) parity data write.
+ * 1) recover data by parity data.
+ */
+static int
+lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	int disks = seg->disks, i;
+	int rw = segbuf_dirty(segbuf) ? WRITE : READ;
+	struct column *column = segbuf->column;
+
+	for (i = 0; i < disks; i ++, column ++) {
+		mdk_rdev_t *rdev;
+		struct bio *bi = &column->req;
+
+		bi->bi_rw = rw;
+		if (rw & WRITE)
+			bi->bi_end_io = lsa_column_end_write;
+		else
+			bi->bi_end_io = lsa_column_end_read;
+
+		rcu_read_lock();
+		rdev = rcu_dereference(conf->disks[i].rdev);
+		if (rdev && test_bit(Faulty, &rdev->flags))
+			rdev = NULL;
+		rcu_read_unlock();
+
+		if (rdev) {
+			bi->bi_bdev = rdev->bdev;
+			pr_debug("%s: for %u schedule op %ld on disc %d\n",
+					__func__, segbuf->seg_id, bi->bi_rw, i);
+			atomic_inc(&segbuf->count);
+			bi->bi_sector = column->sector + rdev->data_offset;
+			bi->bi_flags  = 1 << BIO_UPTODATE;
+			bi->bi_next   = NULL;
+			bi->bi_rw    |= REQ_NOMERGE;
+			generic_make_request(bi);
+		} else {
+			pr_debug("skip op %ld on disc %d for sector %u\n",
+					bi->bi_rw, i, segbuf->seg_id);
+		}
+	}
+
+	return 0;
+}
+
+static int
+lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	/* TODO */
+	return 0;
+}
+
+static int
+lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf, 
+		struct list_head *head);
+
+static int
+lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	unsigned long flags;
+
+	if (!atomic_dec_and_test(&segbuf->count))
+		return 0;
+
+	spin_lock_irqsave(&seg->lock, flags);
+	list_add_tail(&segbuf->lru, &seg->lru);
+
+	while (!list_empty(&segbuf->meta)) {
+		struct list_head *list = segbuf->meta.next;
+		list_del_init(list);
+		spin_unlock_irqrestore(&seg->lock, flags);
+		
+		lsa_dirtory_rw_done(seg, segbuf, list);
+	
+		spin_lock_irqsave(&seg->lock, flags);
+	}
+	spin_unlock_irqrestore(&seg->lock, flags);
+
+	return 0;
+}
+
+static int
+lsa_column_alloc(struct segment_buffer *segbuf, struct column *column, int disks)
 {
 	int i;
 	for (i = 0; i < disks; i ++, column ++) {
 		column->page = alloc_page(GFP_KERNEL);
 		if (column->page == NULL)
 			return -1;
+		__lsa_colume_bio_init(column, segbuf);
 	}
 	return 0;
 }
@@ -1513,22 +1733,27 @@ lsa_column_alloc(struct column *column, int disks)
 static int 
 lsa_segment_init(struct lsa_segment *seg, int disks, int nr)
 {
-	struct segment_buffer *sb;
 	int i;
 
 	INIT_LIST_HEAD(&seg->lru);
 	INIT_LIST_HEAD(&seg->active);
 	spin_lock_init(&seg->lock);
+	seg->shift_sector = 3;
+	seg->disks = disks;
 
 	for (i = 0; i < nr; i ++) {
-		int blen = sizeof(*sb);
+		struct segment_buffer *segbuf;
+		int blen = sizeof(*segbuf);
 		blen += sizeof(struct column)*disks;
-		sb = kzalloc(blen, GFP_KERNEL);
-		if (sb == NULL)
+		segbuf = kzalloc(blen, GFP_KERNEL);
+		if (segbuf == NULL)
 			return -1;
-		if (lsa_column_alloc(sb->column, disks) != 0)
+		if (lsa_column_alloc(segbuf, segbuf->column, disks) != 0)
 			return -2;
-		list_add_tail(&seg->lru, &seg->lru);
+		list_add_tail(&segbuf->lru, &seg->lru);
+		INIT_LIST_HEAD(&segbuf->active);
+		INIT_LIST_HEAD(&segbuf->meta);
+		segbuf->seg = seg;
 	}
 
 	return 0;
@@ -1586,8 +1811,9 @@ struct entry_buffer {
 	struct list_head lru, dirty, queue;
 	unsigned long flags;
 	atomic_t count;
-#define EH_TREE  0
-#define EH_DIRTY 1
+#define EH_TREE     0
+#define EH_DIRTY    1
+#define EH_UPTODATE 2
 	struct lsa_entry e;
 };
 
@@ -1613,8 +1839,9 @@ static inline int test_clear_entry_##name(struct entry_buffer *eh) \
 	return test_and_clear_bit(EH_##bit, &eh->flags); \
 }
 
-ENTRY_FNS(TREE, tree)
-ENTRY_FNS(DIRTY, dirty)
+ENTRY_FNS(TREE,     tree)
+ENTRY_FNS(DIRTY,    dirty)
+ENTRY_FNS(UPTODATE, uptodate)
 
 static uint32_t lsa_seg_alloc(struct lsa_dirtory *dir)
 {
@@ -1715,6 +1942,7 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	list_del_init(&eh->lru);
 	if (test_clear_entry_tree(eh))
 		__lsa_entry_delete(dir, eh);
+	clear_entry_uptodate(eh);
 
 	return eh;
 }
@@ -1733,6 +1961,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 	if (eh) {
 		memcpy(&eh->e, le, sizeof(*le));
 		set_entry_dirty(eh);
+		set_entry_uptodate(eh);
 		list_add_tail(&dir->dirty, &eh->dirty);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
@@ -1763,7 +1992,6 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_buffer 
 			list_del_init(&eh->lru);
 		else
 			res = EBUSY;
-		atomic_inc(&eh->count);
 	} else {
 		eh = __lsa_entry_freed(dir);
 		eh->e.log_vol_id = log_vol_id;
@@ -1774,6 +2002,8 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_buffer 
 	if (*lep == NULL) {
 		res = EAGAIN;
 	}
+	if (eh)
+		atomic_inc(&eh->count);
 
 	return res;
 }
@@ -1809,19 +2039,114 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
+static int
+lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
+		struct entry_buffer *eh)
+{
+	int fromseg = !entry_uptodate(eh);
+	
+	/* TODO */
+
+	if (!fromseg)
+		lsa_segment_dirty(seg, segbuf);
+	return 0;
+}
+
+static int
+lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
+		struct list_head *head)
+{
+	struct entry_buffer *eh = container_of(head, struct entry_buffer, queue);
+	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	struct lsa_dirtory *dir = &conf->lsa_dirtory;
+	unsigned long flags;
+
+	lsa_dirtory_copy(seg, segbuf, eh);
+
+	/* schedule retry */
+	spin_lock_irqsave(&dir->lock, flags);
+	if (!list_empty(&dir->retry)) {
+		tasklet_schedule(&dir->tasklet);
+	}
+	spin_unlock_irqrestore(&dir->lock, flags);
+
+	return 0;
+}
+
+static int
+lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir, 
+		struct entry_buffer *eh, int rw)
+{
+	int res = 0;
+	struct segment_buffer *segbuf;
+	unsigned long flags;
+
+	segbuf = lsa_segment_find_or_create(seg,
+			LBA2SEG(dir, eh->e.log_vol_id));
+
+	if (segbuf == NULL) {
+		spin_lock_irqsave(&dir->lock, flags);
+		list_add_tail(&dir->retry, &eh->queue);
+		spin_unlock_irqrestore(&dir->lock, flags);
+		return 0;
+	}
+
+	if (!segbuf_uptodate(segbuf)) {
+		spin_lock_irqsave(&seg->lock, flags);
+		list_add_tail(&segbuf->meta, &eh->queue);
+		spin_unlock_irqrestore(&seg->lock, flags);
+	} else {
+		lsa_dirtory_copy(seg, segbuf, eh);
+	}
+
+	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
+	    (rw == WRITE && segbuf_uptodate(segbuf)))
+		lsa_segment_handle(seg, segbuf);
+	lsa_segment_release(seg, segbuf);
+
+	return res;
+}
+
+static void
+__lsa_dirtory_handle(struct lsa_segment *seg, struct lsa_dirtory *dir,
+		struct entry_buffer *eh)
+{
+	int res = -1;
+
+	if (!entry_uptodate(eh))
+		res = lsa_dirtory_rw(seg, dir, eh, 0);
+	else if (entry_dirty(eh))
+		res = lsa_dirtory_rw(seg, dir, eh, 1);
+	BUG_ON(res != 0);
+}
+
 static void
 lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
+	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	unsigned long flags;
+	int res = 0;
 
 	spin_lock_irqsave(&dir->lock, flags);
+	while (!list_empty(&dir->retry)) {
+		struct entry_buffer *eh = list_entry(dir->retry.next,
+				struct entry_buffer, queue);
+		list_del_init(&eh->queue);
+		spin_unlock_irqrestore(&dir->lock, flags);
+
+		__lsa_dirtory_handle(&conf->lsa_segment, dir, eh);
+
+		spin_lock_irqsave(&dir->lock, flags);
+	}
 	while (!list_empty(&dir->queue)) {
 		struct entry_buffer *eh = list_entry(dir->queue.next,
 				struct entry_buffer, queue);
 		list_del_init(&eh->queue);
 		spin_unlock_irqrestore(&dir->lock, flags);
-		/* TODO */
+
+		__lsa_dirtory_handle(&conf->lsa_segment, dir, eh);
+
 		spin_lock_irqsave(&dir->lock, flags);
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);

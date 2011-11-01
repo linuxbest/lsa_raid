@@ -471,11 +471,14 @@ struct raid5_private_data {
 		unsigned long **bitmap;
 		/* dirtory tasklet */
 		struct list_head queue;
+		struct list_head retry;
+		struct list_head wip;
 		struct tasklet_struct tasklet;
 	} lsa_dirtory;
 
 	struct lsa_segment {
 		spinlock_t lock;
+		short shift_sector, disks, pd, qd;
 		struct rb_root tree;
 		struct list_head lru;
 		struct list_head active;
