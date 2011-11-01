@@ -1995,6 +1995,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 		set_entry_dirty(eh);
 		set_entry_uptodate(eh);
 		list_add_tail(&dir->dirty, &eh->dirty);
+		lsa_entry_set_bit(dir, le->e.log_vol_id);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
 		else 
@@ -2027,6 +2028,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 			res = -EBUSY;
 	} else {
 		*lep = eh = __lsa_entry_freed(dir);
+		/* TODO handle when LRU is empty */
 		eh->e.log_vol_id = log_vol_id;
 		list_add_tail(&dir->queue, &dir->queue);
 		if (!test_set_entry_tree(eh))
