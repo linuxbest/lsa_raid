@@ -57,8 +57,16 @@
 #include "raid0.h"
 #include "bitmap.h"
 #include "target.h"
+
 #include "lsa.h"
 #include "lsa_segment.h"
+
+struct entry_head;
+static uint32_t lsa_seg_alloc   (struct lsa_dirtory *dir);
+static int      lsa_entry_get   (struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_head **eh);
+static void     lsa_entry_put   (struct lsa_dirtory *dir, struct entry_head *eh);
+static void     lsa_entry_dirty (struct lsa_dirtory *dir, struct entry_head *eh);
+static int      lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le);
 
 /*
  * Stripe cache
@@ -1392,30 +1400,324 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
-static int
-meta_read_page(struct mddev_s *mddev, int strip,  struct page *page)
+/* LSA dirtory operations 
+ * including 
+ *  bitmap.
+ *  rbtree.
+ *  segment page.
+ */ 
+
+/* we using 16Mbyte LRU cache for entry */
+#define ENTRY_HEAD_SIZE (16*1024*1024)
+#define ENTRY_HEAD_NR   (ENTRY_HEAD_SIZE/sizeof(struct lsa_entry))
+
+struct entry_head {
+	struct rb_node node;
+	struct list_head lru, dirty;
+	unsigned long flags;
+	atomic_t count;
+#define EH_TREE  0
+#define EH_DIRTY 1
+	struct lsa_entry e;
+};
+
+#define ENTRY_FNS(bit, name) \
+static inline void set_entry_##name(struct entry_head *eh) \
+{ \
+	set_bit(EH_##bit, &eh->flags); \
+} \
+static inline void clear_entry_##name(struct entry_head *eh) \
+{ \
+	clear_bit(EH_##bit, &eh->flags); \
+} \
+static inline int entry_##name(struct entry_head *eh) \
+{ \
+	return test_bit(EH_##bit, &eh->flags); \
+} \
+static inline int test_set_entry_##name(struct entry_head *eh) \
+{ \
+	return test_and_set_bit(EH_##bit, &eh->flags); \
+} \
+static inline int test_clear_entry_##name(struct entry_head *eh) \
+{ \
+	return test_and_clear_bit(EH_##bit, &eh->flags); \
+}
+
+ENTRY_FNS(TREE, tree)
+ENTRY_FNS(DIRTY, dirty)
+
+static uint32_t lsa_seg_alloc(struct lsa_dirtory *dir)
 {
+	/* TODO
+	 * doing real free space manager.
+	 */
+	return dir->seg++;
+}
+
+enum {
+	LSA_BIT_SHIFT = PAGE_SHIFT+3,
+	LSA_BIT_SIZE  = 1<<LSA_BIT_SHIFT,
+	LSA_BIT_MASK  = LSA_BIT_SIZE-1
+};
+
+static int inline
+lsa_entry_test_bit(struct lsa_dirtory *dir, uint32_t lt)
+{
+	uint32_t index = lt >> LSA_BIT_SHIFT;
+	uint32_t offset= lt & LSA_BIT_MASK;
+	unsigned long *bitmap = dir->bitmap[index];
+	return test_bit(offset, bitmap);
+}
+
+static void inline
+lsa_entry_set_bit(struct lsa_dirtory *dir, uint32_t lt)
+{
+	uint32_t index = lt >> LSA_BIT_SHIFT;
+	uint32_t offset= lt & LSA_BIT_MASK;
+	unsigned long *bitmap = dir->bitmap[index];
+	set_bit(offset, bitmap);
+}
+
+static struct entry_head *
+__lsa_entry_search(struct lsa_dirtory *dir, uint32_t log_vol_id)
+{
+	struct rb_node *node = dir->tree.rb_node;
+
+	while (node) {
+		struct entry_head *data = container_of(node, 
+				struct entry_head, node);
+		int result = data->e.log_vol_id - log_vol_id;
+
+		if (result < 0)
+			node = node->rb_left;
+		else if (result > 0)
+			node = node->rb_right;
+		else
+			return data;
+	}
+	return NULL;
+}
+
+static int
+__lsa_entry_insert(struct lsa_dirtory *dir, struct entry_head *data)
+{
+	struct rb_node **new = &(dir->tree.rb_node), *parent = NULL;
+
+	/* Figure out where to put new node */
+	while (*new) {
+		struct entry_head *this = container_of(*new,
+				struct entry_head, node);
+		int result = this->e.log_vol_id - data->e.log_vol_id;
+
+		if (result < 0)
+			new = &((*new)->rb_left);
+		else if (result > 0)
+			new = &((*new)->rb_right);
+		else
+			return 0;
+	}
+
+	/* Add new node and rebalance tree */
+	rb_link_node(&data->node, parent, new);
+	rb_insert_color(&data->node, &dir->tree);
+
+	return 1;
+}
+
+static void 
+__lsa_entry_delete(struct lsa_dirtory *dir, struct entry_head *data)
+{
+	rb_erase(&data->node, &dir->tree);
+}
+
+static struct entry_head *
+__lsa_entry_freed(struct lsa_dirtory *dir)
+{
+	struct entry_head *eh = NULL;
+	
+	if (list_empty(&dir->lru)) 
+		return NULL;
+
+	eh = list_entry(dir->lru.next, struct entry_head, lru);
+	/* must not dirty entry */
+	BUG_ON(!list_empty(&eh->dirty));
+	BUG_ON(entry_dirty(eh));
+	list_del_init(&eh->lru);
+	if (entry_tree(eh)) 
+		__lsa_entry_delete(dir, eh);
+
+	return eh;
+}
+
+static int
+lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
+{
+	unsigned long flags;
+	struct entry_head *eh = NULL;
+	
+	spin_lock_irqsave(&dir->lock, flags);
+	eh = __lsa_entry_freed(dir);
+	BUG_ON(!eh);
+	/* TODO handling when lru is empty */
+	if (eh) {
+		memcpy(&eh->e, le, sizeof(*le));
+		__lsa_entry_insert(dir, eh);
+		set_entry_dirty(eh);
+		list_add_tail(&dir->dirty, &eh->dirty);
+	}
+	spin_unlock_irqrestore(&dir->lock, flags);
+
 	return 0;
 }
 
 static int
-meta_write_page(struct mddev_s *mddev, int stripe, struct page **page)
+lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id, struct entry_head **lep)
 {
-	return 0;
+	int res = 0;
+	unsigned long flags;
+	struct entry_head *eh = NULL;
+
+	/* first checking the bitmap */
+	if (lsa_entry_test_bit(dir, log_vol_id) == 0)
+		return -ENOENT;
+
+	spin_lock_irqsave(&dir->lock, flags);
+	eh = *lep = __lsa_entry_search(dir, log_vol_id);
+	if (eh) {
+		if (!list_empty(&eh->lru))
+			list_del_init(&eh->lru);
+		else
+			res = EBUSY;
+		atomic_inc(&eh->count);
+	}
+	spin_unlock_irqrestore(&dir->lock, flags);
+	if (*lep == NULL) {
+		res = EAGAIN;
+	}
+
+	return res;
 }
 
 static void
+lsa_entry_put(struct lsa_dirtory *dir, struct entry_head *eh)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&dir->lock, flags);
+	if (atomic_dec_and_test(&eh->count))
+		list_add_tail(&eh->lru, &dir->lru);
+	spin_unlock_irqrestore(&dir->lock, flags);
+}
+
+static void
+lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_head *eh)
+{
+	unsigned long flags;
+
+	if (test_set_entry_dirty(eh))
+		return; 
+
+	/* must not in any list */
+	BUG_ON(!list_empty(&eh->lru));
+	/* must not in dirty list */
+	BUG_ON(!list_empty(&eh->dirty));
+	/* must in the rb tree */
+	BUG_ON(!entry_tree(eh));
+
+	spin_lock_irqsave(&dir->lock, flags);
+	list_add_tail(&dir->dirty, &eh->dirty);
+	spin_unlock_irqrestore(&dir->lock, flags);
+}
+
+static int
+__entry_head_free(struct lsa_dirtory *dir, struct entry_head *eh)
+{
+	list_del_init(&eh->lru);
+	if (entry_tree(eh))
+		rb_erase(&eh->node, &dir->tree);
+	kfree(eh);
+	return 0;
+}
+
+static int
+lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
+{
+	int i, nr = seg_nr >> (PAGE_SHIFT+3);
+
+	spin_lock_init(&dir->lock);
+	dir->tree = RB_ROOT;
+	dir->seg  = 0;
+	INIT_LIST_HEAD(&dir->dirty);
+	INIT_LIST_HEAD(&dir->lru);
+
+	for (i = 0; i < ENTRY_HEAD_NR; i ++) {
+		struct entry_head *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
+		if (eh == NULL)
+			return -1;
+		list_add_tail(&eh->lru, &dir->lru);
+	}
+
+	/* alloc the bitmap space */
+	dir->bitmap = kzalloc(sizeof(unsigned long *)*nr, GFP_KERNEL);
+	if (dir->bitmap == NULL)
+		return -2;
+
+	for (i = 0; i < nr; i++) {
+		unsigned long *bitmap;
+		bitmap = (unsigned long *)get_zeroed_page(GFP_KERNEL);
+		if (bitmap == NULL)
+			return -3;
+		dir->bitmap[i] = bitmap;
+	}
+	dir->seg_nr = nr;
+
+	/* TODO rebuild the bitmap or loading it from disk */
+
+	return 0;
+}
+
+static int
+lsa_dirtory_exit(struct lsa_dirtory *dir)
+{
+	int i;
+	while (!list_empty(&dir->dirty)) {
+		/* TODO we must flush the dirty entry into disk */
+		struct entry_head *eh = container_of(dir->dirty.next,
+				struct entry_head, dirty);
+		__entry_head_free(dir, eh);
+	}
+	while (!list_empty(&dir->lru)) {
+		struct entry_head *eh = container_of(dir->lru.next,
+				struct entry_head, lru);
+		__entry_head_free(dir, eh);
+	}
+	/* in this time the RB tree is empty */
+
+	/* clear the bitmap space */
+	/* TODO saving into disk ? */
+	for (i = 0; i < dir->seg_nr; i ++) {
+		free_page((unsigned long)dir->bitmap[i]);
+	}
+	kfree(dir->bitmap);
+
+	return 0;
+}
+
+static int
 lsa_meta_page_put(struct lsa_meta *meta, struct page *page, spinlock_t *lock)
 {
 	int res;
 
 	res = kfifo_in_locked(&meta->free_fifo,
 			(unsigned char *)&page,
-			sizeof(page), 
+			sizeof(page),
 			lock);
-	BUG_ON(res != sizeof(page));
+	BUG_ON(!res != sizeof(page));
+
+	return 0;
 }
 
+/* LSA segment dirtory information operations */
 /* 
  * head 8 byte
  * entry[]
@@ -1529,6 +1831,8 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	kfifo_free(&conf->wr_data_fifo);
 	kfifo_free(&conf->wr_free_fifo);
 
+	lsa_dirtory_exit(&conf->lsa_dirtory);
+
 	return lsa_meta_exit(&conf->lsa_meta);
 }
 
@@ -1556,13 +1860,6 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 {
 	int i, res, lsa_seg_nr;
 	struct stripe_head *sh;
-	struct meta_page_op meta_ops = {
-		.mddev = conf->mddev,
-		.stripe_nr = raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS,
-		.disks = conf->raid_disks,
-		.read_page = meta_read_page,
-		.write_page = meta_write_page,
-	};
 
 	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
 	if (!sh)
@@ -1583,7 +1880,6 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_set(&sh->count, 1);
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
-	conf->lsa_root = lsa_init(&meta_ops);
 	conf->lsa_dd_idx = 0;
 	conf->lsa_seg_sh = NULL;
 	
@@ -1614,7 +1910,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 			kmem_cache_free(conf->slab_cache, sh);
 			return 0;
 		}
-		lsa_init_stripe(sh, lsa_seg_alloc(conf->lsa_root));
+		lsa_init_stripe(sh, lsa_seg_alloc(&conf->lsa_dirtory));
 		if (conf->lsa_seg_sh == NULL) {
 			conf->lsa_seg_sh = sh;
 			continue;
@@ -1627,6 +1923,9 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 			return 0;
 		}
 	}
+
+	lsa_dirtory_init(&conf->lsa_dirtory,
+			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 
 	return lsa_meta_init(&conf->lsa_meta, lsa_seg_nr);
 }
@@ -4247,7 +4546,7 @@ lsa_end_write_request(struct bio *bi, int error)
 
 	if (atomic_dec_and_test(&sh->count)) {
 		int ret;
-		lsa_init_stripe(sh, lsa_seg_alloc(conf->lsa_root));
+		lsa_init_stripe(sh, lsa_seg_alloc(&conf->lsa_dirtory));
 		ret = kfifo_in_locked(&conf->wr_free_fifo,
 				(unsigned char *)&sh,
 				sizeof(sh),
@@ -4471,7 +4770,7 @@ static int lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector)
 	le->offset       = offset;
 	le->length       = wlen;
 
-	res = lsa_insert(conf->lsa_root, le);
+	res = lsa_entry_insert(&conf->lsa_dirtory, le);
 out:
 	return res;
 }

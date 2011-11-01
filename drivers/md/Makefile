@@ -16,7 +16,7 @@ obj-m += dm-mod.o
 #obj-m += raid456.o
 #obj-m += md-mod.o
 
-raid456-y       += raid5.o lsa_rb.o lsa_stream.o
+raid456-y       += raid5.o
 md-mod-y        += md.o bitmap.o
 
 ifeq ($(CONFIG_DM_UEVENT),y)

@@ -445,7 +445,6 @@ struct raid5_private_data {
 	 */
 	struct mdk_thread_s	*thread;
 	struct tasklet_struct   tasklet;
-	struct lsa_root     *lsa_root;
 	struct stripe_head  *lsa_zero_sh;
 	int      lsa_dd_idx;
 	uint32_t lsa_seg_id;
@@ -460,6 +459,17 @@ struct raid5_private_data {
 		unsigned int i, max;
 		struct lsa_entry *entry;
 	} lsa_meta;
+	
+	struct lsa_dirtory {
+		uint32_t seg;
+		spinlock_t lock;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head dirty;
+		/* bitmap */
+		uint32_t seg_nr;
+		unsigned long **bitmap;
+	} lsa_dirtory;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
