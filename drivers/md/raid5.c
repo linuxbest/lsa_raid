@@ -1646,6 +1646,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 			list_del_init(&segbuf->lru);
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
+		set_bit_tree(segbuf);
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
@@ -1885,7 +1886,7 @@ static void
 __segment_buffer_free(struct lsa_segment *seg, 
 		struct segment_buffer *sb, int disks)
 {
-	if (segbuf_tree(sb))
+	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, sb);
 	list_del_init(&sb->lru);
 	lsa_column_free(sb->column, disks, seg->shift);
