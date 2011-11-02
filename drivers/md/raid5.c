@@ -1418,7 +1418,8 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
-/* LSA segment operations
+/*
+ * LSA segment operations
  *
  */
 struct segment_buffer {
@@ -1514,7 +1515,7 @@ __segbuf_tree_insert(struct lsa_segment *seg, struct segment_buffer *data)
 		else
 			return 0;
 	}
-	
+
 	/* Add new node and rebalance tree */
 	rb_link_node(&data->node, parent, new);
 	rb_insert_color(&data->node, &seg->tree);
@@ -1718,7 +1719,7 @@ lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	list_add_tail(&segbuf->lru, &seg->lru);
 
 	while (!list_empty(&segbuf->queue)) {
-		struct segment_buffer_entry *se = 
+		struct segment_buffer_entry *se =
 			container_of(segbuf->queue.next,
 					struct segment_buffer_entry,
 					queue);
@@ -2148,8 +2149,8 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	if (segbuf_uptodate(segbuf))
 		lsa_dirtory_copy(seg, segbuf, eh);
 
-	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
-	    (rw == WRITE && segbuf_uptodate(segbuf)))
+	if ((rw == READ && !segbuf_uptodate(segbuf))/* ||
+	    (rw == WRITE && segbuf_uptodate(segbuf))*/)
 		lsa_segment_handle(seg, segbuf);
 	lsa_segment_release(seg, segbuf);
 
@@ -2169,35 +2170,33 @@ __lsa_dirtory_handle(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	BUG_ON(res != 0);
 }
 
+static void 
+__lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
+		struct list_head *head)
+{
+	unsigned long flags;
+	
+	spin_lock_irqsave(&dir->lock, flags);
+	while (!list_empty(head)) {
+		struct entry_buffer *eh = list_entry(head->next,
+				struct entry_buffer, queue);
+		list_del_init(&eh->queue);
+		spin_unlock_irqrestore(&dir->lock, flags);
+
+		__lsa_dirtory_handle(seg, dir, eh);
+
+		spin_lock_irqsave(&dir->lock, flags);
+	}
+	spin_unlock_irqrestore(&dir->lock, flags);
+}
+
 static void
 lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	unsigned long flags;
-
-	spin_lock_irqsave(&dir->lock, flags);
-	while (!list_empty(&dir->retry)) {
-		struct entry_buffer *eh = list_entry(dir->retry.next,
-				struct entry_buffer, queue);
-		list_del_init(&eh->queue);
-		spin_unlock_irqrestore(&dir->lock, flags);
-
-		__lsa_dirtory_handle(&conf->lsa_segment, dir, eh);
-
-		spin_lock_irqsave(&dir->lock, flags);
-	}
-	while (!list_empty(&dir->queue)) {
-		struct entry_buffer *eh = list_entry(dir->queue.next,
-				struct entry_buffer, queue);
-		list_del_init(&eh->queue);
-		spin_unlock_irqrestore(&dir->lock, flags);
-
-		__lsa_dirtory_handle(&conf->lsa_segment, dir, eh);
-
-		spin_lock_irqsave(&dir->lock, flags);
-	}
-	spin_unlock_irqrestore(&dir->lock, flags);
+	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->retry);
+	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->queue);
 }
 
 static int
