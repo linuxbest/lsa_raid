@@ -1553,8 +1553,14 @@ __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	return 0;
 }
 
+typedef enum {
+	WRITE_DONE  = 1,
+	READ_DONE   = 2,
+} segbuf_event_t;
+
 static int
-lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf);
+lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf,
+		segbuf_event_t type);
 
 static void 
 lsa_column_end_write(struct bio *bi, int error)
@@ -1563,24 +1569,6 @@ lsa_column_end_write(struct bio *bi, int error)
 	struct segment_buffer *segbuf = bi->bi_private;
 	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
 	int disks = bi->bi_xor_disk;
-	/*struct column *column = &segbuf->column[disks];*/
-
-	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
-			segbuf->seg_id, disks, atomic_read(&segbuf->count),
-			uptodate);
-
-	/* TODO */
-
-	lsa_segment_release(segbuf->seg, segbuf);
-}
-
-static void 
-lsa_column_end_read(struct bio *bi, int error)
-{
-	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
-	struct segment_buffer *segbuf = bi->bi_private;
-	raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);
-	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
 	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
@@ -1588,11 +1576,32 @@ lsa_column_end_read(struct bio *bi, int error)
 			uptodate);
 
 	if (!uptodate) {
-		set_bit(WriteErrorSeen, &conf->disks[disks].rdev->flags);
 		set_bit(R5_WriteError, &column->flags);
 	}
 
-	lsa_segment_release(segbuf->seg, segbuf);
+	lsa_segment_release(segbuf->seg, segbuf, WRITE_DONE);
+}
+
+static void 
+lsa_column_end_read(struct bio *bi, int error)
+{
+	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
+	struct segment_buffer *segbuf = bi->bi_private;
+	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
+	int disks = bi->bi_xor_disk;
+	struct column *column = &segbuf->column[disks];
+
+	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
+			segbuf->seg_id, disks, atomic_read(&segbuf->count),
+			uptodate);
+
+	if (uptodate) {
+		set_bit(R5_UPTODATE, &column->flags);
+	} else {
+		clear_bit(R5_UPTODATE, &column->flags);
+	}
+
+	lsa_segment_release(segbuf->seg, segbuf, READ_DONE);
 }
 
 static struct segment_buffer *
@@ -1618,7 +1627,8 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 }
 
 struct segment_buffer_entry {
-	short type; /* 0 directory, 1 data */
+#define SEGBUF_FLY 31
+	unsigned long type; /* 0 directory, 1 data */
 	struct list_head queue;
 };
 
@@ -1639,8 +1649,10 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
-	if (segbuf && !segbuf_uptodate(segbuf))
+	if (segbuf && !segbuf_uptodate(segbuf)) {
 		list_add_tail(&segbuf->queue, &entry->queue);
+		set_bit(SEGBUF_FLY, &entry->type);
+	}
 	if (segbuf)
 		atomic_inc(&segbuf->count);
 	spin_unlock_irqrestore(&seg->lock, flags);
@@ -1699,7 +1711,24 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 static int
 lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
-	/* TODO */
+	unsigned long flags;
+
+	if (test_set_segbuf_dirty(segbuf))
+		return 0;
+
+	/* must uptodate */
+	BUG_ON(!segbuf_uptodate(segbuf));
+	/* must in LRU */
+	BUG_ON(list_empty(&segbuf->lru));
+	/* must not in any queue list */
+	BUG_ON(!list_empty(&segbuf->queue));
+
+	spin_lock_irqsave(&seg->lock, flags);
+	list_add_tail(&seg->dirty, &segbuf->queue);
+	spin_unlock_irqrestore(&seg->lock, flags);
+
+	tasklet_schedule(&seg->tasklet);
+
 	return 0;
 }
 
@@ -1707,8 +1736,53 @@ static int
 lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf, 
 		struct segment_buffer_entry *se);
 
+static void
+lsa_segment_read_done_callback(struct lsa_segment *seg, 
+		struct segment_buffer *segbuf)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&seg->lock, flags);
+	while (!list_empty(&segbuf->queue)) {
+		struct segment_buffer_entry *se =
+			container_of(segbuf->queue.next,
+					struct segment_buffer_entry,
+					queue);
+		short type = se->type & 0xf;
+		list_del_init(&se->queue);
+		spin_unlock_irqrestore(&seg->lock, flags);
+
+		if (type == 0)
+			lsa_dirtory_rw_done(seg, segbuf, se);
+
+		spin_lock_irqsave(&seg->lock, flags);
+	}
+	spin_unlock_irqrestore(&seg->lock, flags);
+}
+
+/*
+ * TODO:
+ *  must checking the disks flag, when detect failed disk, recover data using
+ *  parity disk
+ */
 static int
-lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf)
+lsa_segment_read_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	set_segbuf_uptodate(segbuf);
+	lsa_segment_read_done_callback(seg, segbuf);
+	return 0;
+}
+
+static int
+lsa_segment_write_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
+{
+	clear_segbuf_dirty(segbuf);
+	return 0;
+}
+
+static int
+lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf,
+		segbuf_event_t type)
 {
 	unsigned long flags;
 
@@ -1717,23 +1791,36 @@ lsa_segment_release(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 	spin_lock_irqsave(&seg->lock, flags);
 	list_add_tail(&segbuf->lru, &seg->lru);
-
-	while (!list_empty(&segbuf->queue)) {
-		struct segment_buffer_entry *se =
-			container_of(segbuf->queue.next,
-					struct segment_buffer_entry,
-					queue);
-		list_del_init(&se->queue);
-		spin_unlock_irqrestore(&seg->lock, flags);
-
-		if (se->type == 0)
-			lsa_dirtory_rw_done(seg, segbuf, se);
-	
-		spin_lock_irqsave(&seg->lock, flags);
-	}
 	spin_unlock_irqrestore(&seg->lock, flags);
 
+	switch (type) {
+	case READ_DONE:
+		lsa_segment_read_done(seg, segbuf);
+		break;
+	case WRITE_DONE:
+		lsa_segment_write_done(seg, segbuf);
+		break;
+	default:
+		break;
+	}
+
 	return 0;
+}
+
+/* write the dirty segment into disk 
+ */
+static void
+lsa_segment_tasklet(unsigned long data)
+{
+	struct lsa_segment *seg = (struct lsa_segment *)data;
+	/*raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);*/
+
+	while (!list_empty(&seg->dirty)) {
+		struct segment_buffer *segbuf = container_of(seg->dirty.next,
+				struct segment_buffer,
+				queue);
+		lsa_segment_handle(seg, segbuf);
+	}
 }
 
 static int
@@ -1759,6 +1846,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr)
 	spin_lock_init(&seg->lock);
 	seg->shift_sector = PAGE_SHIFT - SECTOR_SHIFT;
 	seg->disks = disks;
+	tasklet_init(&seg->tasklet, lsa_segment_tasklet, (unsigned long)seg);
 
 	for (i = 0; i < nr; i ++) {
 		struct segment_buffer *segbuf;
@@ -1782,7 +1870,7 @@ static void
 lsa_column_free(struct column *column, int disks)
 {
 	int i;
-	for (i = 0; i < disks; i ++, column ++) 
+	for (i = 0; i < disks; i ++, column ++)
 		__free_page(column->page);
 }
 
@@ -1814,8 +1902,8 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 	return 0;
 }
 
-/* LSA dirtory operations 
- * including 
+/* LSA dirtory operations
+ * including
  *  bitmap.
  *  rbtree.
  *  segment page.
@@ -2008,6 +2096,16 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 	return 0;
 }
 
+/*
+ * LSA entry get 
+ *
+ * result:
+ *  -ENOENT       logic address not found.
+ *  -EBUSY        this entry is reference by other, using careful.
+ *  -EINPROGRESS: entry must reading from disk, the bio has been push into 
+ *                entry bio list, will call the __lsa_bio_req when disk
+ *                request is finished.
+ */
 static int
 lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 		struct entry_buffer **lep, struct bio *bio)
@@ -2039,6 +2137,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 	}
 	if (!entry_uptodate(eh)) {
 		__lsa_entry_bio_push(eh, bio);
+		res = -EINPROGRESS;
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 	
@@ -2068,14 +2167,16 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 
 	/* must not in any list */
 	BUG_ON(!list_empty(&eh->lru));
-	/* must not in dirty list */
-	BUG_ON(!list_empty(&eh->dirty));
+	/* must not in any queue list */
+	BUG_ON(!list_empty(&eh->queue));
 	/* must in the rb tree */
 	BUG_ON(!entry_tree(eh));
 
 	spin_lock_irqsave(&dir->lock, flags);
-	list_add_tail(&dir->dirty, &eh->dirty);
+	list_add_tail(&dir->dirty, &eh->queue);
 	spin_unlock_irqrestore(&dir->lock, flags);
+
+	tasklet_schedule(&dir->tasklet);
 }
 
 static int
@@ -2086,8 +2187,10 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	
 	/* TODO */
 
+	/* when copy to segment, mark the segment is dirty */
 	if (!fromseg)
 		lsa_segment_dirty(seg, segbuf);
+
 	return 0;
 }
 
@@ -2137,6 +2240,7 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	struct segment_buffer *segbuf;
 	unsigned long flags;
 
+	eh->segbuf_entry.type = 0;
 	segbuf = lsa_segment_find_or_create(seg,
 			LBA2SEG(dir, eh->e.log_vol_id), &eh->segbuf_entry);
 	if (segbuf == NULL) {
@@ -2146,13 +2250,14 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 		return 0;
 	}
 
-	if (segbuf_uptodate(segbuf))
+	if (segbuf_uptodate(segbuf) &&
+			!test_bit(SEGBUF_FLY, &eh->segbuf_entry.type))
 		lsa_dirtory_copy(seg, segbuf, eh);
 
-	if ((rw == READ && !segbuf_uptodate(segbuf))/* ||
-	    (rw == WRITE && segbuf_uptodate(segbuf))*/)
+	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
+	    (rw == WRITE && segbuf_uptodate(segbuf)))
 		lsa_segment_handle(seg, segbuf);
-	lsa_segment_release(seg, segbuf);
+	lsa_segment_release(seg, segbuf, 0);
 
 	return res;
 }
@@ -2190,6 +2295,10 @@ __lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
+/* doing retry job.
+ * doing queue job.
+ * update the dirty entry to segment.
+ */
 static void
 lsa_dirtory_tasklet(unsigned long data)
 {
@@ -2197,6 +2306,7 @@ lsa_dirtory_tasklet(unsigned long data)
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->retry);
 	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->queue);
+	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->dirty);
 }
 
 static int
@@ -5390,7 +5500,7 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 	res = lsa_entry_get(&conf->lsa_dirtory, (uint32_t)logical_sector,
 			&eb, bi);
 
-	if (eb && !entry_uptodate(eb)) {
+	if (res == -EINPROGRESS) {
 		lsa_entry_put(&conf->lsa_dirtory, eb);
 		return 0;
 	}
