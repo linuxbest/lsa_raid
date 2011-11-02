@@ -476,6 +476,15 @@ struct raid5_private_data {
 		struct tasklet_struct tasklet;
 	} lsa_dirtory;
 
+	struct lsa_write_buffer {
+	} lsa_write_buffer;
+
+	struct lsa_segment_status {
+	} lsa_segment_status;
+
+	struct lsa_closed_segment {
+	} lsa_closed_status;
+
 	struct lsa_segment {
 		struct raid5_private_data *conf;
 		spinlock_t lock;

@@ -1646,7 +1646,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 			list_del_init(&segbuf->lru);
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
-		set_bit_tree(segbuf);
+		set_segbuf_tree(segbuf);
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
@@ -1884,13 +1884,13 @@ lsa_column_free(struct column *column, int disks, int shift)
 
 static void 
 __segment_buffer_free(struct lsa_segment *seg, 
-		struct segment_buffer *sb, int disks)
+		struct segment_buffer *segbuf, int disks)
 {
 	if (test_clear_segbuf_tree(segbuf))
-		__segbuf_tree_delete(seg, sb);
-	list_del_init(&sb->lru);
-	lsa_column_free(sb->column, disks, seg->shift);
-	kfree(sb);
+		__segbuf_tree_delete(seg, segbuf);
+	list_del_init(&segbuf->lru);
+	lsa_column_free(segbuf->column, disks, seg->shift);
+	kfree(segbuf);
 }
 
 static int
@@ -2414,7 +2414,8 @@ lsa_meta_page_put(struct lsa_meta *meta, struct page *page, spinlock_t *lock)
  * tail 8 byte
  */
 static int
-lsa_meta_page_get(struct lsa_meta *meta, struct lsa_entry **le, struct r5dev *dev)
+lsa_meta_page_get(struct lsa_meta *meta, struct lsa_entry **le,
+		struct r5dev *dev, struct entry_buffer *eh)
 {
 	struct page *page = meta->page;
 
@@ -2431,6 +2432,11 @@ lsa_meta_page_get(struct lsa_meta *meta, struct lsa_entry **le, struct r5dev *de
 	}
 
 	*le = &meta->entry[meta->i];
+	meta->i ++;
+	if (eh)
+		memcpy(&meta->entry[meta->i], &eh->e, sizeof(lsa_entry_t));
+	else
+		memset(&meta->entry[meta->i], 0, sizeof(lsa_entry_t));
 	meta->i ++;
 
 	if (meta->i < meta->max) 
@@ -2451,7 +2457,7 @@ static int lsa_meta_init(struct lsa_meta *meta, int nr)
 	struct page *page;
 
 	meta->page  = NULL;
-	meta->max   = STRIPE_SIZE/sizeof(lsa_entry_t);
+	meta->max   = STRIPE_SIZE/sizeof(lsa_entry_t)/2;
 
 	/* we alloc double size of meta page, to make sure the meta insert
 	 * always have page */
@@ -5371,7 +5377,8 @@ lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
 
 /* call under device_lock hold with IRQ off */
 static struct stripe_head *
-lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
+lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p,
+		struct entry_buffer *eh)
 {
 	struct stripe_head *sh = conf->lsa_seg_sh;
 	struct r5dev *dev;
@@ -5380,7 +5387,7 @@ lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
 	/* if have sh, try get meta data buffer */
 	if (conf->lsa_dd_idx != conf->raid_disks && sh) {
 		dev = &sh->dev[conf->lsa_dd_idx];
-		if (lsa_meta_page_get(&conf->lsa_meta, le, dev))
+		if (lsa_meta_page_get(&conf->lsa_meta, le, dev, eh))
 			conf->lsa_dd_idx ++;
 	}
 	if (conf->lsa_dd_idx == conf->raid_disks) {
@@ -5415,7 +5422,7 @@ lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p)
 
 	if (*le == NULL) {
 		dev = &sh->dev[conf->lsa_dd_idx];
-		if (lsa_meta_page_get(&conf->lsa_meta, le, dev))
+		if (lsa_meta_page_get(&conf->lsa_meta, le, dev, eh))
 			conf->lsa_dd_idx ++;
 	}
 	*dd_idx_p = conf->lsa_dd_idx;
@@ -5447,7 +5454,7 @@ lsa_page_write(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
 	wlen   = bio->bi_size >> 9;
 	
 	spin_lock_irqsave(&conf->device_lock, flags);
-	sh = lsa_write_begin(conf, &le, &dd_idx);
+	sh = lsa_write_begin(conf, &le, &dd_idx, eh);
 	if (!sh)
 		bio_list_add(&conf->target_list, bio);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
