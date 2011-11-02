@@ -2399,10 +2399,9 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 typedef struct segment_status {
 	uint32_t seg_id;
 	uint32_t timestamp;
-	uint16_t occupancy;
+	uint32_t occupancy;
 	uint8_t  status;
-	uint8_t  reserved0;
-	uint32_t reserved1;
+	uint8_t  reserved[3];
 } segment_status_t;
 
 /* we using 16Mbyte LRU cache for entry */
