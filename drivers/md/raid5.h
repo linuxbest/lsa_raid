@@ -477,6 +477,7 @@ struct raid5_private_data {
 	} lsa_dirtory;
 
 	struct lsa_segment {
+		struct raid5_private_data *conf;
 		spinlock_t lock;
 		short shift_sector, disks, pd, qd;
 		struct rb_root tree;
@@ -484,7 +485,7 @@ struct raid5_private_data {
 		struct list_head active;
 		struct list_head dirty;
 		struct tasklet_struct tasklet;
-	} lsa_segment;
+	} meta_segment, data_segment;
 };
 
 typedef struct raid5_private_data raid5_conf_t;

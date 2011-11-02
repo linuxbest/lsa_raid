@@ -1540,7 +1540,7 @@ __lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
 static int 
 __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
-	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	raid5_conf_t *conf = seg->conf;
 	struct column *column = segbuf->column;
 	int i;
 
@@ -1668,7 +1668,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 static int
 lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
-	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	raid5_conf_t *conf = seg->conf;
 	int disks = seg->disks, i;
 	int rw = segbuf_dirty(segbuf) ? WRITE : READ;
 	struct column *column = segbuf->column;
@@ -1824,7 +1824,8 @@ lsa_segment_tasklet(unsigned long data)
 }
 
 static int
-lsa_column_alloc(struct segment_buffer *segbuf, struct column *column, int disks)
+lsa_column_alloc(struct segment_buffer *segbuf, struct column *column,
+		int disks, int sector_shift)
 {
 	int i;
 	for (i = 0; i < disks; i ++, column ++) {
@@ -1837,15 +1838,19 @@ lsa_column_alloc(struct segment_buffer *segbuf, struct column *column, int disks
 }
 
 static int 
-lsa_segment_init(struct lsa_segment *seg, int disks, int nr)
+lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int sector_shift,
+		struct raid5_private_data *conf)
 {
 	int i;
 
 	INIT_LIST_HEAD(&seg->lru);
 	INIT_LIST_HEAD(&seg->active);
 	spin_lock_init(&seg->lock);
-	seg->shift_sector = PAGE_SHIFT - SECTOR_SHIFT;
+
+	seg->shift_sector = sector_shift;
 	seg->disks = disks;
+	seg->conf  = conf;
+	
 	tasklet_init(&seg->tasklet, lsa_segment_tasklet, (unsigned long)seg);
 
 	for (i = 0; i < nr; i ++) {
@@ -1855,7 +1860,8 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr)
 		segbuf = kzalloc(blen, GFP_KERNEL);
 		if (segbuf == NULL)
 			return -1;
-		if (lsa_column_alloc(segbuf, segbuf->column, disks) != 0)
+		if (lsa_column_alloc(segbuf, segbuf->column, disks,
+					sector_shift) != 0)
 			return -2;
 		list_add_tail(&segbuf->lru, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active);
@@ -2202,7 +2208,7 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se)
 {
 	struct entry_buffer *eh = (void *)se;
-	raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);
+	raid5_conf_t *conf = seg->conf;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	unsigned long flags;
 	struct bio_list bio_list;
@@ -2304,9 +2310,9 @@ lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->retry);
-	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->queue);
-	__lsa_dirtory_job(&conf->lsa_segment, dir, &dir->dirty);
+	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry);
+	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue);
+	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->dirty);
 }
 
 static int
@@ -2514,7 +2520,8 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	kfifo_free(&conf->wr_free_fifo);
 
 	lsa_dirtory_exit(&conf->lsa_dirtory);
-	lsa_segment_exit(&conf->lsa_segment, conf->raid_disks);
+	lsa_segment_exit(&conf->meta_segment, conf->raid_disks);
+	lsa_segment_exit(&conf->data_segment, conf->raid_disks);
 
 	return lsa_meta_exit(&conf->lsa_meta);
 }
@@ -2610,8 +2617,13 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	lsa_dirtory_init(&conf->lsa_dirtory,
 			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 
-	lsa_segment_init(&conf->lsa_segment, conf->raid_disks,
-			ENTRY_HEAD_SIZE/conf->raid_disks/PAGE_SIZE);
+	lsa_segment_init(&conf->meta_segment, conf->raid_disks,
+			ENTRY_HEAD_SIZE/conf->raid_disks/PAGE_SIZE,
+			PAGE_SIZE, conf);
+	
+	lsa_segment_init(&conf->data_segment, conf->raid_disks,
+			(256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
+			STRIPE_SECTORS, conf);
 
 	return lsa_meta_init(&conf->lsa_meta, lsa_seg_nr);
 }
