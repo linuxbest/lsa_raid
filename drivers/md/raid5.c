@@ -1825,11 +1825,11 @@ lsa_segment_tasklet(unsigned long data)
 
 static int
 lsa_column_alloc(struct segment_buffer *segbuf, struct column *column,
-		int disks, int sector_shift)
+		int disks, int shift)
 {
 	int i;
 	for (i = 0; i < disks; i ++, column ++) {
-		column->page = alloc_page(GFP_KERNEL);
+		column->page = alloc_pages(GFP_KERNEL, shift - PAGE_SHIFT);
 		if (column->page == NULL)
 			return -1;
 		__lsa_colume_bio_init(column, segbuf);
@@ -1838,7 +1838,7 @@ lsa_column_alloc(struct segment_buffer *segbuf, struct column *column,
 }
 
 static int 
-lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int sector_shift,
+lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 		struct raid5_private_data *conf)
 {
 	int i;
@@ -1847,7 +1847,8 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int sector_shift,
 	INIT_LIST_HEAD(&seg->active);
 	spin_lock_init(&seg->lock);
 
-	seg->shift_sector = sector_shift;
+	seg->shift = shift;
+	seg->shift_sector = shift - 9;
 	seg->disks = disks;
 	seg->conf  = conf;
 	
@@ -1861,7 +1862,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int sector_shift,
 		if (segbuf == NULL)
 			return -1;
 		if (lsa_column_alloc(segbuf, segbuf->column, disks,
-					sector_shift) != 0)
+					shift) != 0)
 			return -2;
 		list_add_tail(&segbuf->lru, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active);
@@ -1873,11 +1874,11 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int sector_shift,
 }
 
 static void
-lsa_column_free(struct column *column, int disks)
+lsa_column_free(struct column *column, int disks, int shift)
 {
 	int i;
 	for (i = 0; i < disks; i ++, column ++)
-		__free_page(column->page);
+		__free_pages(column->page, shift - PAGE_SHIFT);
 }
 
 static void 
@@ -1887,7 +1888,7 @@ __segment_buffer_free(struct lsa_segment *seg,
 	if (segbuf_tree(sb))
 		__segbuf_tree_delete(seg, sb);
 	list_del_init(&sb->lru);
-	lsa_column_free(sb->column, disks);
+	lsa_column_free(sb->column, disks, seg->shift);
 	kfree(sb);
 }
 
@@ -2619,11 +2620,11 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 
 	lsa_segment_init(&conf->meta_segment, conf->raid_disks,
 			ENTRY_HEAD_SIZE/conf->raid_disks/PAGE_SIZE,
-			PAGE_SIZE, conf);
+			PAGE_SHIFT, conf);
 	
 	lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
-			STRIPE_SECTORS, conf);
+			STRIPE_SHIFT, conf);
 
 	return lsa_meta_init(&conf->lsa_meta, lsa_seg_nr);
 }

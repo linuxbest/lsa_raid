@@ -479,7 +479,7 @@ struct raid5_private_data {
 	struct lsa_segment {
 		struct raid5_private_data *conf;
 		spinlock_t lock;
-		short shift_sector, disks, pd, qd;
+		short shift, shift_sector, disks, pd, qd;
 		struct rb_root tree;
 		struct list_head lru;
 		struct list_head active;
