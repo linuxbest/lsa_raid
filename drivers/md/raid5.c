@@ -1656,7 +1656,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	if (segbuf)
 		atomic_inc(&segbuf->count);
 	spin_unlock_irqrestore(&seg->lock, flags);
-	
+
 	return segbuf;
 }
 
@@ -2047,7 +2047,7 @@ static struct entry_buffer *
 __lsa_entry_freed(struct lsa_dirtory *dir)
 {
 	struct entry_buffer *eh = NULL;
-	
+
 	if (list_empty(&dir->lru)) 
 		return NULL;
 
@@ -2147,7 +2147,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 		res = -EINPROGRESS;
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
-	
+
 	atomic_inc(&eh->count);
 
 	return res;
@@ -2191,7 +2191,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct entry_buffer *eh)
 {
 	int fromseg = !entry_uptodate(eh);
-	
+
 	/* TODO */
 
 	/* when copy to segment, mark the segment is dirty */
@@ -2287,7 +2287,7 @@ __lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
 		struct list_head *head)
 {
 	unsigned long flags;
-	
+
 	spin_lock_irqsave(&dir->lock, flags);
 	while (!list_empty(head)) {
 		struct entry_buffer *eh = list_entry(head->next,
