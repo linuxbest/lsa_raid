@@ -460,8 +460,11 @@ struct raid5_private_data {
 		struct lsa_entry *entry;
 	} lsa_meta;
 	
+	struct lsa_write_buffer {
+	} lsa_write_buffer;
+
 	struct lsa_dirtory {
-		uint32_t seg;
+		uint32_t seg; /* TODO */
 		spinlock_t lock;
 		struct rb_root tree;
 		struct list_head lru;
@@ -476,13 +479,19 @@ struct raid5_private_data {
 		struct tasklet_struct tasklet;
 	} lsa_dirtory;
 
-	struct lsa_write_buffer {
-	} lsa_write_buffer;
-
 	struct lsa_segment_status {
+		spinlock_t lock;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head dirty;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
+		spinlock_t lock;
+		struct list_head lru;
+		struct list_head dirty;
+		unsigned int max;
+		unsigned int cur;
 	} lsa_closed_status;
 
 	struct lsa_segment {

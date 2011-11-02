@@ -2322,7 +2322,7 @@ __entry_buffer_free(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
 	list_del_init(&eh->lru);
 	if (entry_tree(eh))
-		rb_erase(&eh->node, &dir->tree);
+		__lsa_entry_delete(dir, eh);
 	kfree(eh);
 	return 0;
 }
@@ -2390,6 +2390,217 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 	}
 	kfree(dir->bitmap);
 
+	return 0;
+}
+
+/*
+ * LSA segment status 
+ */
+typedef struct segment_status {
+	uint32_t seg_id;
+	uint32_t timestamp;
+	uint16_t occupancy;
+	uint8_t  status;
+	uint8_t  reserved0;
+	uint32_t reserved1;
+} segment_status_t;
+
+/* we using 16Mbyte LRU cache for entry */
+#define SEGSTAT_HEAD_SIZE (16*1024*1024)
+#define SEGSTAT_HEAD_NR   (SEGSTAT_HEAD_SIZE/sizeof(segment_status_t))
+
+struct ss_buffer {
+	struct segment_buffer_entry segbuf_entry;
+	struct rb_node node;
+	struct list_head lru, dirty, queue;
+	atomic_t count;
+#define SEGSTAT_TREE     0
+#define SEGSTAT_DIRTY    1
+#define SEGSTAT_UPTODATE 2
+	unsigned long flags;
+	segment_status_t e;
+};
+
+#define SEGSTAT_FNS(bit, name) \
+static inline void set_ss_##name(struct ss_buffer *eh) \
+{ \
+	set_bit(SEGSTAT_##bit, &eh->flags); \
+} \
+static inline void clear_ss_##name(struct ss_buffer *eh) \
+{ \
+	clear_bit(SEGSTAT_##bit, &eh->flags); \
+} \
+static inline int ss_##name(struct ss_buffer *eh) \
+{ \
+	return test_bit(SEGSTAT_##bit, &eh->flags); \
+} \
+static inline int test_set_ss_##name(struct ss_buffer *eh) \
+{ \
+	return test_and_set_bit(SEGSTAT_##bit, &eh->flags); \
+} \
+static inline int test_clear_ss_##name(struct ss_buffer *eh) \
+{ \
+	return test_and_clear_bit(SEGSTAT_##bit, &eh->flags); \
+}
+
+SEGSTAT_FNS(TREE,     tree)
+SEGSTAT_FNS(DIRTY,    dirty)
+SEGSTAT_FNS(UPTODATE, uptodate)
+
+static struct ss_buffer *
+__ss_entry_search(struct lsa_segment_status *ss, uint32_t seg_id)
+{
+	struct rb_node *node = ss->tree.rb_node;
+
+	while (node) {
+		struct ss_buffer *data = container_of(node, 
+				struct ss_buffer, node);
+		int result = data->e.seg_id - seg_id;
+
+		if (result < 0)
+			node = node->rb_left;
+		else if (result > 0)
+			node = node->rb_right;
+		else
+			return data;
+	}
+	return NULL;
+}
+
+static int
+__ss_entry_insert(struct lsa_segment_status *ss, struct ss_buffer *data)
+{
+	struct rb_node **new = &(ss->tree.rb_node), *parent = NULL;
+
+	/* Figure out where to put new node */
+	while (*new) {
+		struct ss_buffer *this = container_of(*new,
+				struct ss_buffer, node);
+		int result = this->e.seg_id - data->e.seg_id;
+
+		if (result < 0)
+			new = &((*new)->rb_left);
+		else if (result > 0)
+			new = &((*new)->rb_right);
+		else
+			return 0;
+	}
+
+	/* Add new node and rebalance tree */
+	rb_link_node(&data->node, parent, new);
+	rb_insert_color(&data->node, &ss->tree);
+}
+
+static void 
+__ss_entry_delete(struct lsa_segment_status *ss, struct ss_buffer *data)
+{
+	rb_erase(&data->node, &ss->tree);
+}
+
+static void 
+__ss_buffer_free(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
+{
+	list_del_init(&ssbuf->lru);
+	if (ss_tree(ssbuf))
+		__ss_entry_delete(ss, ssbuf);
+	kfree(ssbuf);
+}
+
+static int
+lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
+{
+	int i;
+
+	spin_lock_init(&ss->lock);
+	ss->tree = RB_ROOT;
+	INIT_LIST_HEAD(&ss->dirty);
+	INIT_LIST_HEAD(&ss->lru);
+
+	for (i = 0; i < SEGSTAT_HEAD_NR; i ++) {
+		struct ss_buffer *ssbuf;
+		ssbuf = kzalloc(sizeof(*ssbuf), GFP_KERNEL);
+		if (ssbuf == NULL)
+			return -1;
+		list_add_tail(&ss->lru, &ssbuf->lru);
+	}
+
+	return 0;
+}
+
+static int
+lsa_ss_exit(struct lsa_segment_status *ss)
+{
+	while (!list_empty(&ss->dirty)) {
+		/* TODO we must flush the dirty ss into disk */
+		struct ss_buffer *ssbuf = container_of(ss->dirty.next,
+				struct ss_buffer, dirty);
+		__ss_buffer_free(ss, ssbuf);
+	}
+	while (!list_empty(&ss->lru)) {
+		struct ss_buffer *ssbuf = container_of(ss->lru.next,
+				struct ss_buffer, dirty);
+		__ss_buffer_free(ss, ssbuf);
+	}
+	return 0;
+}
+
+/*
+ * LSA closed segment list 
+ *
+ */
+typedef struct lcs_buffer {
+	uint32_t seg_id;
+	struct list_head lru;
+} lcs_buffer_t;
+
+static void
+__lcs_buffer_free(struct lsa_closed_segment *lcs, struct lcs_buffer *lcsbuf)
+{
+	list_del_init(&lcsbuf->lru);
+	kfree(lcsbuf);
+}
+
+static int
+lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id)
+{
+}
+
+static int
+lsa_cs_init(struct lsa_closed_segment *lcs)
+{
+	int max = PAGE_SIZE/sizeof(uint32_t), i;
+
+	lcs->max = max;
+	lcs->max --; /* for head */
+	lcs->max --; /* for size */
+	lcs->max --; /* for crc  */
+	lcs->cur = 0;
+
+	max *= 2;
+	for (i = 0; i < max; i ++) {
+		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf),
+				GFP_KERNEL);
+		list_add_tail(&lcs->lru, &lcs_buf->lru);
+	}
+
+	return 0;
+}
+
+static int
+lsa_cs_exit(struct lsa_closed_segment *lcs)
+{
+	WARN_ON(lcs->cur != 0);
+	while (!list_empty(&lcs->dirty)) {
+		/* TODO we must flush the dirty lcs into disk */
+		struct lcs_buffer *lcs_buf = container_of(lcs->dirty.next,
+				struct lcs_buffer, lru);
+		__lcs_buffer_free(lcs, lcs_buf);
+	}
+	while (!list_empty(&lcs->lru)) {
+		struct lcs_buffer *lcs_buf = container_of(lcs->lru.next,
+				struct lcs_buffer, lru);
+		__lcs_buffer_free(lcs, lcs_buf);
+	}
 	return 0;
 }
 
@@ -2527,6 +2738,8 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	kfifo_free(&conf->wr_data_fifo);
 	kfifo_free(&conf->wr_free_fifo);
 
+	lsa_cs_exit(&conf->lsa_closed_status);
+	lsa_ss_exit(&conf->lsa_segment_status);
 	lsa_dirtory_exit(&conf->lsa_dirtory);
 	lsa_segment_exit(&conf->meta_segment, conf->raid_disks);
 	lsa_segment_exit(&conf->data_segment, conf->raid_disks);
@@ -2621,6 +2834,10 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 			return 0;
 		}
 	}
+
+	lsa_cs_init(&conf->lsa_closed_status);
+	lsa_ss_init(&conf->lsa_segment_status, 
+			 raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 
 	lsa_dirtory_init(&conf->lsa_dirtory,
 			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
