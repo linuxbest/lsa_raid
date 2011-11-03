@@ -2182,7 +2182,7 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	unsigned long flags;
 
 	if (test_set_entry_dirty(eh))
-		return; 
+		return;
 
 	/* must not in any list */
 	BUG_ON(!list_empty(&eh->lru));
@@ -2677,10 +2677,14 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi,
 	lt->new.seg_column   = segfill->data_column;
 	lt->new.offset       = segfill->data_offset & segfill->mask_offset;
 	lt->new.length       = bi->bi_size;
-	if (eb)
-		memcpy((void *)&lt->old, (void *)&eb->e, sizeof(struct lsa_entry));
-	else
+	if (eb) {
+		memcpy((void *)&lt->old, (void *)&eb->e,
+				sizeof(struct lsa_entry));
+		memcpy((void *)&eb->e, (void *)&lt->new,
+				sizeof(struct lsa_entry));
+	} else {
 		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
+	}
 	*le = &lt->new;
 }
 
@@ -5986,8 +5990,10 @@ static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi,
 		res = lsa_page_read(conf, bi, eb->e.log_vol_id, eb);
 	else {
 		res = lsa_segment_fill_write(&conf->segment_fill, bi, eb, &le);
-		if (res == 0)
+		if (res == 0 && eb == NULL)
 			res = lsa_entry_insert(&conf->lsa_dirtory, le);
+		else if (res == 0)
+			lsa_entry_dirty(&conf->lsa_dirtory, eb);
 	}
 
 	return res;
