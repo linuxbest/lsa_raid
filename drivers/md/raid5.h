@@ -510,6 +510,24 @@ struct raid5_private_data {
 		struct list_head dirty;
 		struct tasklet_struct tasklet;
 	} meta_segment, data_segment;
+
+	struct lsa_segment_fill {
+		spinlock_t lock;
+		unsigned int max_entry;
+		unsigned int max_size;
+		unsigned int mask_offset;
+		struct lsa_track *track;
+		struct segment_buffer *segbuf;
+		struct lsa_segment *seg;
+		unsigned int data_offset;
+		unsigned int data_shift;
+		unsigned int data_column;
+		unsigned int meta_max;
+		uint32_t     meta_id;
+		unsigned int meta_column;
+		struct list_head head;
+		struct list_head free;
+	} segment_fill;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
