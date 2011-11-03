@@ -459,9 +459,14 @@ struct raid5_private_data {
 		unsigned int i, max;
 		struct lsa_entry *entry;
 	} lsa_meta;
-	
-	struct lsa_write_buffer {
-	} lsa_write_buffer;
+
+	/* TODO: data cache is holding buffer for read/write */
+	struct lsa_data_cache {
+	} lsa_data_cache;
+
+	/* TODO: sorting the data into stream */
+	struct lsa_stream_controller {
+	} lsa_stream_controller;
 
 	struct lsa_dirtory {
 		uint32_t seg; /* TODO */
@@ -494,6 +499,7 @@ struct raid5_private_data {
 		unsigned int cur;
 	} lsa_closed_status;
 
+	/* memory segment buffer */
 	struct lsa_segment {
 		struct raid5_private_data *conf;
 		spinlock_t lock;

@@ -1437,7 +1437,7 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *  6,256,705
  * gc manager
  *  5,551,003
- */ 
+ */
 /*
  * LSA segment operations
  *
@@ -1654,7 +1654,7 @@ struct segment_buffer_entry {
 
 static struct segment_buffer *
 lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
-		struct segment_buffer_entry *entry)
+		struct segment_buffer_entry *entry, int rw)
 {
 	struct segment_buffer *segbuf;
 	unsigned long flags;
@@ -1670,7 +1670,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
-	if (segbuf && !segbuf_uptodate(segbuf)) {
+	if (segbuf && !segbuf_uptodate(segbuf) && rw == READ) {
 		list_add_tail(&segbuf->queue, &entry->queue);
 		set_bit(SEGBUF_FLY, &entry->type);
 	}
@@ -2270,7 +2270,9 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 
 	eh->segbuf_entry.type = 0;
 	segbuf = lsa_segment_find_or_create(seg,
-			LBA2SEG(dir, eh->e.log_vol_id), &eh->segbuf_entry);
+			LBA2SEG(dir, eh->e.log_vol_id),
+			&eh->segbuf_entry,
+			READ);
 	if (segbuf == NULL) {
 		spin_lock_irqsave(&dir->lock, flags);
 		list_add_tail(&dir->retry, &eh->queue);
