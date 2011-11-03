@@ -96,7 +96,7 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
 	struct mdk_personality *mdk = req->dev->t->pers;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-		mdk->targ_page_put(sb->sh, sb->dev);
+		mdk->targ_page_put(req->dev->t, sb->segbuf, dirty);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -106,21 +106,20 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 static void targ_bio_put(targ_req_t *req);
 
 static int targ_page_add(mddev_t *mddev, struct bio *bio, 
-		struct stripe_head *sh, struct r5dev *dev,
+		struct segment_buffer *segbuf,
 		struct page *page, unsigned offset)
 {
 	targ_req_t *req = bio->bi_private;
 	int tlen = bio->bi_size;
 
 	debug("buf %p, bi#%llu, stripe %p, tlen %04d @ %05d, %d\n",
-			&req->buf, bio->bi_sector, sh, tlen>>9, 
+			&req->buf, bio->bi_sector, segbuf, tlen>>9, 
 			offset, bio->bi_idx);
 
 	req->buf.sb[bio->bi_idx].page   = page;
 	req->buf.sb[bio->bi_idx].offset = offset;
 	req->buf.sb[bio->bi_idx].len    = tlen;
-	req->buf.sb[bio->bi_idx].sh     = sh;
-	req->buf.sb[bio->bi_idx].dev    = dev;
+	req->buf.sb[bio->bi_idx].segbuf = segbuf;
 
 	req->buf.nents ++;
 
@@ -197,11 +196,6 @@ static void targ_bio_end_io(struct bio *bi, int error)
 {
 	bi->bi_max_vecs = IO_END;
 	bio_put(bi);
-}
-
-static int targ_remap_req(struct mddev_s *t, struct bio *bio)
-{
-	return 0;
 }
 
 targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 
@@ -327,7 +321,6 @@ int targ_buf_free(targ_buf_t *buf)
 void targ_md_buf_init(struct mddev_s *t)
 {
 	t->targ_page_add = targ_page_add;
-	t->targ_remap_req= targ_remap_req;
 }
 
 targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)

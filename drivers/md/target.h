@@ -152,13 +152,11 @@ int                targ_group_sess_exit   (struct targ_sess *sess);
 int  req_cache_init(void);
 void req_cache_exit(void);
 
-struct stripe_head;
-struct r5dev;
+struct segment_buffer;
 struct stripe_buf {
 	struct page *page;
 	unsigned offset, len;
-	struct stripe_head *sh;
-	struct r5dev *dev;
+	struct segment_buffer *segbuf;
 };
 
 struct targ_buf {

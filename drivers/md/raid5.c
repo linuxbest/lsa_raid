@@ -736,22 +736,6 @@ static void ops_complete_biofill(void *stripe_head_ref)
 
 static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev)
 {
-	raid5_conf_t *conf = sh->raid_conf;
-	int page_offset = 0;
-#if 0
-	sector_t sector = dev->sector;
-	if (bio->bi_sector >= sector)
-		page_offset = (signed)(bio->bi_sector - sector) * 512;
-	else
-		page_offset = (signed)(sector - bio->bi_sector) * -512;
-#endif
-	if (!test_and_set_bit(BIO_REQ_DONE, &bio->bi_flags)) {
-		pr_debug("%s: stripe %llu, bio %llu, offset %d\n", __func__,
-				(unsigned long long)sh->sector, 
-				(unsigned long long)bio->bi_sector,
-				page_offset);
-		conf->mddev->targ_page_add(conf->mddev, bio, sh, dev, dev->page, page_offset);
-	}
 }
 
 static struct dma_async_tx_descriptor *
@@ -2741,6 +2725,14 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	segfill->track = NULL;
 }
 
+static int
+__lsa_segment_fill_put(struct lsa_segment_fill *segfill, 
+		struct segment_buffer *segbuf)
+{
+	/* TODO */
+	return 0;
+}
+
 /* waiting for the target finished data xfer, then calling
  *  segment handle
  */
@@ -2815,10 +2807,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
 	struct page *page = segbuf->column[data_column].page;
 
 	conf->mddev->targ_page_add(conf->mddev, bi,
-			segbuf, /* TODO */
-			NULL,
-			page,
-			column_offset);
+			segbuf, page, column_offset);
 
 	segfill->data_column = data_column;
 	segfill->data_offset = (data_column << STRIPE_SHIFT) +
@@ -2833,8 +2822,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
  */
 static int
 __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
-		int *offset, struct entry_buffer *eb,
-		struct lsa_entry **le)
+		struct entry_buffer *eb, struct lsa_entry **le)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
 	int next      = meta_full;
@@ -2869,11 +2857,10 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill, struct bio *bi,
 		struct entry_buffer *eb, struct lsa_entry **le)
 {
 	unsigned long flags;
-	struct segment_buffer *segbuf;
-	int offset = 0, res;
+	int res;
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	res = __lsa_segment_fill_append(segfill, bi, &offset, eb, le);
+	res = __lsa_segment_fill_append(segfill, bi, eb, le);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
 	return res;
@@ -6066,13 +6053,14 @@ static void raid_tasklet(unsigned long data)
 	}
 }
 
-static int targ_page_put(struct stripe_head *sh, struct r5dev *dev)
+static int
+targ_page_put(mddev_t *mddev, struct segment_buffer *segbuf, int rw)
 {
-	pr_debug("%s: stripe %llu\n", __func__,
-		(unsigned long long)sh->sector);
+	raid5_conf_t *conf = mddev->private;
+	pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
 
-	set_bit(R5_UPTODATE, &dev->flags);
-	clear_bit(R5_LOCKED, &dev->flags);
+	if (rw == WRITE)
+		return __lsa_segment_fill_put(&conf->segment_fill, segbuf);
 
 	return 0;
 }
