@@ -1418,6 +1418,26 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
+/***
+ * meta write/recover 
+ *  6,052,799
+ * meta rebuild
+ *  6,738,863
+ *  6,021,509
+ * lsa generic
+ *  hardware 5,671,390
+ *  layout   6,941,420
+ *  STK      5,124,987
+ * spare disk
+ *  5,488,701
+ * preventing deadlock
+ *  6,336,164
+ * data sorting
+ *  6,871,272
+ *  6,256,705
+ * gc manager
+ *  5,551,003
+ */ 
 /*
  * LSA segment operations
  *
@@ -2573,6 +2593,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	lcs->max --; /* for head */
 	lcs->max --; /* for size */
 	lcs->max --; /* for crc  */
+	lcs->max --; /* reserved */
 	lcs->cur = 0;
 
 	max *= 2;
