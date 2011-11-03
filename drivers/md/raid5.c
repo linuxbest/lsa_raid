@@ -2680,7 +2680,7 @@ __lsa_track_put(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 
 static void
 __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi, 
-		struct entry_buffer *eb)
+		struct entry_buffer *eb, struct lsa_entry **le)
 {
 	lsa_track_t *track = segfill->track;
 	lsa_track_buffer_t *track_buffer = track->buf;
@@ -2697,6 +2697,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi,
 		memcpy((void *)&lt->old, (void *)&eb->e, sizeof(struct lsa_entry));
 	else
 		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
+	*le = &lt->new;
 }
 
 static void
@@ -2832,7 +2833,8 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
  */
 static int
 __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
-		int *offset, struct entry_buffer *eb)
+		int *offset, struct entry_buffer *eb,
+		struct lsa_entry **le)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
 	int next      = meta_full;
@@ -2843,7 +2845,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 		/* FIXME never happen */
 		BUG_ON(1);
 	} else if (meta_full && size1 <= segfill->max_size) {
-		__lsa_track_add(segfill, bi, eb);
+		__lsa_track_add(segfill, bi, eb, le);
 		__lsa_segment_fill_add(segfill, bi, next);
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
@@ -2856,7 +2858,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 		__lsa_segment_fill_close(segfill);
 		__lsa_segment_fill_open(segfill);
 	}
-	__lsa_track_add(segfill, bi, eb);
+	__lsa_track_add(segfill, bi, eb, le);
 	__lsa_segment_fill_add(segfill, bi, next);
 
 	return 0;
@@ -2864,14 +2866,14 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 
 static int
 lsa_segment_fill_write(struct lsa_segment_fill *segfill, struct bio *bi,
-		struct entry_buffer *eb)
+		struct entry_buffer *eb, struct lsa_entry **le)
 {
 	unsigned long flags;
 	struct segment_buffer *segbuf;
 	int offset = 0, res;
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	res = __lsa_segment_fill_append(segfill, bi, &offset, eb);
+	res = __lsa_segment_fill_append(segfill, bi, &offset, eb, le);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
 	return res;
@@ -5987,6 +5989,7 @@ static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi,
 {
 	int res;
 	const int rw = bio_data_dir(bi);
+	struct lsa_entry *le;
 
 	pr_debug("%s: sector %llu logic %u, %s, %d\n",
 			__func__, (unsigned long long)bi->bi_sector,
@@ -5994,8 +5997,11 @@ static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi,
 			eb ? entry_uptodate(eb) : 0);
 	if (rw == READ)
 		res = lsa_page_read(conf, bi, eb->e.log_vol_id, eb);
-	else
-		res = lsa_segment_fill_write(&conf->segment_fill, bi, eb);
+	else {
+		res = lsa_segment_fill_write(&conf->segment_fill, bi, eb, &le);
+		if (res == 0)
+			res = lsa_entry_insert(&conf->lsa_dirtory, le);
+	}
 
 	return res;
 }
