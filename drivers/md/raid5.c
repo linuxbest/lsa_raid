@@ -2713,10 +2713,36 @@ __lcs_buffer_free(struct lsa_closed_segment *lcs, struct lcs_buffer *lcsbuf)
 	kfree(lcsbuf);
 }
 
+static lcs_buffer_t *
+__las_lcs_freed(struct lsa_closed_segment *lcs)
+{
+	lcs_buffer_t *lb = NULL;
+
+	if (list_empty(&lcs->lru))
+		return NULL;
+
+	ssbuf = list_entry(lcs->lru.next, lcs_buffer_t, lru);
+	list_del_init(&lb->lru);
+
+	return lb;
+}
+
 static void 
 lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id)
 {
-	/* TODO */
+	unsigned long flags;
+	lcs_buffer_t *lb;
+
+	spin_lock_irqsave(&lcs->lock, flags);
+	lb = __lsa_lcs_freed(lcs);
+	/* TODO making sure the lb is not NULL */
+	if (lb) {
+		lb->seg_id = seg_id;
+		list_add_tail(&lcs->dirty, &lb->lru);
+	}
+	BUG_ON(lb == NULL);
+	spin_unlock_irqrestore(&lcs->lock, flags);
+
 }
 
 static int
