@@ -2652,6 +2652,11 @@ __lsa_ss_dirty(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 	list_add_tail(&ss->dirty, &ssbuf->lru);
 }
 
+/*
+ * TODO 
+ * needing reloading the page from disk, flush the dirty into disk when
+ *
+ */
 static int
 lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 {
