@@ -1698,8 +1698,6 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 
 	res = lsa_ss_update(&conf->lsa_segment_status, 
 			segbuf->seg_id, segbuf->status);
-	if (type == SEG_CLOSED)
-		lsa_lcs_insert(&conf->lsa_closed_status, segbuf->seg_id);
 
 	return res;
 }
@@ -2765,16 +2763,12 @@ typedef struct lsa_track {
 	struct lsa_dirtory *dir;
 	struct segment_buffer *segbuf;
 	struct lsa_track_buffer *buf;
+	/* for fasting the closing segment */
+	struct page *closing_page;
+	uint32_t *closing_seg_id;
+	int       closing_seg_total;
 	struct lsa_track_cookie cookie[0];
 } lsa_track_t;
-
-static void 
-__lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
-{
-	list_del_init(&lt->list);
-	__free_pages(lt->page, STRIPE_ORDER);
-	kfree(lt);
-}
 
 static lsa_track_t *
 __lsa_track_get(struct lsa_segment_fill *segfill)
@@ -2839,6 +2833,8 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi,
 	lsa_track_t *track = segfill->track;
 	struct lsa_track_entry  *lt = &track->buf->entry[track->buf->total];
 	struct lsa_track_cookie *cookie = &track->cookie[track->buf->total];
+	uint32_t *closing_seg_id =
+		&track->closing_seg_id[track->closing_seg_total];
 
 	track->buf->total ++;
 	lt->new.log_vol_id   = bi->bi_sector >> segfill->seg->shift;
@@ -2853,6 +2849,13 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi,
 	cookie->track = track;
 	cookie->lt    = lt;
 	__lsa_track_ref(track);
+
+	/* seting the seg for closing */
+	if (*closing_seg_id != segfill->segbuf->seg_id) {
+		*closing_seg_id = segfill->segbuf->seg_id;
+		track->closing_seg_total ++;
+	}
+	BUG_ON(track->closing_seg_total == PAGE_SIZE/sizeof(uint32_t));
 }
 
 static void
@@ -2915,20 +2918,33 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 {
 	raid5_conf_t *conf = container_of(seg, raid5_conf_t, data_segment);
 	struct lsa_segment_fill *segfill = &conf->segment_fill;
-
-	if (test_clear_segbuf_meta(segbuf)) {
-		unsigned long flags;
-		
-		spin_lock_irqsave(&segfill->lock, flags);
-		__lsa_track_put(segfill, segbuf->column[segbuf->meta].track);
-		spin_unlock_irqrestore(&segfill->lock, flags);
-
-		segbuf->column[segbuf->meta].track     = NULL;
-		segbuf->column[segbuf->meta].meta_page = NULL;
-		segbuf->meta = 0;
-	}
+	unsigned long flags;
+	struct lsa_track *track;
+	int i;
 
 	lsa_segment_event(segbuf, SEG_CLOSED);
+	if (!test_clear_segbuf_meta(segbuf)) {
+		/* without meta data */
+		return 0;
+	}
+
+	BUG_ON(track->closing_seg_total == 0);
+	track = segbuf->column[segbuf->meta].track;
+	for (i = 0; i < track->closing_seg_total; i ++) {
+		/* making segment closed */
+		lsa_lcs_insert(&conf->lsa_closed_status,
+				track->closing_seg_id[i]);
+	}
+	track->closing_seg_total = 0;
+
+	spin_lock_irqsave(&segfill->lock, flags);
+	__lsa_track_put(segfill, segbuf->column[segbuf->meta].track);
+	spin_unlock_irqrestore(&segfill->lock, flags);
+
+	segbuf->column[segbuf->meta].track     = NULL;
+	segbuf->column[segbuf->meta].meta_page = NULL;
+	segbuf->meta                           = 0;
+
 	return 0;
 }
 
@@ -3105,11 +3121,24 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 		lsa_track_t *lt = kzalloc(lt_len, GFP_KERNEL);
 		if (lt == NULL)
 			return -1;
+
+		/* 64kpage, 16 disks, with 32byte per.
+		 * ((65536/512)*16)*32 = 65536 
+		 */
 		lt->page = alloc_pages(GFP_KERNEL, STRIPE_ORDER);
 		if (lt->page == NULL)
 			return -1;
-		lt->dir = &conf->lsa_dirtory;
 		lt->buf = (lsa_track_buffer_t *)page_address(lt->page);
+		
+		/* 4096/4 = 1024 hodling 1024 segment is ok. */
+		lt->closing_page = alloc_pages(GFP_KERNEL, 0);
+		if (lt->closing_page == NULL)
+			return -1;
+		lt->closing_seg_id =
+			(uint32_t *)page_address(lt->closing_page);
+
+		lt->closing_seg_total = 0;
+		lt->dir = &conf->lsa_dirtory;
 		list_add_tail(&lt->list, &segfill->free);
 	}
 
@@ -3117,6 +3146,15 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	__lsa_track_open(segfill);
 
 	return 0;
+}
+
+static void 
+__lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
+{
+	list_del_init(&lt->list);
+	__free_pages(lt->page, STRIPE_ORDER);
+	__free_pages(lt->closing_page, 0);
+	kfree(lt);
 }
 
 static int
@@ -5262,7 +5300,7 @@ static void activate_bit_delay(raid5_conf_t *conf)
 		struct stripe_head *sh = list_entry(head.next, struct stripe_head, lru);
 		list_del_init(&sh->lru);
 		atomic_inc(&sh->count);
-		__release_stripe(conf, sh, 1);
+		__release_stripe(conf, sh);
 	}
 }
 
