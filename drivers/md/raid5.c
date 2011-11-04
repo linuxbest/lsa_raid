@@ -2196,7 +2196,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
  *  -ENOENT       logic address not found.
  *  -EBUSY        this entry is reference by other, using careful.
  *  -EINPROGRESS: entry must reading from disk, the bio has been push into 
- *                entry bio list, will call the __lsa_bio_req when disk
+ *                entry bio list, will call the lsa_page_read when disk
  *                request is finished.
  */
 static int
@@ -2287,7 +2287,8 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	return 0;
 }
 
-static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
+static int 
+lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector, 
 		struct entry_buffer *eb);
 static void 
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie);
@@ -2323,7 +2324,7 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 
 	/* moving the bio into target list then doing retry */
 	while ((bio = bio_list_pop(&bio_list))) {
-		__lsa_bio_req(conf, bio, eh);
+		lsa_page_read(conf, bio, eh->e.log_vol_id, eh);
 		bio_put(bio);
 	}
 
@@ -2835,6 +2836,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 		memcpy((void *)&eb->e, (void *)&lt->new,
 				sizeof(struct lsa_entry));
 		lsa_entry_dirty(track->dir, eb);
+		lsa_entry_put(track->dir, eb);
 	} else {
 		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
 		lsa_entry_insert(track->dir, &lt->new);
@@ -5721,30 +5723,12 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
-static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi);
-
 static int 
-lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
-		struct entry_buffer *eh)
+lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector, 
+		struct entry_buffer *eb)
 {
 	/* TODO */
 	return 0;
-}
-
-static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
-		struct entry_buffer *eb)
-{
-	int res;
-	const int rw = bio_data_dir(bi);
-
-	pr_debug("%s: sector %llu logic %u, %s, %d\n",
-			__func__, (unsigned long long)bi->bi_sector,
-			eb->e.log_vol_id, rw == WRITE ? "W" : "R",
-			eb ? entry_uptodate(eb) : 0);
-	if (rw == READ)
-		res = lsa_page_read(conf, bi, eb->e.log_vol_id, eb);
-
-	return res;
 }
 
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
@@ -5752,30 +5736,18 @@ static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
-	lsa_track_cookie_t cookie;
-	int res;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
+	pr_debug("%s: sector %llu logic %u, %s\n", __func__, 
+			(unsigned long long)bi->bi_sector, 
+			(uint32_t)logical_sector, rw == WRITE ? "W" : "R");
+
 	if (rw == WRITE)
-		return lsa_segment_fill_write(&conf->segment_fill, bi, 
+		return lsa_segment_fill_write(&conf->segment_fill, bi,
 				(uint32_t)logical_sector);
-
-	res = lsa_entry_get(&conf->lsa_dirtory, (uint32_t)logical_sector,
-			bi, &cookie);
-
-	if (res == -EINPROGRESS) {
-		lsa_entry_put(&conf->lsa_dirtory, cookie.eb);
-		return 0;
-	}
-
-	res = __lsa_bio_req(conf, bi, cookie.eb);
-
-	if (cookie.eb)
-		lsa_entry_put(&conf->lsa_dirtory, cookie.eb);
-
-	return res;
+	return lsa_page_read(conf, bi, (uint32_t)logical_sector, NULL);
 }
 
 static struct bio *lsa_retry_pop(raid5_conf_t *conf)
