@@ -2777,6 +2777,7 @@ typedef struct lsa_track {
 	atomic_t count;
 	struct page *page;
 	struct lsa_dirtory *dir;
+	struct segment_buffer *segbuf;
 	struct lsa_track_buffer *buf;
 	struct lsa_track_cookie cookie[0];
 } lsa_track_t;
@@ -2838,7 +2839,10 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
 		lsa_entry_insert(track->dir, &lt->new);
 	}
-	__lsa_track_unref(track);
+	if (track->segbuf)
+		lsa_segment_release(track->segbuf, WRITE_WANT);
+	else
+		__lsa_track_unref(track);
 }
 
 static void
@@ -2876,6 +2880,8 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	segfill->track->buf->total       = 0;
 	segfill->track->buf->prev_seg_id = segfill->meta_id;
 	segfill->track->buf->prev_column = segfill->meta_column;
+	
+	segfill->track->segbuf = NULL;
 }
 
 /*
@@ -2905,6 +2911,12 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	segfill->meta_column = data_column;
 	segfill->data_offset = (data_column+1) << STRIPE_SHIFT;
 	segfill->track       = NULL;
+
+	BUG_ON(track->segbuf != NULL);
+	while (atomic_dec_return(&track->count)) {
+		lsa_segment_get(track->segbuf);
+	}
+	track->segbuf = segbuf;
 }
 
 static int
@@ -2930,14 +2942,6 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	return 0;
 }
 
-static int
-__lsa_segment_fill_put(struct lsa_segment_fill *segfill,
-		struct segment_buffer *segbuf)
-{
-	lsa_segment_release(segbuf, WRITE_WANT);
-	return 0;
-}
-
 /* waiting for the target finished data xfer, then calling
  *  segment handle
  */
@@ -2945,11 +2949,7 @@ static int
 __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	BUG_ON(segfill->segbuf == NULL);
-	/* TODO
-	 * before doing the segment write, must be sure the
-	 * track is sync 
-	 */
-	lsa_segment_release(segfill->segbuf, 0);
+	lsa_segment_release(segfill->segbuf, WRITE_WANT);
 	segfill->segbuf = NULL;
 	return 0;
 }
@@ -5804,11 +5804,10 @@ static void raid_tasklet(unsigned long data)
 static int
 targ_page_put(mddev_t *mddev, struct segment_buffer *segbuf, int rw)
 {
-	raid5_conf_t *conf = mddev->private;
 	pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
 
 	if (rw == WRITE)
-		return __lsa_segment_fill_put(&conf->segment_fill, segbuf);
+		return lsa_segment_release(segbuf, WRITE_WANT);
 
 	return 0;
 }
