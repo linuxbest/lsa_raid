@@ -62,8 +62,6 @@
 
 struct entry_buffer;
 static uint32_t lsa_seg_alloc   (struct lsa_dirtory *dir);
-static int      lsa_entry_get   (struct lsa_dirtory *dir, uint32_t log_vol_id, 
-		struct entry_buffer **eh, struct bio *bio);
 static void     lsa_entry_put   (struct lsa_dirtory *dir, struct entry_buffer *eh);
 static void     lsa_entry_dirty (struct lsa_dirtory *dir, struct entry_buffer *eh);
 static int      lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le);
@@ -2006,7 +2004,7 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 struct entry_buffer {
 	struct segment_buffer_entry segbuf_entry;
 	struct rb_node node;
-	struct list_head lru, dirty, queue;
+	struct list_head lru, dirty, queue, cookie;
 	atomic_t count;
 	struct bio_list bio;
 #define EH_TREE     0
@@ -2146,10 +2144,21 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	return eh;
 }
 
+typedef struct lsa_track_cookie {
+	struct list_head       entry;
+	struct lsa_track       *track;
+	struct lsa_track_entry *lt;
+	struct entry_buffer    *eb;
+} lsa_track_cookie_t;
+
 static void 
-__lsa_entry_bio_push(struct entry_buffer *eb, struct bio *bio)
+__lsa_entry_cookie_push(struct entry_buffer *eb, struct bio *bio,
+		lsa_track_cookie_t *cookie)
 {
-	bio_list_add(&eb->bio, bio);
+	if (bio)
+		bio_list_add(&eb->bio, bio);
+	else
+		list_add_tail(&eb->cookie, &cookie->entry);
 }
 
 static struct bio *
@@ -2198,7 +2207,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
  */
 static int
 lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
-		struct entry_buffer **lep, struct bio *bio)
+	     struct bio *bio, lsa_track_cookie_t *cookie)
 {
 	int res = 0;
 	unsigned long flags;
@@ -2209,14 +2218,14 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 		return -ENOENT;
 
 	spin_lock_irqsave(&dir->lock, flags);
-	*lep = eh = __lsa_entry_search(dir, log_vol_id);
+	cookie->eb = eh = __lsa_entry_search(dir, log_vol_id);
 	if (eh) {
 		if (!list_empty(&eh->lru))
 			list_del_init(&eh->lru);
 		else
 			res = -EBUSY;
 	} else { /* alloc new entry, schedule it doing IO request */
-		*lep = eh = __lsa_entry_freed(dir);
+		cookie->eb = eh = __lsa_entry_freed(dir);
 		BUG_ON(!eh);
 		/* TODO handle when LRU is empty */
 		eh->e.log_vol_id = log_vol_id;
@@ -2226,7 +2235,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 		tasklet_schedule(&dir->tasklet);
 	}
 	if (!entry_uptodate(eh)) {
-		__lsa_entry_bio_push(eh, bio);
+		__lsa_entry_cookie_push(eh, bio, cookie);
 		res = -EINPROGRESS;
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
@@ -2286,6 +2295,8 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 
 static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
 		struct entry_buffer *eb);
+static void 
+__lsa_track_cookie_update(struct lsa_track_cookie *cookie);
 
 static int
 lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
@@ -2297,6 +2308,7 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	unsigned long flags;
 	struct bio_list bio_list;
 	struct bio *bio;
+	LIST_HEAD(head);
 
 	bio_list_init(&bio_list);
 	lsa_dirtory_copy(seg, segbuf, eh);
@@ -2309,6 +2321,7 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	while ((bio = __lsa_entry_bio_pop(eh))) {
 		bio_list_add(&bio_list, bio);
 	}
+	list_splice(&eh->cookie, &head);
 	spin_unlock_irqrestore(&dir->lock, flags);
 
 	if (bio_list_empty(&bio_list))
@@ -2317,6 +2330,15 @@ lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	/* moving the bio into target list then doing retry */
 	while ((bio = bio_list_pop(&bio_list))) {
 		__lsa_bio_req(conf, bio, eh);
+		bio_put(bio);
+	}
+
+	while (!list_empty(&head)) {
+		lsa_track_cookie_t *cookie = list_entry(head.next, 
+				lsa_track_cookie_t, 
+				entry);
+		list_del_init(&cookie->entry);
+		__lsa_track_cookie_update(cookie);
 	}
 
 	return 0;
@@ -2757,8 +2779,11 @@ typedef struct lsa_track_buffer {
 
 typedef struct lsa_track {
 	struct list_head list;
+	atomic_t count;
 	struct page *page;
+	struct lsa_dirtory *dir;
 	struct lsa_track_buffer *buf;
+	struct lsa_track_cookie cookie[0];
 } lsa_track_t;
 
 static void 
@@ -2789,30 +2814,59 @@ __lsa_track_put(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 	list_add_tail(&lt->list, &segfill->free);
 }
 
+static void 
+__lsa_track_ref(lsa_track_t *track)
+{
+	atomic_inc(&track->count);
+}
+
+static void 
+__lsa_track_unref(lsa_track_t *track)
+{
+	atomic_dec(&track->count);
+}
+
+static void 
+__lsa_track_cookie_update(struct lsa_track_cookie *cookie)
+{
+	struct entry_buffer *eb = cookie->eb;
+	struct lsa_track_entry *lt = cookie->lt;
+	lsa_track_t *track = cookie->track;
+
+	if (eb) {
+		memcpy((void *)&lt->old, (void *)&eb->e,
+				sizeof(struct lsa_entry));
+		memcpy((void *)&eb->e, (void *)&lt->new,
+				sizeof(struct lsa_entry));
+		lsa_entry_dirty(track->dir, eb);
+	} else {
+		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
+		lsa_entry_insert(track->dir, &lt->new);
+	}
+	__lsa_track_unref(track);
+}
+
 static void
 __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi, 
-		struct entry_buffer *eb, struct lsa_entry **le)
+		struct lsa_track_cookie **ck)
 {
 	lsa_track_t *track = segfill->track;
-	lsa_track_buffer_t *track_buffer = track->buf;
-	struct lsa_track_entry *lt = &track_buffer->entry[track_buffer->total];
+	struct lsa_track_entry  *lt     = &track->buf->entry[track->buf->total];
+	struct lsa_track_cookie *cookie = &track->cookie[track->buf->total];
 
-	track_buffer->total ++;
+	track->buf->total ++;
 	lt->new.log_vol_id   = bi->bi_sector >> segfill->seg->shift;
 	lt->new.log_track_id = 0; /* ?? */
 	lt->new.seg_id       = segfill->segbuf->seg_id;
 	lt->new.seg_column   = segfill->data_column;
 	lt->new.offset       = segfill->data_offset & segfill->mask_offset;
 	lt->new.length       = bi->bi_size;
-	if (eb) {
-		memcpy((void *)&lt->old, (void *)&eb->e,
-				sizeof(struct lsa_entry));
-		memcpy((void *)&eb->e, (void *)&lt->new,
-				sizeof(struct lsa_entry));
-	} else {
-		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
-	}
-	*le = &lt->new;
+
+	/* setup the cookie */
+	*ck = cookie;
+	cookie->track = track;
+	cookie->lt    = lt;
+	__lsa_track_ref(track);
 }
 
 static void
@@ -2981,7 +3035,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
  */
 static int
 __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
-		struct entry_buffer *eb, struct lsa_entry **le)
+		struct lsa_track_cookie **cookie)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
 	int next      = meta_full;
@@ -2992,7 +3046,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 		/* FIXME never happen */
 		BUG_ON(1);
 	} else if (meta_full && size1 <= segfill->max_size) {
-		__lsa_track_add(segfill, bi, eb, le);
+		__lsa_track_add(segfill, bi, cookie);
 		__lsa_segment_fill_add(segfill, bi, next);
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
@@ -3001,26 +3055,34 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 		__lsa_track_open(segfill);
 	}
 
-	if (size1 >= segfill->max_size) {
+	if (size1 > segfill->max_size) {
 		__lsa_segment_fill_close(segfill);
 		__lsa_segment_fill_open(segfill);
 	}
-	__lsa_track_add(segfill, bi, eb, le);
+	__lsa_track_add(segfill, bi, cookie);
 	__lsa_segment_fill_add(segfill, bi, next);
 
 	return 0;
 }
 
 static int
-lsa_segment_fill_write(struct lsa_segment_fill *segfill, struct bio *bi,
-		struct entry_buffer *eb, struct lsa_entry **le)
+lsa_segment_fill_write(struct lsa_segment_fill *segfill,
+		struct bio *bi, uint32_t lt)
 {
 	unsigned long flags;
 	int res;
+	struct lsa_track_cookie *cookie;
+	raid5_conf_t *conf =
+		container_of(segfill, raid5_conf_t, segment_fill);
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	res = __lsa_segment_fill_append(segfill, bi, eb, le);
+	res = __lsa_segment_fill_append(segfill, bi, &cookie);
 	spin_unlock_irqrestore(&segfill->lock, flags);
+
+	res = lsa_entry_get(&conf->lsa_dirtory, lt, NULL, cookie);
+	if (res != -EINPROGRESS) {
+		__lsa_track_cookie_update(cookie);
+	}
 
 	return res;
 }
@@ -3031,7 +3093,7 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
 	int data_disks = conf->raid_disks - conf->max_degraded, i;
-	int max_tracks;
+	int max_tracks, lt_len;
 
 	INIT_LIST_HEAD(&segfill->head);
 	INIT_LIST_HEAD(&segfill->free);
@@ -3048,13 +3110,16 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	segfill->meta_column = COLUMN_NULL;
 
 	max_tracks = STRIPE_SECTORS;
+	lt_len = sizeof(lsa_track_t) + max_tracks*sizeof(lsa_track_cookie_t);
+
 	for (i = 0; i < max_tracks; i ++) {
-		lsa_track_t *lt = kzalloc(sizeof(*lt), GFP_KERNEL);
+		lsa_track_t *lt = kzalloc(lt_len, GFP_KERNEL);
 		if (lt == NULL)
 			return -1;
 		lt->page = alloc_pages(GFP_KERNEL, STRIPE_ORDER);
 		if (lt->page == NULL)
 			return -1;
+		lt->dir = &conf->lsa_dirtory;
 		lt->buf = (lsa_track_buffer_t *)page_address(lt->page);
 		list_add_tail(&lt->list, &segfill->free);
 	}
@@ -5674,7 +5739,6 @@ static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi,
 {
 	int res;
 	const int rw = bio_data_dir(bi);
-	struct lsa_entry *le;
 
 	pr_debug("%s: sector %llu logic %u, %s, %d\n",
 			__func__, (unsigned long long)bi->bi_sector,
@@ -5682,39 +5746,37 @@ static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi,
 			eb ? entry_uptodate(eb) : 0);
 	if (rw == READ)
 		res = lsa_page_read(conf, bi, eb->e.log_vol_id, eb);
-	else {
-		res = lsa_segment_fill_write(&conf->segment_fill, bi, eb, &le);
-		if (res == 0 && eb == NULL)
-			res = lsa_entry_insert(&conf->lsa_dirtory, le);
-		else if (res == 0)
-			lsa_entry_dirty(&conf->lsa_dirtory, eb);
-	}
 
 	return res;
 }
 
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
 {
+	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
-	struct entry_buffer *eb = NULL;
+	lsa_track_cookie_t cookie;
 	int res;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
+	if (rw == WRITE)
+		return lsa_segment_fill_write(&conf->segment_fill, bi, 
+				(uint32_t)logical_sector);
+
 	res = lsa_entry_get(&conf->lsa_dirtory, (uint32_t)logical_sector,
-			&eb, bi);
+			bi, &cookie);
 
 	if (res == -EINPROGRESS) {
-		lsa_entry_put(&conf->lsa_dirtory, eb);
+		lsa_entry_put(&conf->lsa_dirtory, cookie.eb);
 		return 0;
 	}
 
-	res = __lsa_bio_req(conf, bi, eb);
+	res = __lsa_bio_req(conf, bi, cookie.eb);
 
-	if (eb)
-		lsa_entry_put(&conf->lsa_dirtory, eb);
+	if (cookie.eb)
+		lsa_entry_put(&conf->lsa_dirtory, cookie.eb);
 
 	return res;
 }
