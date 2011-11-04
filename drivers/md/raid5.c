@@ -2443,6 +2443,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		if (eh == NULL)
 			return -1;
 		bio_list_init(&eh->bio);
+		INIT_LIST_HEAD(&eh->cookie);
 		list_add_tail(&eh->lru, &dir->lru);
 	}
 
@@ -3198,8 +3199,6 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
 			STRIPE_SHIFT, conf);
-
-
 	return 0;
 }
 
