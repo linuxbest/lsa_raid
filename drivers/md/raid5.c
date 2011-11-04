@@ -2693,6 +2693,7 @@ __lcs_buffer_free(struct lsa_closed_segment *lcs, struct lcs_buffer *lcsbuf)
 static void 
 lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id)
 {
+	/* TODO */
 }
 
 static int
