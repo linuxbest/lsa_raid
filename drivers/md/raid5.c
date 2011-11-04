@@ -2850,7 +2850,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi,
 		struct lsa_track_cookie **ck)
 {
 	lsa_track_t *track = segfill->track;
-	struct lsa_track_entry  *lt     = &track->buf->entry[track->buf->total];
+	struct lsa_track_entry  *lt = &track->buf->entry[track->buf->total];
 	struct lsa_track_cookie *cookie = &track->cookie[track->buf->total];
 
 	track->buf->total ++;
