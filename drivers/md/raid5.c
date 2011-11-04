@@ -223,7 +223,7 @@ static int stripe_operations_active(struct stripe_head *sh)
 	       test_bit(STRIPE_COMPUTE_RUN, &sh->state);
 }
 
-static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh, int wakeup)
+static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh)
 {
 	if (atomic_dec_and_test(&sh->count)) {
 		BUG_ON(!list_empty(&sh->lru));
@@ -238,8 +238,7 @@ static void __release_stripe(raid5_conf_t *conf, struct stripe_head *sh, int wak
 				clear_bit(STRIPE_BIT_DELAY, &sh->state);
 				list_add_tail(&sh->lru, &conf->handle_list);
 			}
-			if (wakeup)
-				md_wakeup_thread(conf->mddev->thread);
+			md_wakeup_thread(conf->mddev->thread);
 		} else {
 			BUG_ON(stripe_operations_active(sh));
 			if (test_and_clear_bit(STRIPE_PREREAD_ACTIVE, &sh->state)) {
@@ -264,7 +263,7 @@ static void release_stripe(struct stripe_head *sh)
 	unsigned long flags;
 
 	spin_lock_irqsave(&conf->device_lock, flags);
-	__release_stripe(conf, sh, 1);
+	__release_stripe(conf, sh);
 	spin_unlock_irqrestore(&conf->device_lock, flags);
 }
 
@@ -525,8 +524,7 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 	raid5_conf_t *conf = sh->raid_conf;
 	int i, disks = sh->disks;
 
-	pr_debug("%s: stripe %llu\n", __func__,
-		(unsigned long long)sh->sector);
+	might_sleep();
 
 	for (i = disks; i--; ) {
 		int rw;
@@ -544,7 +542,6 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 
 		bi = &sh->dev[i].req;
 
-		bi->bi_xor_disk = i;
 		bi->bi_rw = rw;
 		if (rw & WRITE)
 			bi->bi_end_io = raid5_end_write_request;
@@ -610,7 +607,6 @@ static void ops_run_io(struct stripe_head *sh, struct stripe_head_state *s)
 			bi->bi_io_vec[0].bv_offset = 0;
 			bi->bi_size = STRIPE_SIZE;
 			bi->bi_next = NULL;
-			bi->bi_rw |= REQ_NOMERGE;
 			generic_make_request(bi);
 		} else {
 			if (rw & WRITE)
@@ -726,24 +722,6 @@ static void ops_complete_biofill(void *stripe_head_ref)
 	release_stripe(sh);
 }
 
-static void do_targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev)
-{
-}
-
-static struct dma_async_tx_descriptor *
-targ_page_add(struct stripe_head *sh, struct bio *bio, struct r5dev *dev, 
-		int frombio, struct dma_async_tx_descriptor *tx_pending)
-{
-	struct dma_async_tx_descriptor *tx = tx_pending;
-
-	while (bio) {
-		do_targ_page_add(sh, bio, dev);
-		bio = bio->bi_next;
-	}
-
-	return tx;
-}
-
 static void ops_run_biofill(struct stripe_head *sh)
 {
 	struct dma_async_tx_descriptor *tx = NULL;
@@ -762,10 +740,6 @@ static void ops_run_biofill(struct stripe_head *sh)
 			dev->read = rbi = dev->toread;
 			dev->toread = NULL;
 			spin_unlock_irq(&conf->device_lock);
-			if (bio_flagged(rbi, BIO_REQ_BUF)) {
-				tx = targ_page_add(sh, rbi, dev, 0, tx);
-				continue;
-			}
 			while (rbi && rbi->bi_sector <
 				dev->sector + STRIPE_SECTORS) {
 				tx = async_copy_data(0, rbi, dev->page,
@@ -1107,11 +1081,6 @@ ops_run_biodrain(struct stripe_head *sh, struct dma_async_tx_descriptor *tx)
 			BUG_ON(dev->written);
 			wbi = dev->written = chosen;
 			spin_unlock_irq(&sh->raid_conf->device_lock);
-
-			if (bio_flagged(wbi, BIO_REQ_BUF)) {
-				tx = targ_page_add(sh, wbi, dev, 1, tx);
-				continue;
-			}
 
 			while (wbi && wbi->bi_sector <
 				dev->sector + STRIPE_SECTORS) {
