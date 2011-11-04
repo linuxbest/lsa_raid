@@ -2151,7 +2151,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 {
 	unsigned long flags;
 	struct entry_buffer *eh = NULL;
-	int res = 0;
+	int res = -ENOMEM;
 
 	spin_lock_irqsave(&dir->lock, flags);
 	eh = __lsa_entry_freed(dir);
@@ -2171,7 +2171,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 
-	return 0;
+	return res;
 }
 
 /*
