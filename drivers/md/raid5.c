@@ -60,12 +60,6 @@
 
 #include "lsa.h"
 
-struct entry_buffer;
-static uint32_t lsa_seg_alloc   (struct lsa_dirtory *dir);
-static void     lsa_entry_put   (struct lsa_dirtory *dir, struct entry_buffer *eh);
-static void     lsa_entry_dirty (struct lsa_dirtory *dir, struct entry_buffer *eh);
-static int      lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le);
-
 static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_vol_id)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
