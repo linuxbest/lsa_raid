@@ -1402,6 +1402,21 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *   entry size     = 16byte
  *   segment status = 16byte
  */
+
+/***
+ * LSA RAID Write IO order.
+ *
+ * 1) when request in, got the page ASAP, when the entry is not in cache,
+ *    reading the entry at background.
+ * 2) data DMA or copy into page.
+ * 3) when entry reading into cache, just update or insert into.
+ * 4) making the page into segment, if has a segment full, just write into disk.
+ * 5) when track status page full, put into a segment.
+ * 6) when a segment have track status page io done, adding the segment into 
+ *    closed segment list.
+ *
+ */
+
 /*
  * LSA segment operations
  *
