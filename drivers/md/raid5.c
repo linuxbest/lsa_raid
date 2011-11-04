@@ -2887,6 +2887,8 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	segfill->track->buf->prev_column = segfill->meta_column;
 	
 	segfill->track->segbuf = NULL;
+
+	BUG_ON(segfill->track->closing_seg_total != 0);
 }
 
 /*
@@ -2943,8 +2945,8 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 		return 0;
 	}
 
-	BUG_ON(track->closing_seg_total == 0);
 	track = segbuf->column[segbuf->meta].track;
+	BUG_ON(track->closing_seg_total == 0);
 	for (i = 0; i < track->closing_seg_total; i ++) {
 		/* making segment closed */
 		lsa_lcs_insert(&conf->lsa_closed_status,
