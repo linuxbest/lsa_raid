@@ -1437,7 +1437,7 @@ struct segment_buffer {
 	struct list_head lru, active, queue;
 	unsigned long    flags;
 	atomic_t         count;
-	unsigned int     blen, status, meta;
+	unsigned int     status, meta;
 	uint32_t         seg_id;
 	struct lsa_segment *seg;
 	struct column {
@@ -1544,7 +1544,7 @@ __lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
 	dev->req.bi_vcnt++;
 	dev->req.bi_max_vecs++;
 	dev->vec.bv_page = dev->page;
-	dev->vec.bv_len = PAGE_SIZE;
+	dev->vec.bv_len = 1<<segbuf->seg->shift;
 	dev->vec.bv_offset = 0;
 
 	dev->req.bi_private = segbuf;
@@ -1763,6 +1763,8 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			atomic_inc(&segbuf->count);
 			bi->bi_sector = column->sector + rdev->data_offset;
 			bi->bi_flags  = 1 << BIO_UPTODATE;
+			column->vec.bv_page = column->meta_page ?
+				column->meta_page : column->page;
 			bi->bi_next   = NULL;
 			bi->bi_rw    |= REQ_NOMERGE;
 			generic_make_request(bi);
