@@ -2714,14 +2714,14 @@ __lcs_buffer_free(struct lsa_closed_segment *lcs, struct lcs_buffer *lcsbuf)
 }
 
 static lcs_buffer_t *
-__las_lcs_freed(struct lsa_closed_segment *lcs)
+__lsa_lcs_freed(struct lsa_closed_segment *lcs)
 {
 	lcs_buffer_t *lb = NULL;
 
 	if (list_empty(&lcs->lru))
 		return NULL;
 
-	ssbuf = list_entry(lcs->lru.next, lcs_buffer_t, lru);
+	lb = list_entry(lcs->lru.next, lcs_buffer_t, lru);
 	list_del_init(&lb->lru);
 
 	return lb;
@@ -2742,7 +2742,6 @@ lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id)
 	}
 	BUG_ON(lb == NULL);
 	spin_unlock_irqrestore(&lcs->lock, flags);
-
 }
 
 static int
