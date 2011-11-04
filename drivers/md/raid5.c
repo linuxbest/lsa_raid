@@ -2925,7 +2925,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 }
 
 static int
-__lsa_segment_fill_write_done(struct lsa_segment *seg, 
+__lsa_segment_fill_write_done(struct lsa_segment *seg,
 		struct segment_buffer *segbuf)
 {
 	raid5_conf_t *conf = container_of(seg, raid5_conf_t, data_segment);
@@ -2947,16 +2947,12 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	return 0;
 }
 
-/* waiting for the target finished data xfer, then calling
- *  segment handle
- */
-static int
+static void
 __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	BUG_ON(segfill->segbuf == NULL);
 	lsa_segment_release(segfill->segbuf, WRITE_WANT);
 	segfill->segbuf = NULL;
-	return 0;
 }
 
 static int
@@ -2969,10 +2965,13 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 
 	BUG_ON(segfill->segbuf);
 
+	/* TODO, adding real segment id allocate. */
 	seg = lsa_seg_alloc(&conf->lsa_dirtory);
-	segbuf = lsa_segment_find_or_create(segfill->seg, seg, NULL);
-	if (segbuf == NULL)
-		return -ENOMEM;
+	segbuf = lsa_segment_find_or_create(segfill->seg, /* handle */
+			seg,  /* ID */
+			NULL);/* no entry for callback */
+	/* TODO making this never happen */
+	BUG_ON(segbuf == NULL);
 
 	segfill->segbuf      = segbuf;
 	segfill->data_offset = 0;
