@@ -1389,6 +1389,17 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  * gc manager
  *  5,551,003
  */
+
+/***
+ * LSA RAID disk layout
+ *
+ *  LSA super block
+ *  LSA dirtory
+ *  LSA dirtory bitmap
+ *  LSA segment status
+ *  LSA closed segment
+ *
+ */
 /*
  * LSA segment operations
  *
