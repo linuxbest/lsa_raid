@@ -2820,7 +2820,7 @@ __lsa_track_unref(lsa_track_t *track)
 	atomic_dec(&track->count);
 }
 
-static void 
+static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 {
 	struct entry_buffer *eb = cookie->eb;
@@ -2944,6 +2944,10 @@ static int
 __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	BUG_ON(segfill->segbuf == NULL);
+	/* TODO
+	 * before doing the segment write, must be sure the
+	 * track is sync 
+	 */
 	lsa_segment_release(segfill->segbuf, 0);
 	segfill->segbuf = NULL;
 	return 0;
