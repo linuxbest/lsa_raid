@@ -2914,6 +2914,9 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	segfill->data_offset = (data_column+1) << STRIPE_SHIFT;
 	segfill->track       = NULL;
 
+	/* moving the ref into segbuf, to make sure the track is sync 
+	 * before write to disk.
+	 */
 	BUG_ON(track->segbuf != NULL);
 	while (atomic_dec_return(&track->count)) {
 		lsa_segment_get(track->segbuf);
