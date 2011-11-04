@@ -3083,138 +3083,11 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 	return 0;
 }
 
-static int
-lsa_meta_page_put(struct lsa_meta *meta, struct page *page, spinlock_t *lock)
-{
-	int res;
-
-	res = kfifo_in_locked(&meta->free_fifo,
-			(unsigned char *)&page,
-			sizeof(page),
-			lock);
-	BUG_ON(!res != sizeof(page));
-
-	return 0;
-}
-/* LSA segment dirtory information operations */
-/* 
- * head 8 byte
- * entry[]
- * tail 8 byte
- */
-static int
-lsa_meta_page_get(struct lsa_meta *meta, struct lsa_entry **le,
-		struct r5dev *dev, struct entry_buffer *eh)
-{
-	struct page *page = meta->page;
-
-	if (meta->page == NULL) {
-		int res;
-		BUG_ON(kfifo_is_empty(&meta->free_fifo));
-		res = kfifo_out(&meta->free_fifo,
-				(unsigned char *)&page,
-				sizeof(page));
-		BUG_ON(res != sizeof(page));
-		meta->page  = page;
-		meta->i     = 0;
-		meta->entry = page_address(page);
-	}
-
-	*le = &meta->entry[meta->i];
-	meta->i ++;
-	if (eh)
-		memcpy(&meta->entry[meta->i], &eh->e, sizeof(lsa_entry_t));
-	else
-		memset(&meta->entry[meta->i], 0, sizeof(lsa_entry_t));
-	meta->i ++;
-
-	if (meta->i < meta->max) 
-		return 0;
-
-	/* TODO fill the tail */
-	set_bit(R5_LOCKED,    &dev->flags);
-	set_bit(R5_Wantwrite, &dev->flags);
-	dev->meta_page = meta->page;
-	meta->page = NULL;
-
-	return 1;
-}
-
-static int lsa_meta_init(struct lsa_meta *meta, int nr)
-{
-	int i;
-	struct page *page;
-
-	meta->page  = NULL;
-	meta->max   = STRIPE_SIZE/sizeof(lsa_entry_t)/2;
-
-	/* we alloc double size of meta page, to make sure the meta insert
-	 * always have page */
-	nr *= 2;
-	if (kfifo_alloc(&meta->free_fifo, sizeof(struct page *) * nr, 
-				GFP_KERNEL)) {
-		pr_info("alloc meta free_fifo failed\n");
-		return 0;
-	}
-
-	for (i = 0; i < nr; i ++) {
-		int res;
-		if (!(page = alloc_pages(GFP_KERNEL, STRIPE_ORDER))) {
-			return 0;
-		}
-		res = kfifo_in(&meta->free_fifo, 
-				(unsigned char *)&page,
-				sizeof(page));
-		if (res != sizeof(page)) {
-			pr_info("kfifo into meta free failed\n");
-		}
-	}
-
-	return 1;
-}
-
-static int lsa_meta_exit(struct lsa_meta *meta)
-{
-	while (kfifo_len(&meta->free_fifo)) {
-		struct page *page;
-		int res = kfifo_out(&meta->free_fifo,
-				(unsigned char *)&page,
-				sizeof(page));
-		WARN_ON(res != sizeof(page));
-		__free_pages(page, STRIPE_ORDER);
-	}
-
-	return 1;
-}
 static int lsa_stripe_exit(raid5_conf_t *conf)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	shrink_buffers(sh);
 	kmem_cache_free(conf->slab_cache, sh);
-
-	sh = conf->lsa_seg_sh;
-	if (sh) {
-		shrink_buffers(sh);
-		kmem_cache_free(conf->slab_cache, sh);
-	}
-	while (kfifo_len(&conf->wr_data_fifo)) {
-		int ret = kfifo_out(&conf->wr_data_fifo, 
-				(unsigned char *)&sh,
-				sizeof(sh));
-		WARN_ON(ret != sizeof(sh));
-		shrink_buffers(sh);
-		kmem_cache_free(conf->slab_cache, sh);
-	}
-	while (kfifo_len(&conf->wr_free_fifo)) {
-		int ret = kfifo_out(&conf->wr_free_fifo, 
-				(unsigned char *)&sh,
-				sizeof(sh));
-		WARN_ON(ret != sizeof(sh));
-		shrink_buffers(sh);
-		kmem_cache_free(conf->slab_cache, sh);
-	}
-	kfifo_free(&conf->wr_data_fifo);
-	kfifo_free(&conf->wr_free_fifo);
 
 	lsa_segment_fill_exit(&conf->segment_fill);
 	lsa_cs_exit(&conf->lsa_closed_status);
@@ -3223,32 +3096,11 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	lsa_segment_exit(&conf->meta_segment, conf->raid_disks);
 	lsa_segment_exit(&conf->data_segment, conf->raid_disks);
 
-	return lsa_meta_exit(&conf->lsa_meta);
-}
-
-static void lsa_init_stripe(struct stripe_head *sh, sector_t sector)
-{
-	raid5_conf_t *conf = sh->raid_conf;
-	int i;
-
-	pr_debug("lsa_init_stripe called, stripe %llu\n",
-		(unsigned long long)sh->sector);
-
-	sh->disks = conf->raid_disks;
-	sh->sector = sector;
-	sh->state = 0;
-	stripe_set_idx(sector, conf, 0, sh);
-
-	for (i = sh->disks; i--; ) {
-		struct r5dev *dev = &sh->dev[i];
-		dev->flags = 0;
-		raid5_build_block(sh, i, 0);
-	}
+	return 0;
 }
 
 static int lsa_stripe_init(raid5_conf_t *conf)
 {
-	int i, res, lsa_seg_nr;
 	struct stripe_head *sh;
 
 	sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
@@ -3256,9 +3108,6 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 		return 0;
 
 	sh->raid_conf = conf;
-	#ifdef CONFIG_MULTICORE_RAID456
-	init_waitqueue_head(&sh->ops.wait_for_ops);
-	#endif
 
 	if (grow_buffers(sh)) {
 		shrink_buffers(sh);
@@ -3270,50 +3119,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_set(&sh->count, 1);
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
-	conf->lsa_dd_idx = 0;
-	conf->lsa_seg_sh = NULL;
 	
-	lsa_seg_nr = (256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks;
-
-	if (kfifo_alloc(&conf->wr_free_fifo, sizeof(struct stripe_head *) *
-				lsa_seg_nr, GFP_KERNEL)) {
-		pr_info("alloc wr_free_fifo failed\n");
-		return 0;
-	}
-
-	if (kfifo_alloc(&conf->wr_data_fifo, sizeof(struct stripe_head *) *
-				lsa_seg_nr, GFP_KERNEL)) {
-		pr_info("alloc wr_data_fifo failed\n");
-		return 0;
-	}
-
-	for (i = 0; i < lsa_seg_nr; i ++) {
-		sh = kmem_cache_zalloc(conf->slab_cache, GFP_KERNEL);
-		if (!sh) {
-			pr_info("alloc data stripe failed\n");
-			return 0;
-		}
-		sh->raid_conf = conf;
-		if (grow_buffers(sh)) {
-			pr_info("alloc page stripe failed\n");
-			shrink_buffers(sh);
-			kmem_cache_free(conf->slab_cache, sh);
-			return 0;
-		}
-		lsa_init_stripe(sh, lsa_seg_alloc(&conf->lsa_dirtory));
-		if (conf->lsa_seg_sh == NULL) {
-			conf->lsa_seg_sh = sh;
-			continue;
-		}
-		res = kfifo_in(&conf->wr_free_fifo, 
-				(unsigned char *)&sh, 
-				sizeof(sh));
-		if (res != sizeof(sh)) {
-			pr_info("kfifo into free failed\n");
-			return 0;
-		}
-	}
-
 	lsa_segment_fill_init(&conf->segment_fill);
 	lsa_cs_init(&conf->lsa_closed_status);
 	lsa_ss_init(&conf->lsa_segment_status, 
@@ -3331,7 +3137,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 			STRIPE_SHIFT, conf);
 
 
-	return lsa_meta_init(&conf->lsa_meta, lsa_seg_nr);
+	return 0;
 }
 
 static int grow_one_stripe(raid5_conf_t *conf)
@@ -5853,281 +5659,14 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
-/* LSA API */
-/* calling in interrupt context */
-static struct stripe_head *
-__lsa_find_stripe(raid5_conf_t *conf, uint32_t sector)
-{
-	struct stripe_head *sh;
-
-	sh = __find_stripe(conf, sector, 0);
-	if (!sh) {
-		sh = get_free_stripe(conf);
-		if (!sh) {
-			/* TODO */
-			return NULL;
-		}
-		init_stripe(sh, sector, 0);
-	} else {
-		list_del_init(&sh->lru);
-	}
-	atomic_inc(&sh->count);
-	return sh;
-}
-
-static void 
-__lsa_release_stripe(raid5_conf_t *conf, struct stripe_head *sh)
-{
-	if (atomic_dec_and_test(&sh->count) == 0) 
-		return;
-
-	BUG_ON(!list_empty(&sh->lru));
-	list_add_tail(&sh->lru, &conf->inactive_list);
-}
-
-static void 
-lsa_release_stripe(struct stripe_head *sh)
-{
-	raid5_conf_t *conf = sh->raid_conf;
-	unsigned long flags;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	__lsa_release_stripe(conf, sh);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-}
-static void
-lsa_end_read_request(struct bio *bi, int error)
-{
-	struct stripe_head *sh = bi->bi_private;
-//	raid5_conf_t *conf = sh->raid_conf;
-	int i = bi->bi_xor_disk;
-	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
-
-	BUG_ON (bi != &sh->dev[i].req);
-
-	pr_debug("end_read_request %llu/%d, count %d, uptodate: %d.\n",
-		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
-		uptodate);
-
-	if (uptodate) {
-		set_bit(R5_UPTODATE, &sh->dev[i].flags);
-		do_targ_page_add(sh, sh->dev[i].toread, &sh->dev[i]);
-		bio_endio(sh->dev[i].toread, 0);
-		sh->dev[i].toread = NULL;
-	}
-
-	lsa_release_stripe(sh);
-}
-
 static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi);
-
-static void
-lsa_end_write_request(struct bio *bi, int error)
-{
-	struct stripe_head *sh = bi->bi_private;
-	raid5_conf_t *conf = sh->raid_conf;
-	int i = bi->bi_xor_disk;
-	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
-	struct r5dev *dev = &sh->dev[bi->bi_xor_disk];
-
-	BUG_ON (bi != &sh->dev[i].req);
-
-	pr_debug("end_write_request %llu/%d, count %d, uptodate: %d.\n",
-		(unsigned long long)sh->sector, i, atomic_read(&sh->count),
-		uptodate);
-
-	if (!uptodate) {
-		set_bit(WriteErrorSeen, &conf->disks[i].rdev->flags);
-		set_bit(R5_WriteError, &sh->dev[i].flags);
-	}
-
-	if (dev->meta_page) {
-		lsa_meta_page_put(&conf->lsa_meta,
-				dev->meta_page,
-				&conf->device_lock);
-		dev->meta_page = NULL;
-	}
-
-	if (atomic_dec_and_test(&sh->count)) {
-		int ret;
-		lsa_init_stripe(sh, lsa_seg_alloc(&conf->lsa_dirtory));
-		ret = kfifo_in_locked(&conf->wr_free_fifo,
-				(unsigned char *)&sh,
-				sizeof(sh),
-				&conf->device_lock);
-		WARN_ON(ret != sizeof(sh));
-
-		if (!bio_list_empty(&conf->target_list))
-			tasklet_schedule(&conf->tasklet);
-	}
-}
-
-static void lsa_stripe_rw(struct stripe_head *sh)
-{
-	raid5_conf_t *conf = sh->raid_conf;
-	int i, disks = sh->disks;
-
-	pr_debug("%s: stripe %llu\n", __func__,
-		(unsigned long long)sh->sector);
-
-	for (i = disks; i--; ) {
-		int rw;
-		struct bio *bi;
-		mdk_rdev_t *rdev;
-		struct r5dev *dev = &sh->dev[i];
-
-		if (test_and_clear_bit(R5_Wantwrite, &sh->dev[i].flags))
-			rw = WRITE;
-		else if (test_and_clear_bit(R5_Wantread, &sh->dev[i].flags))
-			rw = READ;
-		else 
-			continue;
-
-		bi = &sh->dev[i].req;
-
-		bi->bi_xor_disk = i;
-		bi->bi_rw = rw;
-		if (rw & WRITE)
-			bi->bi_end_io = lsa_end_write_request;
-		else 
-			bi->bi_end_io = lsa_end_read_request;
-
-		rcu_read_lock();
-		rdev = rcu_dereference(conf->disks[i].rdev);
-		if (rdev && test_bit(Faulty, &rdev->flags))
-			rdev = NULL;
-		rcu_read_unlock();
-
-		if (rdev) {
-			set_bit(STRIPE_IO_STARTED, &sh->state);
-
-			bi->bi_bdev = rdev->bdev;
-			pr_debug("%s: for %llu schedule op %ld on disc %d\n",
-				__func__, (unsigned long long)sh->sector,
-				bi->bi_rw, i);
-			atomic_inc(&sh->count);
-			bi->bi_sector = sh->sector + rdev->data_offset;
-			bi->bi_flags = 1 << BIO_UPTODATE;
-			bi->bi_vcnt = 1;
-			bi->bi_max_vecs = 1;
-			bi->bi_idx = 0;
-			bi->bi_io_vec = &sh->dev[i].vec;
-			bi->bi_io_vec[0].bv_len = STRIPE_SIZE;
-			bi->bi_io_vec[0].bv_offset = 0;
-			bi->bi_io_vec[0].bv_page = dev->meta_page ?
-				dev->meta_page : dev->page;
-			bi->bi_size = STRIPE_SIZE;
-			bi->bi_next = NULL;
-			bi->bi_rw |= REQ_NOMERGE;
-			generic_make_request(bi);
-		} else {
-			pr_debug("skip op %ld on disc %d for sector %llu\n",
-				bi->bi_rw, i, (unsigned long long)sh->sector);
-		}
-	}
-}
 
 static int 
 lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector,
 		struct entry_buffer *eh)
 {
-	struct stripe_head *sh = conf->lsa_zero_sh;
-	lsa_entry_t *le = /*lsa_find_by_ti(conf->lsa_root, sector)*/NULL;
-	struct r5dev *dev;
-	int dd_idx, seg_id, offset, rlen;
-	unsigned long flags;
-
-	if (le == NULL) {
-		struct r5dev *dev = &sh->dev[0];
-		dev->sector = bio->bi_sector;
-		do_targ_page_add(sh, bio, dev);
-		bio_endio(bio, 0);
-		return 0;
-	}
-	pr_debug("lsa_read_req: ti %u, seg %d,%d, offset %d,%d\n",
-			le->log_vol_id, le->seg_id, le->seg_column, 
-			le->offset, le->length);
-	seg_id = le->seg_id;
-	dd_idx = le->seg_column;
-	offset = le->offset;
-	rlen   = le->length;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	sh = __lsa_find_stripe(conf, seg_id);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-
-	dev = &sh->dev[dd_idx];
-	if (test_bit(R5_UPTODATE, &dev->flags)) {
-		do_targ_page_add(sh, bio, dev);
-		bio_endio(bio, 0);
-		set_bit(STRIPE_HANDLE, &sh->state);
-	} else {
-		WARN_ON(test_bit(R5_Wantwrite, &dev->flags));
-		set_bit(R5_Wantread, &dev->flags);
-		dev->toread = bio;
-		lsa_stripe_rw(sh);
-	}
-
-	lsa_release_stripe(sh);
-	
+	/* TODO */
 	return 0;
-}
-
-/* call under device_lock hold with IRQ off */
-static struct stripe_head *
-lsa_write_begin(raid5_conf_t *conf, struct lsa_entry **le, int *dd_idx_p,
-		struct entry_buffer *eh)
-{
-	struct stripe_head *sh = conf->lsa_seg_sh;
-	struct r5dev *dev;
-	int dd_idx, res;
-
-	/* if have sh, try get meta data buffer */
-	if (conf->lsa_dd_idx != conf->raid_disks && sh) {
-		dev = &sh->dev[conf->lsa_dd_idx];
-		if (lsa_meta_page_get(&conf->lsa_meta, le, dev, eh))
-			conf->lsa_dd_idx ++;
-	}
-	if (conf->lsa_dd_idx == conf->raid_disks) {
-		if (sh) {
-			dd_idx = conf->lsa_dd_idx++;
-			dev = &sh->dev[dd_idx];
-			set_bit(R5_Wantwrite,   &dev->flags);
-			set_bit(R5_Wantcompute, &dev->flags);
-			/* TODO
-			 * 0) compute the parity
-			 * 1) make sure the data is uptodate 
-			 */
-			res = kfifo_in(&conf->wr_data_fifo,
-					(unsigned char *)&sh,
-					sizeof(sh));
-			BUG_ON(res != sizeof(sh));
-			tasklet_schedule(&conf->tasklet);
-		}
-		sh = conf->lsa_seg_sh = NULL;
-		conf->lsa_dd_idx = 0;
-		*le = NULL;
-	}
-
-	if (sh == NULL && kfifo_is_empty(&conf->wr_free_fifo)) 
-		return NULL;
-
-	res = kfifo_out(&conf->wr_free_fifo,
-			(unsigned char *)&sh,
-			sizeof(sh));
-	WARN_ON(res != sizeof(sh));
-	conf->lsa_seg_sh = sh;
-
-	if (*le == NULL) {
-		dev = &sh->dev[conf->lsa_dd_idx];
-		if (lsa_meta_page_get(&conf->lsa_meta, le, dev, eh))
-			conf->lsa_dd_idx ++;
-	}
-	*dd_idx_p = conf->lsa_dd_idx;
-
-	conf->lsa_dd_idx++;
-
-	return sh;
 }
 
 static int __lsa_bio_req(raid5_conf_t *conf, struct bio *bi, 
@@ -6200,17 +5739,6 @@ static void raid_tasklet(unsigned long data)
 	while ((bio = lsa_retry_pop(conf))) {
 		pr_debug("retry bio %p\n", bio);
 		lsa_bio_req(conf, bio);
-	}
-
-	while (kfifo_len(&conf->wr_data_fifo)) {
-		struct stripe_head *sh;
-		int ret = kfifo_out_locked(&conf->wr_data_fifo,
-				(unsigned char *)&sh,
-				sizeof(sh),
-				&conf->device_lock);
-		WARN_ON(ret != sizeof(sh));
-
-		lsa_stripe_rw(sh);
 	}
 }
 

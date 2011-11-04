@@ -446,19 +446,6 @@ struct raid5_private_data {
 	struct mdk_thread_s	*thread;
 	struct tasklet_struct   tasklet;
 	struct stripe_head  *lsa_zero_sh;
-	int      lsa_dd_idx;
-	uint32_t lsa_seg_id;
-	struct stripe_head  *lsa_seg_sh;
-
-	struct kfifo wr_free_fifo;
-	struct kfifo wr_data_fifo;
-
-	struct lsa_meta {
-		struct kfifo free_fifo;
-		struct page *page;
-		unsigned int i, max;
-		struct lsa_entry *entry;
-	} lsa_meta;
 
 	/* TODO: data cache is holding buffer for read/write */
 	struct lsa_data_cache {
