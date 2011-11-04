@@ -3084,6 +3084,7 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
 	}
+	bio_endio(bi, 0);
 
 	return res;
 }
@@ -5727,7 +5728,10 @@ static int
 lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector, 
 		struct entry_buffer *eb)
 {
-	/* TODO */
+	struct stripe_head *sh = conf->lsa_zero_sh;
+	struct page *page = sh->dev[0].page;
+	conf->mddev->targ_page_add(conf->mddev, bio, NULL, page, 0);
+	bio_endio(bio, 0);
 	return 0;
 }
 
@@ -5776,10 +5780,10 @@ static void raid_tasklet(unsigned long data)
 static int
 targ_page_put(mddev_t *mddev, struct segment_buffer *segbuf, int rw)
 {
-	pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
-
-	if (rw == WRITE)
+	if (rw == WRITE) {
+		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
 		return lsa_segment_release(segbuf, WRITE_WANT);
+	}
 
 	return 0;
 }
@@ -5788,7 +5792,6 @@ static int targ_page_req(mddev_t *mddev, struct bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
 	lsa_bio_req(conf, bi);
-
 	return 0;
 }
 
