@@ -1393,12 +1393,14 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 /***
  * LSA RAID disk layout
  *
- *  LSA super block
- *  LSA dirtory
- *  LSA dirtory bitmap
- *  LSA segment status
- *  LSA closed segment
+ *  LSA super block     4096 byte                            4096 byte
+ *  LSA dirtory         (disk size/block size)*16         2T 512M byte
+ *  LSA dirtory bitmap  (disk size/block size)/8          2T   4M byte
+ *  LSA segment status  (disk_size/block size)*16/disks   2T 512M byte
+ *  LSA closed segment  (8192 byte)                          8192 byte
  *
+ *   entry size     = 16byte
+ *   segment status = 16byte
  */
 /*
  * LSA segment operations
