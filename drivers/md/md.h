@@ -29,7 +29,6 @@
 typedef struct mddev_s mddev_t;
 typedef struct mdk_rdev_s mdk_rdev_t;
 
-struct segment_buffer;
 /* Bad block numbers are stored sorted in a single page.
  * 64bits is used for each block or extent.
  * 54 bits are sector number, 9 bits are extent size,
