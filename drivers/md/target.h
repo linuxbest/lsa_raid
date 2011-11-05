@@ -165,6 +165,11 @@ struct targ_buf {
 	int nents, bios;
 };
 
+struct lsa_bio_list {
+	struct lsa_bio *head;
+	struct lsa_bio *tail;
+};
+
 typedef struct target_req {
 	struct list_head list;
 	struct list_head task_list;
@@ -177,7 +182,7 @@ typedef struct target_req {
 	void *priv;
 	atomic_t bios_inflight;
 	unsigned long bios, deadline, jiffies;
-	struct bio_list bio_list;
+	struct lsa_bio_list bio_list;
 } targ_req_t;
 
 int  targ_req_show(targ_req_t *req, char *data, int len);
@@ -193,4 +198,66 @@ void targ_req_timeout(unsigned long data);
 #define STRIPE_SECTORS          (STRIPE_SIZE>>9)
 #define STRIPE_ORDER            (STRIPE_SHIFT - PAGE_SHIFT)
 
+struct lsa_bio {
+	sector_t bi_sector;
+	unsigned int bi_rw;
+	unsigned int bi_size;
+	unsigned int bi_nr;
+	unsigned int bi_state;
+	atomic_t     count;
+	unsigned long bi_flags;
+	struct lsa_bio *bi_next;
+	void *bi_private;
+	void (*bi_end_io)(struct lsa_bio *bio, int error);
+	int  (*bi_add_page)(struct mddev_s *mddev,
+			    struct lsa_bio *, struct segment_buffer *segbuf,
+			    struct page *page, unsigned int offset);
+};
+
+#define lsa_bio_list_for_each(bio, bl) \
+	for (bio = (bl)->head; bio; bio = bio->bi_next)
+
+static inline void lsa_bio_list_init(struct lsa_bio_list *bl)
+{
+	bl->head = bl->tail = NULL;
+}
+
+static inline int lsa_bio_list_empty(const struct lsa_bio_list *bl)
+{
+	return bl->head == NULL;
+}
+
+static inline void lsa_bio_list_add(struct lsa_bio_list *bl, struct lsa_bio *bio)
+{
+	bio->bi_next = NULL;
+
+	if (bl->tail)
+		bl->tail->bi_next = bio;
+	else
+		bl->head = bio;
+
+	bl->tail = bio;
+}
+
+static inline struct lsa_bio *lsa_bio_list_pop(struct lsa_bio_list *bl)
+{
+	struct lsa_bio *bio = bl->head;
+
+	if (bio) {
+		bl->head = bl->head->bi_next;
+		if (!bl->head)
+			bl->tail = NULL;
+
+		bio->bi_next = NULL;
+	}
+
+	return bio;
+}
+
+struct lsa_bio * lsa_bio_alloc(gfp_t gfp);
+void             lsa_bio_put(struct lsa_bio *bio);
+void             lsa_bio_endio(struct lsa_bio *bio, int error);
+
+int              lsa_raid_bio_queue (struct mddev_s *mddev, struct lsa_bio * bi);
+int              lsa_raid_seg_put   (struct mddev_s *mddev, struct segment_buffer *segbuf, int dirty);
 #endif

@@ -19,46 +19,17 @@ enum {
 	IO_END  = 8,
 };
 
-#define targ_bio_list_for_each(bio, bl) \
-	for (bio = (bl)->head; bio; bio = (struct bio *)bio->bi_bdev)
-
-static inline void targ_bio_list_add(struct bio_list *bl, struct bio *bio)
-{
-	bio->bi_next = NULL;
-
-	if (bl->tail)
-		bl->tail->bi_bdev = (void *)bio;
-	else
-		bl->head = bio;
-
-	bl->tail = bio;
-}
-
-static inline struct bio *targ_bio_list_pop(struct bio_list *bl)
-{
-	struct bio *bio = bl->head;
-
-	if (bio) {
-		bl->head = (void *)bl->head->bi_bdev;
-		if (!bl->head)
-			bl->tail = NULL;
-
-		bio->bi_next = NULL;
-	}
-
-	return bio;
-}
-
 int targ_req_show(targ_req_t *req, char *data, int len)
 {
-	int detail = len == 0;
-	struct bio *bio;
+	/*int detail = len == 0;*/
+	/*struct lsa_bio *bio;*/
 
 	len += sprintf(data+len, "%s, %d, state %d, flight %d/%d, bitmap %08lx, bi#%llu\n",
 			req->rw ? "W" : "R", req->num, req->state,
 			atomic_read(&req->bios_inflight), req->buf.bios, 
 			req->bios, req->sector);
-	targ_bio_list_for_each(bio, &req->bio_list) {
+#if 0
+	lsa_bio_list_for_each(bio, &req->bio_list) {
 		int i;
 		struct stripe_head *sh = (void *)bio->bi_io_vec;
 		len += sprintf(data+len, " #%d, state %d/%d, %d @ bi#%llu, dd_idx %d\n",
@@ -76,7 +47,7 @@ int targ_req_show(targ_req_t *req, char *data, int len)
 					i, dev->flags, dev->toread, dev->towrite, dev->written);
 		}
 	}
-
+#endif
 	return len;
 }
 
@@ -94,9 +65,8 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 	int i;
 	struct stripe_buf *sb = buf->sb;
 	targ_req_t *req = container_of(buf, targ_req_t, buf);
-	struct mdk_personality *mdk = req->dev->t->pers;
 	for (i = 0; i < buf->nents; i ++, sb ++) {
-		mdk->targ_page_put(req->dev->t, sb->segbuf, dirty);
+		lsa_raid_seg_put(req->dev->t, sb->segbuf, dirty);
 	}
 	sg_free_table(&buf->sg_table);
 	kfree(buf->sb);
@@ -105,7 +75,7 @@ static int _targ_buf_free(struct targ_buf *buf, int dirty)
 
 static void targ_bio_put(targ_req_t *req);
 
-static int targ_page_add(mddev_t *mddev, struct bio *bio, 
+static int targ_page_add(mddev_t *mddev, struct lsa_bio *bio, 
 		struct segment_buffer *segbuf,
 		struct page *page, unsigned offset)
 {
@@ -114,17 +84,17 @@ static int targ_page_add(mddev_t *mddev, struct bio *bio,
 
 	debug("buf %p, bi#%llu, stripe %p, tlen %04d @ %05d, %d\n",
 			&req->buf, bio->bi_sector, segbuf, tlen>>9, 
-			offset, bio->bi_idx);
+			offset, bio->bi_nr);
 
-	req->buf.sb[bio->bi_idx].page   = page;
-	req->buf.sb[bio->bi_idx].offset = offset;
-	req->buf.sb[bio->bi_idx].len    = tlen;
-	req->buf.sb[bio->bi_idx].segbuf = segbuf;
+	req->buf.sb[bio->bi_nr].page   = page;
+	req->buf.sb[bio->bi_nr].offset = offset;
+	req->buf.sb[bio->bi_nr].len    = tlen;
+	req->buf.sb[bio->bi_nr].segbuf = segbuf;
 
 	req->buf.nents ++;
 
-	WARN_ON(test_and_clear_bit(bio->bi_idx, &req->bios) == 0);
-	bio->bi_max_vecs = IO_PAGE;
+	WARN_ON(test_and_clear_bit(bio->bi_nr, &req->bios) == 0);
+	bio->bi_state = IO_PAGE;
 
 	targ_bio_put(req);
 
@@ -192,17 +162,17 @@ static void targ_bio_put(targ_req_t *req)
 	}
 }
 
-static void targ_bio_end_io(struct bio *bi, int error)
+static void targ_bio_end_io(struct lsa_bio *bi, int error)
 {
-	bi->bi_max_vecs = IO_END;
-	bio_put(bi);
+	bi->bi_state = IO_END;
+	lsa_bio_put(bi);
 }
 
 targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 
 		uint16_t blks, int rw, buf_cb_t cb, void *priv)
 {
 	targ_req_t *req;
-	struct bio *bio;
+	struct lsa_bio *bio;
 	sector_t remaining = blks;
 	int bios = 0, cmds;
 	sector_t len = 0;
@@ -225,7 +195,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	req->priv  = priv;
 	req->state = IO_INIT;
 	req->bios  = 0;
-	bio_list_init(&req->bio_list);
+	lsa_bio_list_init(&req->bio_list);
 	req->deadline = jiffies + REQ_TIMEOUT;
 	req->jiffies  = jiffies;
 	expiry = round_jiffies_up(req->deadline);
@@ -249,24 +219,16 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 
 		debug("buf %p/%d, bi#%llu, len %d, %s\n", 
 				&req->buf, bios, blknr, (uint16_t)len, rw ? "W" : "R");
-		bio = bio_alloc(GFP_ATOMIC, 1);
+		bio = lsa_bio_alloc(GFP_ATOMIC);
 		bio->bi_rw       = rw;
 		bio->bi_end_io   = targ_bio_end_io;
 		bio->bi_private  = req;
-		bio->bi_bdev     = NULL;
+		bio->bi_add_page = targ_page_add;
 		bio->bi_sector   = blknr;
-		bio->bi_flags    = (1<<BIO_UPTODATE) | (1<<BIO_REQ_BUF);
-		bio->bi_next     = NULL;
+		bio->bi_nr       = bios;
+		bio->bi_state    = IO_INIT; /* overload as state */
 
-		bio->bi_idx      = bios;
-		bio->bi_io_vec   = NULL;
-		bio->bi_size     = len << 9;
-
-		bio->bi_phys_segments = 1;
-		bio->bi_vcnt     = 1;
-		bio->bi_max_vecs = IO_INIT; /* overload as state */
-
-		targ_bio_list_add(&req->bio_list, bio);
+		lsa_bio_list_add(&req->bio_list, bio);
 		bios ++;
 		blknr += len;
 	} while (remaining -= len);
@@ -275,11 +237,10 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 	targ_bio_init(req, bios);
 
 	req->state = IO_REQ;
-	targ_bio_list_for_each(bio, &req->bio_list) {
-		set_bit(bio->bi_idx, &req->bios);
-		bio->bi_max_vecs = IO_REQ;
-		bio_get(bio);
-		dev->t->pers->targ_page_req(dev->t, bio);
+	lsa_bio_list_for_each(bio, &req->bio_list) {
+		set_bit(bio->bi_nr, &req->bios);
+		bio->bi_state = IO_REQ;
+		lsa_raid_bio_queue(dev->t, bio);
 	}
 
 	targ_bio_put(req);
@@ -293,7 +254,7 @@ int targ_buf_free(targ_buf_t *buf)
 	targ_dev_t *dev = req->dev;
 	unsigned long flags;
 	int cmds;
-	struct bio *bio;
+	struct lsa_bio *bio;
 
 	spin_lock_irqsave(&dev->sess->req.lock, flags);
 	list_del(&req->list);
@@ -307,20 +268,15 @@ int targ_buf_free(targ_buf_t *buf)
 	}
 	spin_unlock_irqrestore(&dev->sess->req.lock, flags);
 
-	while ((bio = targ_bio_list_pop(&req->bio_list))) {
-		bio->bi_max_vecs = IO_DONE;
-		bio_put(bio);
+	while ((bio = lsa_bio_list_pop(&req->bio_list))) {
+		bio->bi_state = IO_DONE;
+		lsa_bio_put(bio);
 	}
 
 	debug("buf %p, req %p, %s, %d\n", buf, req, req->rw ? "W" : "R", cmds);
 	_targ_buf_free(&req->buf, req->rw == WRITE);
 	kmem_cache_free(req_cache, req);
 	return 0;
-}
-
-void targ_md_buf_init(struct mddev_s *t)
-{
-	t->targ_page_add = targ_page_add;
 }
 
 targ_sg_t *targ_buf_map(targ_buf_t *buf, struct device *dev, int dir, int *sg_cnt)

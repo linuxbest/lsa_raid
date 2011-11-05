@@ -384,8 +384,6 @@ struct raid5_private_data {
 	struct bio		*retry_read_aligned; /* currently retrying aligned bios   */
 	struct bio		*retry_read_aligned_list; /* aligned bios retry list  */
 	struct bio		*retry_target; /* aligned bios retry list  */
-	struct bio_list		target_list; /* aligned bios retry list  */
-	struct bio_list		target_tasklet_list; /* aligned bios retry list  */
 	struct bio_list		rdev_list; /* aligned bios retry list  */
 	atomic_t		preread_active_stripes; /* stripes with scheduled io */
 	atomic_t		active_aligned_reads;

@@ -1998,7 +1998,7 @@ struct entry_buffer {
 	struct rb_node node;
 	struct list_head lru, dirty, queue, cookie;
 	atomic_t count;
-	struct bio_list bio;
+	struct lsa_bio_list bio;
 #define EH_TREE     0
 #define EH_DIRTY    1
 #define EH_UPTODATE 2
@@ -2144,19 +2144,19 @@ typedef struct lsa_track_cookie {
 } lsa_track_cookie_t;
 
 static void 
-__lsa_entry_cookie_push(struct entry_buffer *eb, struct bio *bio,
+__lsa_entry_cookie_push(struct entry_buffer *eb, struct lsa_bio *bio,
 		lsa_track_cookie_t *cookie)
 {
 	if (bio)
-		bio_list_add(&eb->bio, bio);
+		lsa_bio_list_add(&eb->bio, bio);
 	else
 		list_add_tail(&eb->cookie, &cookie->entry);
 }
 
-static struct bio *
+static struct lsa_bio *
 __lsa_entry_bio_pop(struct entry_buffer *eb)
 {
-	return bio_list_pop(&eb->bio);
+	return lsa_bio_list_pop(&eb->bio);
 }
 
 static int
@@ -2199,7 +2199,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
  */
 static int
 lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
-	     struct bio *bio, lsa_track_cookie_t *cookie)
+	     struct lsa_bio *bio, lsa_track_cookie_t *cookie)
 {
 	int res = 0;
 	unsigned long flags;
@@ -2286,7 +2286,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 }
 
 static int 
-lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector, 
+lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bio, uint32_t sector, 
 		struct entry_buffer *eb);
 static void 
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie);
@@ -2300,11 +2300,11 @@ lsa_dirtory_rw_done(struct segment_buffer *segbuf,
 	raid5_conf_t *conf = seg->conf;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	unsigned long flags;
-	struct bio_list bio_list;
-	struct bio *bio;
+	struct lsa_bio_list bio_list;
+	struct lsa_bio *bio;
 	LIST_HEAD(head);
 
-	bio_list_init(&bio_list);
+	lsa_bio_list_init(&bio_list);
 	lsa_dirtory_copy(seg, segbuf, eh);
 
 	/* schedule retry */
@@ -2313,18 +2313,17 @@ lsa_dirtory_rw_done(struct segment_buffer *segbuf,
 		tasklet_schedule(&dir->tasklet);
 	}
 	while ((bio = __lsa_entry_bio_pop(eh))) {
-		bio_list_add(&bio_list, bio);
+		lsa_bio_list_add(&bio_list, bio);
 	}
 	list_splice(&eh->cookie, &head);
 	spin_unlock_irqrestore(&dir->lock, flags);
 
-	if (bio_list_empty(&bio_list))
+	if (lsa_bio_list_empty(&bio_list))
 		return 0;
 
 	/* moving the bio into target list then doing retry */
-	while ((bio = bio_list_pop(&bio_list))) {
+	while ((bio = lsa_bio_list_pop(&bio_list))) {
 		lsa_page_read(conf, bio, eh->e.log_vol_id, eh);
-		bio_put(bio);
 	}
 
 	while (!list_empty(&head)) {
@@ -2431,7 +2430,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		struct entry_buffer *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
 		if (eh == NULL)
 			return -1;
-		bio_list_init(&eh->bio);
+		lsa_bio_list_init(&eh->bio);
 		INIT_LIST_HEAD(&eh->cookie);
 		list_add_tail(&eh->lru, &dir->lru);
 	}
@@ -2899,7 +2898,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 }
 
 static void
-__lsa_track_add(struct lsa_segment_fill *segfill, struct bio *bi, 
+__lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		struct lsa_track_cookie **ck)
 {
 	lsa_track_t *track = segfill->track;
@@ -3061,7 +3060,7 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
  */
 static int
 __lsa_segment_fill_offset(struct lsa_segment_fill *segfill,
-		struct bio *bi, int *next)
+		struct lsa_bio *bi, int *next)
 {
 	int data_offset = segfill->data_offset;
 	int data_column = data_offset >> STRIPE_SHIFT;
@@ -3086,7 +3085,7 @@ __lsa_segment_fill_offset(struct lsa_segment_fill *segfill,
 
 static void
 __lsa_segment_fill_add(struct lsa_segment_fill *segfill, 
-		struct bio *bi, int next)
+		struct lsa_bio *bi, int next)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
@@ -3097,8 +3096,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
 	struct page *page = segbuf->column[data_column].page;
 
 	lsa_segment_get(segbuf);
-	conf->mddev->targ_page_add(conf->mddev, bi,
-			segbuf, page, column_offset);
+	bi->bi_add_page(conf->mddev, bi, segbuf, page, column_offset);
 
 	segfill->data_column = data_column;
 	segfill->data_offset = (data_column << STRIPE_SHIFT) +
@@ -3112,7 +3110,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
  * then adding the data information into.
  */
 static int
-__lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
+__lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		struct lsa_track_cookie **cookie)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
@@ -3145,7 +3143,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct bio *bi,
 
 static int
 lsa_segment_fill_write(struct lsa_segment_fill *segfill,
-		struct bio *bi, uint32_t lt)
+		struct lsa_bio *bi, uint32_t lt)
 {
 	unsigned long flags;
 	int res;
@@ -3161,7 +3159,7 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
 	}
-	bio_endio(bi, 0);
+	lsa_bio_endio(bi, 0);
 
 	return res;
 }
@@ -3301,6 +3299,112 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
 			STRIPE_SHIFT, conf);
+	return 0;
+}
+
+static int 
+lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector, 
+		struct entry_buffer *eb)
+{
+	struct stripe_head *sh = conf->lsa_zero_sh;
+	struct page *page = sh->dev[0].page;
+	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
+	lsa_bio_endio(bi, 0);
+	return 0;
+}
+
+static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
+{
+	const int rw = bio_data_dir(bi);
+	unsigned int chunk_offset;
+	sector_t logical_sector;
+
+	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
+	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
+
+	pr_debug("%s: sector %llu logic %u, %s\n", __func__, 
+			(unsigned long long)bi->bi_sector, 
+			(uint32_t)logical_sector, rw == WRITE ? "W" : "R");
+
+	if (rw == WRITE)
+		return lsa_segment_fill_write(&conf->segment_fill, bi,
+				(uint32_t)logical_sector);
+	return lsa_page_read(conf, bi, (uint32_t)logical_sector, NULL);
+}
+
+static void raid_tasklet(unsigned long data)
+{
+}
+
+int
+lsa_raid_segbuf_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
+{
+	if (dirty) {
+		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
+		return lsa_segment_release(segbuf, WRITE_WANT);
+	}
+
+	return 0;
+}
+
+int lsa_raid_request(mddev_t *mddev, struct lsa_bio * bi)
+{
+	raid5_conf_t *conf = mddev->private;
+	lsa_bio_req(conf, bi);
+	return 0;
+}
+
+static int lsa_bio_copy_page(mddev_t *mddev, 
+		struct lsa_bio *bio, struct segment_buffer *segbuf, 
+		struct page *page, unsigned int offset)
+{
+	lsa_raid_segbuf_put(mddev, segbuf, 0);
+	return 0;
+}
+
+static int lsa_make_request(mddev_t *mddev, struct bio * bi)
+{
+	raid5_conf_t *conf = mddev->private;
+	sector_t remainning = bi->bi_size >> SECTOR_SHIFT;
+	sector_t len = 0;
+	sector_t blknr = bi->bi_sector;
+	struct lsa_bio *bio;
+	int nr = 0;
+
+	if (unlikely(bi->bi_rw & REQ_FLUSH)) {
+		md_flush_request(mddev, bi);
+		return 0;
+	}
+
+	bi->bi_phys_segments = 1;
+	do {
+		sector_t split_io = STRIPE_SECTORS;
+		sector_t offset   = bi->bi_sector;
+		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
+		len = min_t(sector_t, remainning, boundary);
+
+		bio = lsa_bio_alloc(GFP_KERNEL);
+		bio->bi_sector = blknr;
+		bio->bi_rw = bi->bi_rw;
+		bio->bi_size = len << 9;
+		bio->bi_private = bi;
+		bio->bi_nr = nr;
+		bio->bi_add_page = lsa_bio_copy_page;
+	
+		bi->bi_phys_segments ++;
+		lsa_bio_req(conf, bio);
+
+		blknr += len;
+		nr ++;
+	} while (remainning -= len);
+
+	spin_lock_irq(&conf->device_lock);
+	nr = raid5_dec_bi_phys_segments(bi);
+	spin_unlock_irq(&conf->device_lock);
+
+	if (nr == 0)
+		bio_endio(bi, 0);
+
 	return 0;
 }
 
@@ -5823,76 +5927,6 @@ static int make_request(mddev_t *mddev, struct bio * bi)
 	return 0;
 }
 
-static int 
-lsa_page_read(raid5_conf_t *conf, struct bio *bio, uint32_t sector, 
-		struct entry_buffer *eb)
-{
-	struct stripe_head *sh = conf->lsa_zero_sh;
-	struct page *page = sh->dev[0].page;
-	conf->mddev->targ_page_add(conf->mddev, bio, NULL, page, 0);
-	bio_endio(bio, 0);
-	return 0;
-}
-
-static int lsa_bio_req(raid5_conf_t *conf, struct bio *bi)
-{
-	const int rw = bio_data_dir(bi);
-	unsigned int chunk_offset;
-	sector_t logical_sector;
-
-	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
-	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
-
-	pr_debug("%s: sector %llu logic %u, %s\n", __func__, 
-			(unsigned long long)bi->bi_sector, 
-			(uint32_t)logical_sector, rw == WRITE ? "W" : "R");
-
-	if (rw == WRITE)
-		return lsa_segment_fill_write(&conf->segment_fill, bi,
-				(uint32_t)logical_sector);
-	return lsa_page_read(conf, bi, (uint32_t)logical_sector, NULL);
-}
-
-static struct bio *lsa_retry_pop(raid5_conf_t *conf)
-{
-	struct bio *bio;
-	unsigned long flags;
-
-	spin_lock_irqsave(&conf->device_lock, flags);
-	bio = bio_list_pop(&conf->target_list);
-	spin_unlock_irqrestore(&conf->device_lock, flags);
-
-	return bio;
-}
-
-static void raid_tasklet(unsigned long data)
-{
-	raid5_conf_t *conf = (raid5_conf_t *)data;
-	struct bio *bio;
-
-	while ((bio = lsa_retry_pop(conf))) {
-		pr_debug("retry bio %p\n", bio);
-		lsa_bio_req(conf, bio);
-	}
-}
-
-static int
-targ_page_put(mddev_t *mddev, struct segment_buffer *segbuf, int rw)
-{
-	if (rw == WRITE) {
-		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
-		return lsa_segment_release(segbuf, WRITE_WANT);
-	}
-
-	return 0;
-}
-
-static int targ_page_req(mddev_t *mddev, struct bio * bi)
-{
-	raid5_conf_t *conf = mddev->private;
-	lsa_bio_req(conf, bi);
-	return 0;
-}
 
 static sector_t reshape_request(mddev_t *mddev, sector_t sector_nr, int *skipped)
 {
@@ -7760,7 +7794,7 @@ static struct mdk_personality raid5_personality =
 	.name		= "raid5",
 	.level		= 5,
 	.owner		= THIS_MODULE,
-	.make_request	= make_request,
+	.make_request	= lsa_make_request,
 	.run		= run,
 	.stop		= stop,
 	.status		= status,
@@ -7776,8 +7810,6 @@ static struct mdk_personality raid5_personality =
 	.finish_reshape = raid5_finish_reshape,
 	.quiesce	= raid5_quiesce,
 	.takeover	= raid5_takeover,
-	.targ_page_req  = targ_page_req,
-	.targ_page_put  = targ_page_put,
 };
 
 static struct mdk_personality raid4_personality =
@@ -7803,11 +7835,54 @@ static struct mdk_personality raid4_personality =
 	.takeover	= raid4_takeover,
 };
 
+static struct kmem_cache *bio_kmem;
+
+struct lsa_bio *lsa_bio_alloc(gfp_t gfp)
+{
+	struct lsa_bio *bio;
+	bio = kmem_cache_alloc(bio_kmem, gfp);
+	atomic_set(&bio->count, 1);
+	return bio;
+}
+
+void lsa_bio_put(struct lsa_bio *bio)
+{
+	if (atomic_dec_and_test(&bio->count))
+		kmem_cache_free(bio_kmem, bio);
+}
+
+void lsa_bio_endio(struct lsa_bio *bio, int error)
+{
+	if (error)
+		clear_bit(BIO_UPTODATE, &bio->bi_flags);
+	else if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
+		error = -EIO;
+	if (bio->bi_end_io)
+		bio->bi_end_io(bio, error);
+}
+
+static int lsa_bio_init(void)
+{
+	bio_kmem = kmem_cache_create("lsa_bio",
+			sizeof(struct lsa_bio), 0,
+			0, NULL);
+	if (bio_kmem)
+		return -1;
+	return 0;
+}
+
+static int lsa_bio_exit(void)
+{
+	kmem_cache_destroy(bio_kmem);
+	return 0;
+}
+
 int raid5_init(void)
 {
 	register_md_personality(&raid6_personality);
 	register_md_personality(&raid5_personality);
 	register_md_personality(&raid4_personality);
+	lsa_bio_init();
 	return 0;
 }
 
@@ -7816,6 +7891,7 @@ void raid5_exit(void)
 	unregister_md_personality(&raid6_personality);
 	unregister_md_personality(&raid5_personality);
 	unregister_md_personality(&raid4_personality);
+	lsa_bio_exit();
 }
 
 #if 0
