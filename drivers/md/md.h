@@ -404,11 +404,6 @@ struct mddev_s
 	struct work_struct flush_work;
 	struct work_struct event_work;	/* used by dm to report failure event */
 	void (*sync_super)(mddev_t *mddev, mdk_rdev_t *rdev);
-
-	/* target extends */
-	int (*targ_page_add)(mddev_t *mddev, struct bio *bio,
-			struct segment_buffer *segbuf,
-			struct page *page, unsigned offset);
 };
 
 
@@ -463,10 +458,6 @@ struct mdk_personality
 	 * array.
 	 */
 	void *(*takeover) (mddev_t *mddev);
-	
-	/* target extends */
-	int (*targ_page_req)(mddev_t *mddev, struct bio * bi);
-	int (*targ_page_put)(mddev_t *mddev, struct segment_buffer *segbuf, int rw);
 };
 
 

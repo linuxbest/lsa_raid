@@ -25,8 +25,6 @@
 
 #define DM_MSG_PREFIX "core"
 
-#include "target.h"
-
 /*
  * Cookies are numeric values sent with CHANGE and REMOVE
  * uevents while resuming, removing or renaming the device.
