@@ -2995,6 +2995,7 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	struct lsa_track *track;
 	int i;
 
+	debug("seg %d\n", segfill->segbuf->seg_id);
 	lsa_segment_event(segbuf, SEG_CLOSED);
 	if (!test_clear_segbuf_meta(segbuf)) {
 		/* without meta data */
@@ -3025,6 +3026,7 @@ static void
 __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	BUG_ON(segfill->segbuf == NULL);
+	debug("seg %d\n", segfill->segbuf->seg_id);
 	lsa_segment_release(segfill->segbuf, WRITE_WANT);
 	segfill->segbuf = NULL;
 }
@@ -3052,6 +3054,7 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 	segfill->data_column = 0;
 	lsa_segment_event(segbuf, SEG_OPEN);
 
+	debug("seg %d\n", segfill->segbuf->seg_id);
 	return 0;
 }
 
@@ -3118,6 +3121,10 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	int size0     = __lsa_segment_fill_offset(segfill, NULL, &next);
 	int size1     = __lsa_segment_fill_offset(segfill, bi, &next);
 
+	debug("bio %llu, size0 %d, size1 %d, max %d, meta %d/%d\n",
+			(unsigned long long)bi->bi_sector, 
+			size0, size1, segfill->max_size,
+			segfill->track->buf->total, segfill->meta_max);
 	if (meta_full && size0 > segfill->max_size) {
 		/* FIXME never happen */
 		BUG_ON(1);
@@ -3322,9 +3329,10 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
-	pr_debug("%s: sector %llu logic %u, %s\n", __func__, 
+	debug("bio %llu, %u, %s\n",
 			(unsigned long long)bi->bi_sector, 
-			(uint32_t)logical_sector, rw == WRITE ? "W" : "R");
+			(uint32_t)logical_sector,
+			rw == WRITE ? "W" : "R");
 
 	if (rw == WRITE)
 		return lsa_segment_fill_write(&conf->segment_fill, bi,
@@ -3333,7 +3341,7 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 }
 
 int
-lsa_raid_segbuf_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
+lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 {
 	if (dirty) {
 		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
@@ -3343,7 +3351,7 @@ lsa_raid_segbuf_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 	return 0;
 }
 
-int lsa_raid_request(mddev_t *mddev, struct lsa_bio * bi)
+int lsa_raid_bio_queue(mddev_t *mddev, struct lsa_bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
 	lsa_bio_req(conf, bi);
@@ -3354,7 +3362,10 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 		struct lsa_bio *bio, struct segment_buffer *segbuf, 
 		struct page *page, unsigned int offset)
 {
-	lsa_raid_segbuf_put(mddev, segbuf, 0);
+	debug("bio %llu, segbuf %d, offset %d\n",
+			(unsigned long long)bio->bi_sector,
+			segbuf->seg_id, offset);
+	lsa_raid_seg_put(mddev, segbuf, 0);
 	return 0;
 }
 
@@ -3362,6 +3373,10 @@ static void lsa_bio_end_io(struct lsa_bio *bio, int error)
 {
 	struct bio *bi = bio->bi_private;
 
+	debug("sector %llu/%llu, %d\n",
+			(unsigned long long)bi->bi_sector,
+			(unsigned long long)bio->bi_sector,
+			bi->bi_phys_segments);
 	if (!raid5_dec_bi_phys_segments(bi))
 		bio_endio(bi, 0);
 }
@@ -3388,15 +3403,19 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 		len = min_t(sector_t, remainning, boundary);
 
 		bio = lsa_bio_alloc(GFP_KERNEL);
-		bio->bi_sector = blknr;
-		bio->bi_rw = bi->bi_rw;
-		bio->bi_size = len << 9;
-		bio->bi_nr = nr;
-		bio->bi_add_page = lsa_bio_copy_page;
+		bio->bi_sector  = blknr;
+		bio->bi_rw      = bi->bi_rw;
+		bio->bi_size    = len << 9;
+		bio->bi_nr      = nr;
+		bio->bi_add_page= lsa_bio_copy_page;
 		bio->bi_private = bi;
-		bio->bi_end_io = lsa_bio_end_io;
-	
+		bio->bi_end_io  = lsa_bio_end_io;
+
 		bi->bi_phys_segments ++;
+		debug("sector %llu/%llu, %d\n",
+				(unsigned long long)bi->bi_sector,
+				(unsigned long long)bio->bi_sector,
+				(int)remainning);
 		lsa_bio_req(conf, bio);
 
 		blknr += len;
@@ -3404,11 +3423,8 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 	} while (remainning -= len);
 
 	spin_lock_irq(&conf->device_lock);
-	nr = raid5_dec_bi_phys_segments(bi);
+	lsa_bio_end_io(bio, 0);
 	spin_unlock_irq(&conf->device_lock);
-
-	if (nr == 0)
-		bio_endio(bi, 0);
 
 	return 0;
 }

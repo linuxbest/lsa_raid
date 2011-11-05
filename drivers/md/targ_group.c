@@ -482,7 +482,6 @@ int targ_group_sess_init(struct targ_sess *sess)
 	int i = 0;
 
 	list_for_each_entry(dl, &group->head[DEVICE], list) {
-		targ_md_buf_init(dl->device.mddev);
 		i ++;
 	}
 	sess->dev.nr = i;
