@@ -1651,6 +1651,9 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 struct segment_buffer_entry {
 #define SEGBUF_FLY 31
 	unsigned long type; /* 0 directory, 1 data */
+	int (*done)(struct segment_buffer *segbuf, 
+			struct segment_buffer_entry *se, 
+			int error);
 	struct list_head queue;
 };
 
@@ -1672,7 +1675,9 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
-	if (segbuf && !segbuf_uptodate(segbuf) && entry) {
+	if (segbuf && segbuf_uptodate(segbuf) && entry) {
+		entry->done(segbuf, entry, 0);
+	} else if (segbuf && !segbuf_uptodate(segbuf) && entry) {
 		list_add_tail(&segbuf->queue, &entry->queue);
 		set_bit(SEGBUF_FLY, &entry->type);
 	}
@@ -1792,9 +1797,6 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 }
 
 static int
-lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf, 
-		struct segment_buffer_entry *se);
-static int
 __lsa_segment_fill_write_done(struct lsa_segment *seg, 
 		struct segment_buffer *segbuf);
 
@@ -1810,12 +1812,10 @@ lsa_segment_read_done_callback(struct lsa_segment *seg,
 			container_of(segbuf->queue.next,
 					struct segment_buffer_entry,
 					queue);
-		short type = se->type & 0xf;
 		list_del_init(&se->queue);
 		spin_unlock_irqrestore(&seg->lock, flags);
 
-		if (type == 0)
-			lsa_dirtory_rw_done(seg, segbuf, se);
+		se->done(segbuf, se, 0);
 
 		spin_lock_irqsave(&seg->lock, flags);
 	}
@@ -2292,9 +2292,10 @@ static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie);
 
 static int
-lsa_dirtory_rw_done(struct lsa_segment *seg, struct segment_buffer *segbuf,
-		struct segment_buffer_entry *se)
+lsa_dirtory_rw_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
 {
+	struct lsa_segment *seg = segbuf->seg;
 	struct entry_buffer *eh = (void *)se;
 	raid5_conf_t *conf = seg->conf;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
@@ -2343,22 +2344,11 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 {
 	int res = 0;
 	struct segment_buffer *segbuf;
-	unsigned long flags;
 
-	eh->segbuf_entry.type = 0;
+	eh->segbuf_entry.done = lsa_dirtory_rw_done;
 	segbuf = lsa_segment_find_or_create(seg,
 			LBA2SEG(dir, eh->e.log_vol_id),
 			&eh->segbuf_entry);
-	if (segbuf == NULL) {
-		spin_lock_irqsave(&dir->lock, flags);
-		list_add_tail(&dir->retry, &eh->queue);
-		spin_unlock_irqrestore(&dir->lock, flags);
-		return 0;
-	}
-
-	if (segbuf_uptodate(segbuf) &&
-			!test_bit(SEGBUF_FLY, &eh->segbuf_entry.type))
-		lsa_dirtory_copy(seg, segbuf, eh);
 
 	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
 	    (rw == WRITE && segbuf_uptodate(segbuf)))
@@ -2668,11 +2658,6 @@ __lsa_ss_dirty(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 	list_add_tail(&ss->dirty, &ssbuf->lru);
 }
 
-/*
- * TODO 
- * needing reloading the page from disk, flush the dirty into disk when
- *
- */
 static int
 lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 {
@@ -2689,12 +2674,59 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 			ssbuf->e.timestamp = 0; /* TODO */
 			BUG_ON(__ss_entry_insert(ss, ssbuf) == 1);
 		}
+		set_ss_uptodate(ssbuf);
 	}
 	if (ssbuf)
 		__lsa_ss_dirty(ss, ssbuf);
 	spin_unlock_irqrestore(&ss->lock, flags);
 
 	return ssbuf != NULL;
+}
+
+static int 
+lsa_ss_read_done(struct segment_buffer *segbuf, 
+		struct segment_buffer_entry *entry,
+		int error)
+{
+	/* TODO */
+	return 0;
+}
+
+static int
+lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
+		segment_status_t *e)
+{
+	struct ss_buffer *ssbuf;
+	unsigned long flags;
+	struct segment_buffer *segbuf;
+	raid5_conf_t *conf =
+		container_of(ss, raid5_conf_t, lsa_segment_status);
+
+	spin_lock_irqsave(&ss->lock, flags);
+	ssbuf = __ss_entry_search(ss, seg_id);
+	if (ssbuf == NULL) {
+		ssbuf = __lsa_ss_freed(ss);
+	}
+	spin_unlock_irqrestore(&ss->lock, flags);
+
+	if (ssbuf == NULL)
+		return -ENOMEM;
+
+	if (ss_uptodate(ssbuf)) {
+		memcpy(e, &ssbuf->e, sizeof(*e));
+		return 0;
+	}
+
+	ssbuf->segbuf_entry.done = lsa_ss_read_done;
+	segbuf = lsa_segment_find_or_create(&conf->meta_segment,
+			seg_id, &ssbuf->segbuf_entry);
+
+	if (!segbuf_uptodate(segbuf))
+		lsa_segment_handle(&conf->meta_segment, segbuf);
+
+	lsa_segment_release(segbuf, 0);
+
+	return 0;
 }
 
 /*
