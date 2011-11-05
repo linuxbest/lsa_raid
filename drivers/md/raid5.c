@@ -3332,10 +3332,6 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	return lsa_page_read(conf, bi, (uint32_t)logical_sector, NULL);
 }
 
-static void raid_tasklet(unsigned long data)
-{
-}
-
 int
 lsa_raid_segbuf_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 {
@@ -3360,6 +3356,14 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 {
 	lsa_raid_segbuf_put(mddev, segbuf, 0);
 	return 0;
+}
+
+static void lsa_bio_end_io(struct lsa_bio *bio, int error)
+{
+	struct bio *bi = bio->bi_private;
+
+	if (!raid5_dec_bi_phys_segments(bi))
+		bio_endio(bi, 0);
 }
 
 static int lsa_make_request(mddev_t *mddev, struct bio * bi)
@@ -3387,9 +3391,10 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 		bio->bi_sector = blknr;
 		bio->bi_rw = bi->bi_rw;
 		bio->bi_size = len << 9;
-		bio->bi_private = bi;
 		bio->bi_nr = nr;
 		bio->bi_add_page = lsa_bio_copy_page;
+		bio->bi_private = bi;
+		bio->bi_end_io = lsa_bio_end_io;
 	
 		bi->bi_phys_segments ++;
 		lsa_bio_req(conf, bio);
@@ -6669,8 +6674,6 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 	atomic_set(&conf->preread_active_stripes, 0);
 	atomic_set(&conf->active_aligned_reads, 0);
 	conf->bypass_threshold = BYPASS_THRESHOLD;
-
-	tasklet_init(&conf->tasklet, raid_tasklet, (unsigned long)conf);
 
 	conf->raid_disks = mddev->raid_disks;
 	if (mddev->reshape_position == MaxSector)
