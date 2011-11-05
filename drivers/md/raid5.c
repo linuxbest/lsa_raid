@@ -2431,8 +2431,10 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		if (eh == NULL)
 			return -1;
 		lsa_bio_list_init(&eh->bio);
-		INIT_LIST_HEAD(&eh->cookie);
 		list_add_tail(&eh->lru, &dir->lru);
+		INIT_LIST_HEAD(&eh->dirty);
+		INIT_LIST_HEAD(&eh->queue);
+		INIT_LIST_HEAD(&eh->cookie);
 	}
 
 	/* alloc the bitmap space */
@@ -3072,7 +3074,7 @@ __lsa_segment_fill_offset(struct lsa_segment_fill *segfill,
 	int data_offset = segfill->data_offset;
 	int data_column = data_offset >> STRIPE_SHIFT;
 	int column_offset = data_offset & STRIPE_MASK;
-	int bi_size = bi ? 0 : bi->bi_size;
+	int bi_size = bi ? bi->bi_size : 0;
 
 	column_offset += bi_size;
 	if (column_offset > STRIPE_SIZE)
@@ -3188,7 +3190,7 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	spin_lock_init(&segfill->lock);
 
 	segfill->seg         = &conf->data_segment;
-	segfill->max_entry   =(STRIPE_SIZE - 16)/sizeof(struct lsa_track_entry);
+	segfill->meta_max    =(STRIPE_SIZE - 16)/sizeof(struct lsa_track_entry);
 	segfill->mask_offset = STRIPE_SIZE - 1;
 	segfill->data_shift  = STRIPE_SHIFT;
 	segfill->max_size    = STRIPE_SIZE * data_disks;
@@ -3317,9 +3319,9 @@ static int
 lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector, 
 		struct entry_buffer *eb)
 {
+#if 0
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	struct page *page = sh->dev[0].page;
-#if 0
 	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
 #endif
 	lsa_bio_endio(bi, 0);
