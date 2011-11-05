@@ -4,9 +4,9 @@
 typedef struct lsa_entry lsa_entry_t;
 
 struct lsa_entry {
-	uint32_t log_vol_id;   /* logic track address */
-	uint32_t log_track_id; /* segment number */
-	uint8_t  seg_id;       /* segment id */
+	uint32_t log_vol_id;   /* unused */
+	uint32_t log_track_id; /* logic track address */
+	uint8_t  seg_id;       /* segment number */
 	uint8_t  seg_column;   /* 0 - N+M */
 	uint8_t  offset;       /* 0 - number of sector per segment column */
 	uint8_t  length;       /* 0 - number of sector per segment column */

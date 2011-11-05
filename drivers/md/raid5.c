@@ -60,11 +60,11 @@
 
 #include "lsa.h"
 
-static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_vol_id)
+static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	int data_disks = conf->raid_disks - conf->max_degraded;
-	return log_vol_id / data_disks;
+	return log_track_id / data_disks;
 }
 
 static inline sector_t SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
@@ -2065,14 +2065,14 @@ lsa_entry_set_bit(struct lsa_dirtory *dir, uint32_t lt)
 }
 
 static struct entry_buffer *
-__lsa_entry_search(struct lsa_dirtory *dir, uint32_t log_vol_id)
+__lsa_entry_search(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
 	struct rb_node *node = dir->tree.rb_node;
 
 	while (node) {
 		struct entry_buffer *data = container_of(node, 
 				struct entry_buffer, node);
-		int result = data->e.log_vol_id - log_vol_id;
+		int result = data->e.log_track_id - log_track_id;
 
 		if (result < 0)
 			node = node->rb_left;
@@ -2093,7 +2093,7 @@ __lsa_entry_insert(struct lsa_dirtory *dir, struct entry_buffer *data)
 	while (*new) {
 		struct entry_buffer *this = container_of(*new,
 				struct entry_buffer, node);
-		int result = this->e.log_vol_id - data->e.log_vol_id;
+		int result = this->e.log_track_id - data->e.log_track_id;
 
 		if (result < 0)
 			new = &((*new)->rb_left);
@@ -2174,8 +2174,10 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 		memcpy(&eh->e, le, sizeof(*le));
 		set_entry_dirty(eh);
 		set_entry_uptodate(eh);
+		debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
+				atomic_read(&eh->count), eh->flags);
 		list_add_tail(&dir->dirty, &eh->dirty);
-		lsa_entry_set_bit(dir, eh->e.log_vol_id);
+		lsa_entry_set_bit(dir, eh->e.log_track_id);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
 		else 
@@ -2198,7 +2200,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
  *                request is finished.
  */
 static int
-lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
+lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 	     struct lsa_bio *bio, lsa_track_cookie_t *cookie)
 {
 	int res = 0;
@@ -2206,11 +2208,11 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 	struct entry_buffer *eh = NULL;
 
 	/* first checking the bitmap */
-	if (lsa_entry_test_bit(dir, log_vol_id) == 0)
+	if (lsa_entry_test_bit(dir, log_track_id) == 0)
 		return -ENOENT;
 
 	spin_lock_irqsave(&dir->lock, flags);
-	cookie->eb = eh = __lsa_entry_search(dir, log_vol_id);
+	cookie->eb = eh = __lsa_entry_search(dir, log_track_id);
 	if (eh) {
 		if (!list_empty(&eh->lru))
 			list_del_init(&eh->lru);
@@ -2220,12 +2222,14 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_vol_id,
 		cookie->eb = eh = __lsa_entry_freed(dir);
 		BUG_ON(!eh);
 		/* TODO handle when LRU is empty */
-		eh->e.log_vol_id = log_vol_id;
+		eh->e.log_track_id = log_track_id;
 		list_add_tail(&dir->queue, &dir->queue);
 		if (!test_set_entry_tree(eh))
 			__lsa_entry_insert(dir, eh);
 		tasklet_schedule(&dir->tasklet);
 	}
+	debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
+			atomic_read(&eh->count), eh->flags);
 	if (!entry_uptodate(eh)) {
 		__lsa_entry_cookie_push(eh, bio, cookie);
 		res = -EINPROGRESS;
@@ -2242,6 +2246,8 @@ lsa_entry_put(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
 	unsigned long flags;
 
+	debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
+			atomic_read(&eh->count), eh->flags);
 	spin_lock_irqsave(&dir->lock, flags);
 	if (atomic_dec_and_test(&eh->count))
 		list_add_tail(&eh->lru, &dir->lru);
@@ -2323,7 +2329,7 @@ lsa_dirtory_rw_done(struct segment_buffer *segbuf,
 
 	/* moving the bio into target list then doing retry */
 	while ((bio = lsa_bio_list_pop(&bio_list))) {
-		lsa_page_read(conf, bio, eh->e.log_vol_id, eh);
+		lsa_page_read(conf, bio, eh->e.log_track_id, eh);
 	}
 
 	while (!list_empty(&head)) {
@@ -2346,7 +2352,7 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 
 	eh->segbuf_entry.done = lsa_dirtory_rw_done;
 	segbuf = lsa_segment_find_or_create(seg,
-			LBA2SEG(dir, eh->e.log_vol_id),
+			LBA2SEG(dir, eh->e.log_track_id),
 			&eh->segbuf_entry);
 
 	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
@@ -2904,7 +2910,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 
 static void
 __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
-		struct lsa_track_cookie **ck)
+		struct lsa_track_cookie **ck, uint32_t log_track_id)
 {
 	lsa_track_t *track = segfill->track;
 	struct lsa_track_entry  *lt = &track->buf->entry[track->buf->total];
@@ -2913,8 +2919,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		&track->closing_seg_id[track->closing_seg_total];
 
 	track->buf->total ++;
-	lt->new.log_vol_id   = bi->bi_sector >> segfill->seg->shift;
-	lt->new.log_track_id = 0; /* ?? */
+	lt->new.log_track_id = log_track_id;
 	lt->new.seg_id       = segfill->segbuf->seg_id;
 	lt->new.seg_column   = segfill->data_column;
 	lt->new.offset       = segfill->data_offset & segfill->mask_offset;
@@ -2924,6 +2929,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	*ck = cookie;
 	cookie->track = track;
 	cookie->lt    = lt;
+	cookie->eb    = NULL;
 	__lsa_track_ref(track);
 
 	/* seting the seg for closing */
@@ -3120,7 +3126,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill,
  */
 static int
 __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
-		struct lsa_track_cookie **cookie)
+		struct lsa_track_cookie **cookie, uint32_t log_track_id)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
 	int next      = meta_full;
@@ -3135,7 +3141,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		/* FIXME never happen */
 		BUG_ON(1);
 	} else if (meta_full && size1 <= segfill->max_size) {
-		__lsa_track_add(segfill, bi, cookie);
+		__lsa_track_add(segfill, bi, cookie, log_track_id);
 		__lsa_segment_fill_add(segfill, bi, next);
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
@@ -3148,7 +3154,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		__lsa_segment_fill_close(segfill);
 		__lsa_segment_fill_open(segfill);
 	}
-	__lsa_track_add(segfill, bi, cookie);
+	__lsa_track_add(segfill, bi, cookie, log_track_id);
 	__lsa_segment_fill_add(segfill, bi, next);
 
 	return 0;
@@ -3156,7 +3162,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 
 static int
 lsa_segment_fill_write(struct lsa_segment_fill *segfill,
-		struct lsa_bio *bi, uint32_t lt)
+		struct lsa_bio *bi, uint32_t log_track_id)
 {
 	unsigned long flags;
 	int res;
@@ -3165,10 +3171,11 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 		container_of(segfill, raid5_conf_t, segment_fill);
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	res = __lsa_segment_fill_append(segfill, bi, &cookie);
+	res = __lsa_segment_fill_append(segfill, bi, &cookie, log_track_id);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
-	res = lsa_entry_get(&conf->lsa_dirtory, lt, NULL, cookie);
+	res = lsa_entry_get(&conf->lsa_dirtory, log_track_id, NULL, cookie);
+	debug("ltid %d, res %d\n", log_track_id, res);
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
 	}
