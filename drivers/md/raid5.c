@@ -2937,7 +2937,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		*closing_seg_id = segfill->segbuf->seg_id;
 		track->closing_seg_total ++;
 	}
-	BUG_ON(track->closing_seg_total == PAGE_SIZE/sizeof(uint32_t));
+	BUG_ON(track->closing_seg_total == segfill->max_seg_cls);
 }
 
 static void
@@ -3202,6 +3202,9 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	segfill->data_shift  = STRIPE_SHIFT;
 	segfill->max_size    = STRIPE_SIZE * data_disks;
 
+	segfill->cls_order   = 1;
+	segfill->max_seg_cls = (1<<(segfill->cls_order+PAGE_SHIFT))/sizeof(uint32_t);
+
 	/* TODO loading from the super block */
 	segfill->meta_id     = 0;
 	segfill->meta_column = COLUMN_NULL;
@@ -3223,7 +3226,7 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 		lt->buf = (lsa_track_buffer_t *)page_address(lt->page);
 		
 		/* 4096/4 = 1024 hodling 1024 segment is ok. */
-		lt->closing_page = alloc_pages(GFP_KERNEL, 0);
+		lt->closing_page = alloc_pages(GFP_KERNEL, segfill->cls_order);
 		if (lt->closing_page == NULL)
 			return -1;
 		lt->closing_seg_id =
@@ -3245,7 +3248,7 @@ __lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 {
 	list_del_init(&lt->list);
 	__free_pages(lt->page, STRIPE_ORDER);
-	__free_pages(lt->closing_page, 0);
+	__free_pages(lt->closing_page, segfill->cls_order);
 	kfree(lt);
 }
 
