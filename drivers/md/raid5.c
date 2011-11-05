@@ -1934,13 +1934,13 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 		segbuf = kzalloc(blen, GFP_KERNEL);
 		if (segbuf == NULL)
 			return -1;
+		segbuf->seg = seg;
 		if (lsa_column_alloc(segbuf, segbuf->column, disks,
 					shift) != 0)
 			return -2;
 		list_add_tail(&segbuf->lru, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active);
 		INIT_LIST_HEAD(&segbuf->queue);
-		segbuf->seg = seg;
 	}
 
 	return 0;
@@ -2610,7 +2610,7 @@ lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
 		ssbuf = kzalloc(sizeof(*ssbuf), GFP_KERNEL);
 		if (ssbuf == NULL)
 			return -1;
-		list_add_tail(&ss->lru, &ssbuf->lru);
+		list_add_tail(&ssbuf->lru, &ss->lru);
 	}
 
 	return 0;
@@ -2671,7 +2671,7 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 			ssbuf->e.seg_id    = seg_id;
 			ssbuf->e.status    = status;
 			ssbuf->e.timestamp = 0; /* TODO */
-			BUG_ON(__ss_entry_insert(ss, ssbuf) == 1);
+			BUG_ON(__ss_entry_insert(ss, ssbuf) == 0);
 		}
 		set_ss_uptodate(ssbuf);
 	}
@@ -2786,12 +2786,15 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	lcs->max --; /* for crc  */
 	lcs->max --; /* reserved */
 	lcs->cur = 0;
+	INIT_LIST_HEAD(&lcs->lru);
 
 	max *= 2;
 	for (i = 0; i < max; i ++) {
 		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf),
 				GFP_KERNEL);
-		list_add_tail(&lcs->lru, &lcs_buf->lru);
+		if (lcs_buf == NULL)
+			return -1;
+		list_add_tail(&lcs_buf->lru, &lcs->lru);
 	}
 
 	return 0;
@@ -3043,6 +3046,8 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 
 	/* TODO, adding real segment id allocate. */
 	seg = lsa_seg_alloc(&conf->lsa_dirtory);
+	debug("seg %d\n", seg);
+
 	segbuf = lsa_segment_find_or_create(segfill->seg, /* handle */
 			seg,  /* ID */
 			NULL);/* no entry for callback */
@@ -3054,7 +3059,6 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 	segfill->data_column = 0;
 	lsa_segment_event(segbuf, SEG_OPEN);
 
-	debug("seg %d\n", segfill->segbuf->seg_id);
 	return 0;
 }
 
@@ -3291,11 +3295,6 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
 	
-	lsa_segment_fill_init(&conf->segment_fill);
-	lsa_cs_init(&conf->lsa_closed_status);
-	lsa_ss_init(&conf->lsa_segment_status, 
-			 raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
-
 	lsa_dirtory_init(&conf->lsa_dirtory,
 			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 
@@ -3306,6 +3305,11 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(256*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
 			STRIPE_SHIFT, conf);
+	lsa_cs_init(&conf->lsa_closed_status);
+	lsa_ss_init(&conf->lsa_segment_status, 
+			 raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
+	lsa_segment_fill_init(&conf->segment_fill);
+	
 	return 0;
 }
 
@@ -3315,7 +3319,9 @@ lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector,
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	struct page *page = sh->dev[0].page;
+#if 0
 	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
+#endif
 	lsa_bio_endio(bi, 0);
 	return 0;
 }
@@ -3364,8 +3370,9 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 {
 	debug("bio %llu, segbuf %d, offset %d\n",
 			(unsigned long long)bio->bi_sector,
-			segbuf->seg_id, offset);
-	lsa_raid_seg_put(mddev, segbuf, 0);
+			segbuf ? segbuf->seg_id : 0, offset);
+	if (segbuf)
+		lsa_raid_seg_put(mddev, segbuf, 0);
 	return 0;
 }
 
