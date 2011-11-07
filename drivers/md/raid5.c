@@ -2316,8 +2316,6 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	spin_lock_irqsave(&dir->lock, flags);
 	list_add_tail(&dir->dirty, &eh->queue);
 	spin_unlock_irqrestore(&dir->lock, flags);
-
-	tasklet_schedule(&dir->tasklet);
 }
 
 static int
