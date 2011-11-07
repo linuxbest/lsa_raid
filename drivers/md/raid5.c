@@ -60,19 +60,29 @@
 
 #include "lsa.h"
 
-static inline uint32_t LCS2SEG(struct lsa_closed_segment *lcs, int id)
+static inline uint32_t
+SS2SEG(struct lsa_segment_status *ss, uint32_t seg_id)
+{
+	/* TODO */
+	return 0;
+}
+
+static inline uint32_t
+LCS2SEG(struct lsa_closed_segment *lcs, int id)
 {
 	return lcs->seg_id + id;
 }
 
-static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
+static inline uint32_t
+LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	int data_disks = conf->raid_disks - conf->max_degraded;
 	return log_track_id / data_disks;
 }
 
-static inline sector_t SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
+static inline sector_t
+SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
 {
 	/*raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);*/
 	sector_t lba = seg_id;
@@ -2403,7 +2413,7 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 			&eh->segbuf_entry);
 
 	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
-	    (rw == WRITE && segbuf_uptodate(segbuf)))
+	    (rw == WRITE && segbuf_dirty(segbuf)))
 		lsa_segment_handle(seg, segbuf);
 	lsa_segment_release(segbuf, 0);
 
@@ -2758,23 +2768,71 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 }
 
 static int 
-lsa_ss_read_done(struct segment_buffer *segbuf, 
-		struct segment_buffer_entry *entry,
-		int error)
+lsa_ss_rw_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *entry, int error)
 {
 	/* TODO */
 	return 0;
 }
 
 static int
-lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
-		segment_status_t *e)
+lsa_ss_rw(struct lsa_segment_status *ss, struct ss_buffer *ssbuf, int rw)
+{
+	int res = 0;
+	struct segment_buffer *segbuf;
+	raid5_conf_t *conf = container_of(ss, raid5_conf_t, lsa_segment_status);
+
+	ssbuf->segbuf_entry.rw = rw;
+	ssbuf->segbuf_entry.done = lsa_ss_rw_done;
+	segbuf = lsa_segment_find_or_create(&conf->meta_segment,
+			SS2SEG(ss, ssbuf->e.seg_id),
+			&ssbuf->segbuf_entry);
+
+	if ((rw == READ && !ss_uptodate(ssbuf)) ||
+	    (rw == WRITE && ss_dirty(ssbuf)))
+		lsa_segment_handle(&conf->meta_segment, segbuf);
+
+	lsa_segment_release(segbuf, 0);
+
+	return res;
+}
+
+static void 
+__lsa_ss_handle(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
+{
+	int res = -1;
+
+	if (!ss_uptodate(ssbuf))
+		res = lsa_ss_rw(ss, ssbuf, 0);
+	else if (ss_dirty(ssbuf))
+		res = lsa_ss_rw(ss, ssbuf, 1);
+	BUG_ON(res != 0);
+}
+
+static void 
+__lsa_ss_job(struct lsa_segment_status *ss, struct list_head *head)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ss->lock, flags);
+	while (!list_empty(head)) {
+		struct ss_buffer *ssbuf = list_entry(head->next,
+				struct ss_buffer, lru);
+		spin_unlock_irqrestore(&ss->lock, flags);
+
+		__lsa_ss_handle(ss, ssbuf);
+
+		spin_lock_irqsave(&ss->lock, flags);
+	}
+	spin_unlock_irqrestore(&ss->lock, flags);
+}
+
+static int
+lsa_ss_read(struct lsa_segment_status *ss,
+		uint32_t seg_id, segment_status_t *e)
 {
 	struct ss_buffer *ssbuf;
 	unsigned long flags;
-	struct segment_buffer *segbuf;
-	raid5_conf_t *conf =
-		container_of(ss, raid5_conf_t, lsa_segment_status);
 
 	spin_lock_irqsave(&ss->lock, flags);
 	ssbuf = __ss_entry_search(ss, seg_id);
@@ -2786,22 +2844,7 @@ lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
 	if (ssbuf == NULL)
 		return -ENOMEM;
 
-	if (ss_uptodate(ssbuf)) {
-		memcpy(e, &ssbuf->e, sizeof(*e));
-		return 0;
-	}
-
-	ssbuf->segbuf_entry.rw = READ;
-	ssbuf->segbuf_entry.done = lsa_ss_read_done;
-	segbuf = lsa_segment_find_or_create(&conf->meta_segment,
-			seg_id, &ssbuf->segbuf_entry);
-
-	if (!segbuf_uptodate(segbuf))
-		lsa_segment_handle(&conf->meta_segment, segbuf);
-
-	lsa_segment_release(segbuf, 0);
-
-	return 0;
+	return lsa_ss_rw(ss, ssbuf, READ);
 }
 
 static void
@@ -2819,7 +2862,7 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 static void 
 lsa_ss_commit(struct lsa_segment_status *ss)
 {
-	/* TODO */
+	__lsa_ss_job(ss, &ss->checkpoint);
 }
 
 /*
