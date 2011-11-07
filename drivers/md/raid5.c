@@ -60,6 +60,12 @@
 
 #include "lsa.h"
 
+static inline uint32_t LCS2SEG(struct lsa_closed_segment *lcs, int id)
+{
+	/* TODO */
+	return 0;
+}
+
 static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
@@ -1424,7 +1430,7 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  */
 struct segment_buffer {
 	struct rb_node   node;
-	struct list_head lru, active, queue;
+	struct list_head lru, active, queue, write, read;
 	unsigned long    flags;
 	atomic_t         count;
 	unsigned int     status, meta;
@@ -1676,7 +1682,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	if (segbuf && segbuf_uptodate(segbuf) && entry) {
 		entry->done(segbuf, entry, 0);
 	} else if (segbuf && !segbuf_uptodate(segbuf) && entry) {
-		list_add_tail(&segbuf->queue, &entry->queue);
+		list_add_tail(&segbuf->read, &entry->queue);
 		set_bit(SEGBUF_FLY, &entry->type);
 	}
 	if (segbuf)
@@ -1770,6 +1776,18 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	return 0;
 }
 
+static void
+lsa_segment_buffer_chain(struct segment_buffer *segbuf, 
+		struct segment_buffer_entry *se)
+{
+	struct lsa_segment *seg = segbuf->seg;
+	unsigned long flags;
+
+	spin_lock_irqsave(&seg->lock, flags);
+	list_add_tail(&segbuf->write, &se->queue);
+	spin_unlock_irqrestore(&seg->lock, flags);
+}
+
 static int
 lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
@@ -1798,26 +1816,28 @@ static int
 __lsa_segment_fill_write_done(struct lsa_segment *seg, 
 		struct segment_buffer *segbuf);
 
-static void
-lsa_segment_read_done_callback(struct lsa_segment *seg, 
-		struct segment_buffer *segbuf)
+static int
+lsa_segment_done_callback(struct segment_buffer *segbuf, struct list_head *head)
 {
+	struct lsa_segment *seg = segbuf->seg;
+	int chain = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&seg->lock, flags);
-	while (!list_empty(&segbuf->queue)) {
+	while (!list_empty(head)) {
 		struct segment_buffer_entry *se =
-			container_of(segbuf->queue.next,
-					struct segment_buffer_entry,
-					queue);
+			container_of(head->next, struct segment_buffer_entry, queue);
 		list_del_init(&se->queue);
 		spin_unlock_irqrestore(&seg->lock, flags);
 
 		se->done(segbuf, se, 0);
 
+		chain ++;
 		spin_lock_irqsave(&seg->lock, flags);
 	}
 	spin_unlock_irqrestore(&seg->lock, flags);
+
+	return chain;
 }
 
 /*
@@ -1829,7 +1849,7 @@ static int
 lsa_segment_read_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
 	set_segbuf_uptodate(segbuf);
-	lsa_segment_read_done_callback(seg, segbuf);
+	lsa_segment_done_callback(segbuf, &segbuf->read);
 	return 0;
 }
 
@@ -1837,7 +1857,8 @@ static int
 lsa_segment_write_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
 	clear_segbuf_dirty(segbuf);
-	__lsa_segment_fill_write_done(seg, segbuf);
+	if (lsa_segment_done_callback(segbuf, &segbuf->write) == 0)
+		__lsa_segment_fill_write_done(seg, segbuf);
 	return 0;
 }
 
@@ -1948,6 +1969,8 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 		list_add_tail(&segbuf->lru, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active);
 		INIT_LIST_HEAD(&segbuf->queue);
+		INIT_LIST_HEAD(&segbuf->write);
+		INIT_LIST_HEAD(&segbuf->read);
 	}
 
 	return 0;
@@ -2754,10 +2777,12 @@ typedef struct lcs_ondisk {
 	uint32_t magic;
 	uint32_t total;
 	uint32_t sum;
-	uint32_t reserved;
+	uint32_t timestamp;
 	uint32_t seg[0];
 } lcs_ondisk_t;
+
 typedef struct lcs_buffer {
+	struct segment_buffer_entry entry;
 	struct list_head lru;
 	struct lsa_closed_segment *lcs;
 	struct page *page;
@@ -2786,8 +2811,9 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb->ondisk = (lcs_ondisk_t *)page_address(lb->page);
 	lb->ondisk->magic = SEG_LCS_MAGIC;
 	lb->ondisk->total = 0;
-	lb->ondisk->sum   = 0;
-	lb->ondisk->reserved = 0;
+
+	lb->ondisk->timestamp = 0; /* TODO */
+	lb->ondisk->sum   = lb->ondisk->timestamp;
 
 	return lb;
 }
@@ -2817,17 +2843,44 @@ lsa_lcs_insert(lcs_buffer_t *lb, uint32_t seg_id)
 	lb->ondisk->total ++;
 }
 
+static int
+lsa_lcs_write_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	unsigned long flags;
+	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, entry);
+	struct lsa_closed_segment *lcs = lb->lcs;
+
+	spin_lock_irqsave(&lcs->lock, flags);
+	list_del(&lb->lru);
+	list_add_tail(&lb->lru, &lcs->lru);
+	spin_unlock_irqrestore(&lcs->lock, flags);
+
+	return 0;
+}
+
 static void
 lsa_lcs_commit(lcs_buffer_t *lb)
 {
 	struct lsa_closed_segment *lcs = lb->lcs;
+	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
+	struct segment_buffer *segbuf;
 	unsigned long flags;
+	int i;
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_add_tail(&lb->lru, &lcs->dirty);
+	i = lcs->seg & 0x3;
+	lcs->seg ++;
 	spin_unlock_irqrestore(&lcs->lock, flags);
 
-	/* TODO */
+	segbuf = lcs->segbuf[i];
+	segbuf->column[0].meta_page = lb->page;
+
+	lb->entry.done = lsa_lcs_write_done;
+	set_segbuf_uptodate(segbuf);
+	lsa_segment_buffer_chain(segbuf, &lb->entry);
+	lsa_segment_dirty(&conf->meta_segment, segbuf);
 }
 
 static int
@@ -2835,9 +2888,19 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 {
 	int order = 2;
 	int max = ((PAGE_SIZE<<order) - 16)/sizeof(uint32_t), i;
+	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 
 	lcs->max = max;
 	INIT_LIST_HEAD(&lcs->lru);
+
+	for (i = 0; i < 4; i ++) {
+		struct segment_buffer *segbuf;
+		segbuf = lsa_segment_find_or_create(&conf->meta_segment,
+				LCS2SEG(lcs, i),
+				NULL);
+		BUG_ON(segbuf == NULL);
+		lcs->segbuf[i] = segbuf;
+	}
 
 	for (i = 0; i < 16; i ++) {
 		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf), GFP_KERNEL);
@@ -2856,6 +2919,10 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 static int
 lsa_cs_exit(struct lsa_closed_segment *lcs)
 {
+	int i;
+	for (i = 0; i < 4; i ++) {
+		lsa_segment_release(lcs->segbuf[i], 0);
+	}
 	while (!list_empty(&lcs->dirty)) {
 		/* TODO we must flush the dirty lcs into disk */
 		struct lcs_buffer *lcs_buf = container_of(lcs->dirty.next,

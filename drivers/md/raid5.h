@@ -481,6 +481,9 @@ struct raid5_private_data {
 		struct list_head lru;
 		struct list_head dirty;
 		unsigned int max;
+
+		struct segment_buffer *segbuf[4];
+		unsigned int seg;
 	} lsa_closed_status;
 
 	/* memory segment buffer */
