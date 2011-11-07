@@ -2875,7 +2875,7 @@ __lsa_track_get(struct lsa_segment_fill *segfill)
 
 	lt = list_entry(segfill->free.next, lsa_track_t, list);
 	list_del_init(&lt->list);
-	atomic_set(&lt->count, 0);
+	atomic_set(&lt->count, 1);
 	debug("track %p, ref %d\n", lt, atomic_read(&lt->count));
 
 	return lt;
@@ -2940,7 +2940,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	lt->new.log_track_id = log_track_id;
 	lt->new.seg_id       = segfill->segbuf->seg_id;
 	lt->new.seg_column   = segfill->data_column;
-	lt->new.offset       = segfill->data_offset & segfill->mask_offset;
+	lt->new.offset       = bi->bi_sector & segfill->mask_offset;
 	lt->new.length       = bi->bi_size;
 
 	/* setup the cookie */
@@ -2986,16 +2986,13 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 static void
 __lsa_track_close(struct lsa_segment_fill *segfill)
 {
-	int data_offset = segfill->data_offset;
-	int data_column = data_offset >> STRIPE_SHIFT;
+	int data_column = segfill->data_column;
 	struct lsa_track *track = segfill->track;
 	struct lsa_track_buffer *track_buffer;
 	struct segment_buffer *segbuf = segfill->segbuf;
 
 	BUG_ON(track == NULL);
 	track_buffer = track->buf;
-
-	if (data_offset) data_column ++;
 
 	/* fill the information into segment buffer */
 	segbuf->column[data_column].track     = track;
@@ -3005,16 +3002,19 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	/* saving the meta_id & data column for next track */
 	segfill->meta_id     = segbuf->seg_id;
 	segfill->meta_column = data_column;
-	segfill->data_offset = (data_column+1) << STRIPE_SHIFT;
+	segfill->data_column ++;
 	segfill->track       = NULL;
 
 	/* moving the ref into segbuf, to make sure the track is sync 
 	 * before write to disk.
 	 */
 	BUG_ON(track->segbuf != NULL);
-	while (atomic_dec_return(&track->count)) {
+	do {
+		__lsa_track_unref(track);
+		if (atomic_read(&track->count) == 0)
+			break;
 		lsa_segment_get(segbuf);
-	}
+	} while (atomic_read(&track->count));
 	track->segbuf = segbuf;
 }
 
@@ -3085,61 +3085,26 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 	BUG_ON(segbuf == NULL);
 
 	segfill->segbuf      = segbuf;
-	segfill->data_offset = 0;
 	segfill->data_column = 0;
 	lsa_segment_event(segbuf, SEG_OPEN);
 
 	return 0;
 }
 
-/* first try to fill the data into current column,
- * then  if can not fill, moving to next column.
- */
-static int
-__lsa_segment_fill_offset(struct lsa_segment_fill *segfill,
-		struct lsa_bio *bi, int *next)
-{
-	int data_offset = segfill->data_offset;
-	int data_column = data_offset >> STRIPE_SHIFT;
-	int column_offset = data_offset & STRIPE_MASK;
-	int bi_size = bi ? bi->bi_size : 0;
-
-	column_offset += bi_size;
-	if (column_offset > STRIPE_SIZE)
-		data_column ++;
-
-	if (*next && column_offset) {
-		data_column ++;
-		data_column ++;
-		return data_column << STRIPE_SHIFT;
-	} else if (*next) {
-		data_column ++;
-		return data_column << STRIPE_SHIFT;
-	}
-
-	return data_offset + bi_size;
-}
-
 static void
-__lsa_segment_fill_add(struct lsa_segment_fill *segfill, 
-		struct lsa_bio *bi, int next)
+__lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
-	int data_offset = segfill->data_offset;
-	int data_column = (data_offset >> STRIPE_SHIFT) + next;
-	int column_offset = next ? 0 : data_offset & STRIPE_MASK;
+	int offset = bi->bi_sector & segfill->mask_offset;
+	int data = segfill->data_column;
 	struct segment_buffer *segbuf = segfill->segbuf;
-	struct page *page = segbuf->column[data_column].page;
+	struct page *page = segbuf->column[data].page;
 
 	lsa_segment_get(segbuf);
-	bi->bi_add_page(conf->mddev, bi, segbuf, page, column_offset);
-
-	segfill->data_column = data_column;
-	segfill->data_offset = (data_column << STRIPE_SHIFT) +
-		column_offset + bi->bi_size;
-
-	BUG_ON(segfill->data_offset > segfill->max_size);
+	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset);
+	segfill->data_column ++;
+	BUG_ON(segfill->data_column > segfill->max_column);
 }
 
 /* first checking the data can put into this segment.
@@ -3151,33 +3116,29 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		struct lsa_track_cookie **cookie, uint32_t log_track_id)
 {
 	int meta_full = segfill->track->buf->total == segfill->meta_max;
-	int next      = meta_full;
-	int size0     = __lsa_segment_fill_offset(segfill, NULL, &next);
-	int size1     = __lsa_segment_fill_offset(segfill, bi, &next);
 
-	debug("bio %llu, size0 %d, size1 %d, max %d, meta %d/%d\n",
-			(unsigned long long)bi->bi_sector, 
-			size0, size1, segfill->max_size,
+	debug("bio %llu, column %d/%d, meta %d/%d\n",
+			(unsigned long long)bi->bi_sector,
+			segfill->data_column, segfill->max_column,
 			segfill->track->buf->total, segfill->meta_max);
-	if (meta_full && size0 > segfill->max_size) {
+	if (meta_full && segfill->data_column == segfill->max_column) {
 		/* FIXME never happen */
 		BUG_ON(1);
-	} else if (meta_full && size1 <= segfill->max_size) {
+	} else if (meta_full && (segfill->data_column+1) == segfill->max_column) {
 		__lsa_track_add(segfill, bi, cookie, log_track_id);
-		__lsa_segment_fill_add(segfill, bi, next);
+		__lsa_segment_fill_add(segfill, bi);
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
 	} else if (meta_full) {
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
 	}
-
-	if (size1 > segfill->max_size) {
+	if (segfill->data_column == segfill->max_column) {
 		__lsa_segment_fill_close(segfill);
 		__lsa_segment_fill_open(segfill);
 	}
 	__lsa_track_add(segfill, bi, cookie, log_track_id);
-	__lsa_segment_fill_add(segfill, bi, next);
+	__lsa_segment_fill_add(segfill, bi);
 
 	return 0;
 }
@@ -3222,7 +3183,10 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	segfill->meta_max    =(STRIPE_SIZE - 16)/sizeof(struct lsa_track_entry);
 	segfill->mask_offset = STRIPE_SIZE - 1;
 	segfill->data_shift  = STRIPE_SHIFT;
-	segfill->max_size    = STRIPE_SIZE * data_disks;
+	segfill->max_column  = data_disks;
+
+	/* for fasting test */
+	segfill->meta_max    = min_t(int, segfill->meta_max, 128);
 
 	segfill->cls_order   = 1;
 	segfill->max_seg_cls = (1<<(segfill->cls_order+PAGE_SHIFT))/sizeof(uint32_t);

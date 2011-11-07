@@ -498,14 +498,13 @@ struct raid5_private_data {
 
 	struct lsa_segment_fill {
 		spinlock_t lock;
-		unsigned int max_size;
 		unsigned int mask_offset;
 		struct lsa_track *track;
 		struct segment_buffer *segbuf;
 		struct lsa_segment *seg;
-		unsigned int data_offset;
 		unsigned int data_shift;
 		unsigned int data_column;
+		unsigned int max_column;
 		unsigned int meta_max;
 		unsigned int cls_order;
 		unsigned int max_seg_cls;
