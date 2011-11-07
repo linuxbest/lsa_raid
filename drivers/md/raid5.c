@@ -1534,7 +1534,7 @@ __lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
 	dev->req.bi_max_vecs++;
 	dev->req.bi_size = 1<<segbuf->seg->shift;
 	dev->vec.bv_page = dev->page;
-	dev->vec.bv_len = 1<<segbuf->seg->shift;
+	dev->vec.bv_len    = 1<<segbuf->seg->shift;
 	dev->vec.bv_offset = 0;
 
 	dev->req.bi_private = segbuf;
@@ -1594,7 +1594,7 @@ lsa_column_end_write(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
+	debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
 			segbuf->seg_id, disks, atomic_read(&segbuf->count),
 			uptodate);
 
@@ -1614,7 +1614,7 @@ lsa_column_end_read(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	pr_debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
+	debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
 			segbuf->seg_id, disks, atomic_read(&segbuf->count),
 			uptodate);
 
@@ -1754,8 +1754,8 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 		if (rdev) {
 			bi->bi_bdev = rdev->bdev;
-			pr_debug("%s: for %u schedule op %ld on disc %d\n",
-					__func__, segbuf->seg_id, bi->bi_rw, i);
+			debug("for %u schedule op %ld on disc %d\n",
+					segbuf->seg_id, bi->bi_rw, i);
 			atomic_inc(&segbuf->count);
 			bi->bi_sector = column->sector + rdev->data_offset;
 			bi->bi_flags  = 1 << BIO_UPTODATE;
@@ -1765,7 +1765,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			bi->bi_rw    |= REQ_NOMERGE;
 			generic_make_request(bi);
 		} else {
-			pr_debug("skip op %ld on disc %d for sector %u\n",
+			debug("skip op %ld on disc %d for sector %u\n",
 					bi->bi_rw, i, segbuf->seg_id);
 		}
 	}
@@ -2875,25 +2875,30 @@ __lsa_track_get(struct lsa_segment_fill *segfill)
 
 	lt = list_entry(segfill->free.next, lsa_track_t, list);
 	list_del_init(&lt->list);
+	atomic_set(&lt->count, 0);
+	debug("track %p, ref %d\n", lt, atomic_read(&lt->count));
 
 	return lt;
 }
 
 static void 
-__lsa_track_put(struct lsa_segment_fill *segfill, lsa_track_t *lt)
+__lsa_track_put(struct lsa_segment_fill *segfill, lsa_track_t *track)
 {
-	list_add_tail(&lt->list, &segfill->free);
+	debug("track %p, ref %d\n", track, atomic_read(&track->count));
+	list_add_tail(&track->list, &segfill->free);
 }
 
 static void 
 __lsa_track_ref(lsa_track_t *track)
 {
+	debug("track %p, ref %d\n", track, atomic_read(&track->count));
 	atomic_inc(&track->count);
 }
 
 static void 
 __lsa_track_unref(lsa_track_t *track)
 {
+	debug("track %p, ref %d\n", track, atomic_read(&track->count));
 	atomic_dec(&track->count);
 }
 
@@ -2956,19 +2961,23 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 static void
 __lsa_track_open(struct lsa_segment_fill *segfill)
 {
-	BUG_ON(segfill->track);
-	segfill->track              = __lsa_track_get(segfill);
-	BUG_ON(segfill->track == NULL);
-	/* TODO __lsa_track_get may return NULL */
-	segfill->track->buf->magic       = TRACK_MAGIC;
-	segfill->track->buf->crc         = 0;
-	segfill->track->buf->total       = 0;
-	segfill->track->buf->prev_seg_id = segfill->meta_id;
-	segfill->track->buf->prev_column = segfill->meta_column;
-	
-	segfill->track->segbuf = NULL;
+	lsa_track_t *track;
 
-	BUG_ON(segfill->track->closing_seg_total != 0);
+	BUG_ON(segfill->track);
+	segfill->track = track = __lsa_track_get(segfill);
+
+	/* make sure the track is clean */
+	BUG_ON(track->closing_seg_total != 0);
+	BUG_ON(segfill->track == NULL);
+	
+	/* TODO __lsa_track_get may return NULL */
+	track->buf->magic       = TRACK_MAGIC;
+	track->buf->crc         = 0;
+	track->buf->total       = 0;
+	track->buf->prev_seg_id = segfill->meta_id;
+	track->buf->prev_column = segfill->meta_column;
+	
+	track->segbuf = NULL;
 }
 
 /*
@@ -2983,13 +2992,13 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	struct lsa_track_buffer *track_buffer;
 	struct segment_buffer *segbuf = segfill->segbuf;
 
-	BUG_ON(segfill->track == NULL);
+	BUG_ON(track == NULL);
 	track_buffer = track->buf;
 
 	if (data_offset) data_column ++;
 
 	/* fill the information into segment buffer */
-	segbuf->column[data_column].track     = segfill->track;
+	segbuf->column[data_column].track     = track;
 	segbuf->column[data_column].meta_page = track->page;
 	segbuf->meta                          = data_column;
 	set_segbuf_meta(segbuf);
@@ -3004,7 +3013,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	 */
 	BUG_ON(track->segbuf != NULL);
 	while (atomic_dec_return(&track->count)) {
-		lsa_segment_get(track->segbuf);
+		lsa_segment_get(segbuf);
 	}
 	track->segbuf = segbuf;
 }
@@ -3375,7 +3384,7 @@ int
 lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 {
 	if (dirty) {
-		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
+		debug("%s: seg %u\n", __func__, segbuf->seg_id);
 		/* TODO should seting the column uptodate & dirty */
 		return lsa_segment_release(segbuf, WRITE_WANT);
 	}
