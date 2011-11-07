@@ -3515,7 +3515,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 }
 
 static int 
-lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector, 
+lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector,
 		struct entry_buffer *eb)
 {
 #if 0
@@ -3537,7 +3537,7 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
 	debug("bio %llu, %u, %s\n",
-			(unsigned long long)bi->bi_sector, 
+			(unsigned long long)bi->bi_sector,
 			(uint32_t)logical_sector,
 			rw == WRITE ? "W" : "R");
 
