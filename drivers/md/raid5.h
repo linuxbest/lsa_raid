@@ -459,6 +459,7 @@ struct raid5_private_data {
 		struct rb_root tree;
 		struct list_head lru;
 		struct list_head dirty;
+		struct list_head checkpoint;
 		/* bitmap */
 		uint32_t seg_nr;
 		unsigned long **bitmap;
@@ -474,6 +475,7 @@ struct raid5_private_data {
 		struct rb_root tree;
 		struct list_head lru;
 		struct list_head dirty;
+		struct list_head checkpoint;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
@@ -484,6 +486,7 @@ struct raid5_private_data {
 
 		struct segment_buffer *segbuf[4];
 		unsigned int seg;
+		uint32_t seg_id;
 	} lsa_closed_status;
 
 	/* memory segment buffer */

@@ -62,8 +62,7 @@
 
 static inline uint32_t LCS2SEG(struct lsa_closed_segment *lcs, int id)
 {
-	/* TODO */
-	return 0;
+	return lcs->seg_id + id;
 }
 
 static inline uint32_t LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
@@ -2440,7 +2439,24 @@ lsa_dirtory_tasklet(unsigned long data)
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry);
 	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue);
-	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->dirty);
+}
+
+static void 
+lsa_dirtory_commit(struct lsa_dirtory *dir)
+{
+	/* TODO */
+}
+
+static void 
+lsa_dirtory_checkpoint(struct lsa_dirtory *dir)
+{
+	unsigned long flags;
+
+	BUG_ON(!list_empty(&dir->checkpoint));
+
+	spin_lock_irqsave(&dir->lock, flags);
+	list_splice(&dir->dirty, &dir->checkpoint);
+	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
 static int
@@ -2462,6 +2478,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 	dir->tree = RB_ROOT;
 	dir->seg  = 0;
 	INIT_LIST_HEAD(&dir->dirty);
+	INIT_LIST_HEAD(&dir->checkpoint);
 	INIT_LIST_HEAD(&dir->lru);
 	tasklet_init(&dir->tasklet, lsa_dirtory_tasklet, (unsigned long)dir);
 
@@ -2644,6 +2661,7 @@ lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
 	spin_lock_init(&ss->lock);
 	ss->tree = RB_ROOT;
 	INIT_LIST_HEAD(&ss->dirty);
+	INIT_LIST_HEAD(&ss->checkpoint);
 	INIT_LIST_HEAD(&ss->lru);
 
 	for (i = 0; i < SEGSTAT_HEAD_NR; i ++) {
@@ -2769,6 +2787,24 @@ lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
 	return 0;
 }
 
+static void
+lsa_ss_checkpoint(struct lsa_segment_status *ss)
+{
+	unsigned long flags;
+
+	BUG_ON(!list_empty(&ss->checkpoint));
+
+	spin_lock_irqsave(&ss->lock, flags);
+	list_splice(&ss->dirty, &ss->checkpoint);
+	spin_unlock_irqrestore(&ss->lock, flags);
+}
+
+static void 
+lsa_ss_commit(struct lsa_segment_status *ss)
+{
+	/* TODO */
+}
+
 /*
  * LSA closed segment list 
  *
@@ -2787,7 +2823,7 @@ typedef struct lcs_buffer {
 	struct lsa_closed_segment *lcs;
 	struct page *page;
 	lcs_ondisk_t *ondisk;
-	int          total;
+	int          seg;
 } lcs_buffer_t;
 
 static void
@@ -2850,12 +2886,22 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	unsigned long flags;
 	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, entry);
 	struct lsa_closed_segment *lcs = lb->lcs;
+	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_del(&lb->lru);
 	list_add_tail(&lb->lru, &lcs->lru);
 	spin_unlock_irqrestore(&lcs->lock, flags);
 
+	debug("lb %d done\n", lb->seg);
+
+	/* now it's time to flush the checkpoint dirty page
+	 *  1) LSA dirtory 
+	 *  2) LSA segment status 
+	 * into disk
+	 */
+	lsa_dirtory_commit(&conf->lsa_dirtory);
+	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
 }
 
@@ -2878,6 +2924,9 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 	segbuf->column[0].meta_page = lb->page;
 
 	lb->entry.done = lsa_lcs_write_done;
+	lb->seg = i;
+	debug("lb %d write\n", lb->seg);
+
 	set_segbuf_uptodate(segbuf);
 	lsa_segment_buffer_chain(segbuf, &lb->entry);
 	lsa_segment_dirty(&conf->meta_segment, segbuf);
@@ -2892,6 +2941,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 
 	lcs->max = max;
 	INIT_LIST_HEAD(&lcs->lru);
+	lcs->seg_id = 1024; /* TODO */
 
 	for (i = 0; i < 4; i ++) {
 		struct segment_buffer *segbuf;
@@ -3158,8 +3208,12 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 static void
 __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
+	raid5_conf_t *conf =
+		container_of(segfill, raid5_conf_t, segment_fill);
 	BUG_ON(segfill->segbuf == NULL);
 	debug("seg %d\n", segfill->segbuf->seg_id);
+	lsa_dirtory_checkpoint(&conf->lsa_dirtory);
+	lsa_ss_checkpoint(&conf->lsa_segment_status);
 	lsa_segment_release(segfill->segbuf, WRITE_WANT);
 	segfill->segbuf = NULL;
 }
