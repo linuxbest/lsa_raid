@@ -2960,6 +2960,7 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	 *  2) LSA segment status 
 	 * into disk
 	 */
+	segbuf->column[0].meta_page = NULL;
 	lsa_dirtory_commit(&conf->lsa_dirtory);
 	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
