@@ -2460,7 +2460,7 @@ static void
 lsa_dirtory_commit(struct lsa_dirtory *dir)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->dirty);
+	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint);
 }
 
 static void 
