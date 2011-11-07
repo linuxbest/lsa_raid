@@ -3121,15 +3121,11 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 			(unsigned long long)bi->bi_sector,
 			segfill->data_column, segfill->max_column,
 			segfill->track->buf->total, segfill->meta_max);
-	if (meta_full && segfill->data_column == segfill->max_column) {
-		/* FIXME never happen */
-		BUG_ON(1);
-	} else if (meta_full && (segfill->data_column+1) == segfill->max_column) {
-		__lsa_track_add(segfill, bi, cookie, log_track_id);
-		__lsa_segment_fill_add(segfill, bi);
-		__lsa_track_close(segfill);
-		__lsa_track_open(segfill);
-	} else if (meta_full) {
+	if (segfill->data_column == segfill->max_column) {
+		__lsa_segment_fill_close(segfill);
+		__lsa_segment_fill_open(segfill);
+	}
+	if (meta_full) {
 		__lsa_track_close(segfill);
 		__lsa_track_open(segfill);
 	}
