@@ -60,45 +60,6 @@
 
 #include "lsa.h"
 
-static inline uint32_t
-SS2SEG(struct lsa_segment_status *ss, uint32_t seg_id)
-{
-	/* TODO */
-	return 0;
-}
-
-static inline uint32_t
-LCS2SEG(struct lsa_closed_segment *lcs, int id)
-{
-	return lcs->seg_id + id;
-}
-
-static inline uint32_t
-LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
-{
-	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	int data_disks = conf->raid_disks - conf->max_degraded;
-	return log_track_id / data_disks;
-}
-
-static inline sector_t
-SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
-{
-	/*raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);*/
-	sector_t lba = seg_id;
-	return lba << seg->shift_sector;
-}
-
-#ifndef SECTOR_SHIFT
-#define SECTOR_SHIFT 9
-#endif
-
-enum {
-	COLUMN_NULL = 0xFFFF,
-	STRIPE_MASK = STRIPE_SIZE-1,
-	TRACK_MAGIC   = 0xABCD0, /* TODO */
-	SEG_LCS_MAGIC = 0xABCD1,
-};
 
 /*
  * Stripe cache
@@ -1433,6 +1394,45 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *
  */
 
+static inline uint32_t
+SS2SEG(struct lsa_segment_status *ss, uint32_t seg_id)
+{
+	/* TODO */
+	return 0;
+}
+
+static inline uint32_t
+LCS2SEG(struct lsa_closed_segment *lcs, int id)
+{
+	return lcs->seg_id + id;
+}
+
+static inline uint32_t
+LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
+{
+	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
+	int data_disks = conf->raid_disks - conf->max_degraded;
+	return log_track_id / data_disks;
+}
+
+static inline sector_t
+SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
+{
+	/*raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);*/
+	sector_t lba = seg_id;
+	return lba << seg->shift_sector;
+}
+
+#ifndef SECTOR_SHIFT
+#define SECTOR_SHIFT 9
+#endif
+
+enum {
+	COLUMN_NULL = 0xFFFF,
+	STRIPE_MASK = STRIPE_SIZE-1,
+	TRACK_MAGIC   = 0xABCD0, /* TODO */
+	SEG_LCS_MAGIC = 0xABCD1,
+};
 /*
  * LSA segment operations
  *
