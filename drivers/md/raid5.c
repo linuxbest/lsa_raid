@@ -1594,9 +1594,8 @@ lsa_column_end_write(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
-			segbuf->seg_id, disks, atomic_read(&segbuf->count),
-			uptodate);
+	debug("seg %u, col %d, ref %d, uptodate %d.\n", segbuf->seg_id, disks,
+			atomic_read(&segbuf->count), uptodate);
 
 	if (!uptodate) {
 		set_bit(R5_WriteError, &column->flags);
@@ -1614,9 +1613,8 @@ lsa_column_end_read(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	debug("%s %u/%d, count: %d, uptodate %d.\n", __func__,
-			segbuf->seg_id, disks, atomic_read(&segbuf->count),
-			uptodate);
+	debug("seg %u, col %d, ref %d, uptodate %d.\n", segbuf->seg_id, disks,
+			atomic_read(&segbuf->count), uptodate);
 
 	if (uptodate) {
 		set_bit(R5_UPTODATE, &column->flags);
