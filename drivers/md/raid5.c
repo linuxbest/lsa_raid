@@ -2531,7 +2531,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 			return -3;
 		dir->bitmap[i] = bitmap;
 	}
-	dir->seg_nr = nr;
+	dir->bitmap_nr = nr;
 
 	/* TODO rebuild the bitmap or loading it from disk */
 
@@ -2557,7 +2557,7 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 
 	/* clear the bitmap space */
 	/* TODO saving into disk ? */
-	for (i = 0; i < dir->seg_nr; i ++) {
+	for (i = 0; i < dir->bitmap_nr; i ++) {
 		free_page((unsigned long)dir->bitmap[i]);
 	}
 	kfree(dir->bitmap);
