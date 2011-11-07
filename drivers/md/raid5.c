@@ -1532,6 +1532,7 @@ __lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
 	dev->req.bi_io_vec = &dev->vec;
 	dev->req.bi_vcnt++;
 	dev->req.bi_max_vecs++;
+	dev->req.bi_size = 1<<segbuf->seg->shift;
 	dev->vec.bv_page = dev->page;
 	dev->vec.bv_len = 1<<segbuf->seg->shift;
 	dev->vec.bv_offset = 0;
@@ -2297,7 +2298,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	if (!fromseg) {
 		/* TODO, this should be column uptodate or dirty */
 		set_segbuf_uptodate(segbuf);
-		lsa_segment_dirty(seg, segbuf);
+		/*lsa_segment_dirty(seg, segbuf);*/
 	}
 
 	return 0;
