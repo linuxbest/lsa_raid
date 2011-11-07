@@ -2434,7 +2434,7 @@ __lsa_dirtory_handle(struct lsa_segment *seg, struct lsa_dirtory *dir,
 }
 
 static void 
-__lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
+lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
 		struct list_head *head)
 {
 	unsigned long flags;
@@ -2462,15 +2462,15 @@ lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry);
-	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue);
 }
 
 static void 
 lsa_dirtory_commit(struct lsa_dirtory *dir)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	__lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint);
 }
 
 static void 
@@ -2810,7 +2810,7 @@ __lsa_ss_handle(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 }
 
 static void 
-__lsa_ss_job(struct lsa_segment_status *ss, struct list_head *head)
+lsa_ss_job(struct lsa_segment_status *ss, struct list_head *head)
 {
 	unsigned long flags;
 
@@ -2862,7 +2862,7 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 static void 
 lsa_ss_commit(struct lsa_segment_status *ss)
 {
-	__lsa_ss_job(ss, &ss->checkpoint);
+	lsa_ss_job(ss, &ss->checkpoint);
 }
 
 /*
