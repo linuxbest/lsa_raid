@@ -1849,6 +1849,8 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	struct lsa_segment *seg = segbuf->seg;
 	unsigned long flags;
 
+	debug("seg %d, ref %d, event %d\n", segbuf->seg_id,
+			atomic_read(&segbuf->count), type);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
@@ -1864,6 +1866,7 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 		lsa_segment_write_done(seg, segbuf);
 		break;
 	case WRITE_WANT:
+		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(segbuf->seg, segbuf);
 		lsa_segment_event(segbuf, SEG_CLOSING);
 		break;
@@ -1887,13 +1890,19 @@ lsa_segment_tasklet(unsigned long data)
 {
 	struct lsa_segment *seg = (struct lsa_segment *)data;
 	/*raid5_conf_t *conf = container_of(seg, raid5_conf_t, lsa_segment);*/
+	unsigned long flags;
 
+	spin_lock_irqsave(&seg->lock, flags);
 	while (!list_empty(&seg->dirty)) {
 		struct segment_buffer *segbuf = container_of(seg->dirty.next,
 				struct segment_buffer,
 				queue);
+		list_del_init(&seg->dirty);
+		spin_unlock_irqrestore(&seg->lock, flags);
 		lsa_segment_handle(seg, segbuf);
+		spin_lock_irqsave(&seg->lock, flags);
 	}
+	spin_unlock_irqrestore(&seg->lock, flags);
 }
 
 static int
@@ -2285,8 +2294,11 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	/* TODO */
 
 	/* when copy to segment, mark the segment is dirty */
-	if (!fromseg)
+	if (!fromseg) {
+		/* TODO, this should be column uptodate or dirty */
+		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(seg, segbuf);
+	}
 
 	return 0;
 }
@@ -3363,6 +3375,7 @@ lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 {
 	if (dirty) {
 		pr_debug("%s: seg %u\n", __func__, segbuf->seg_id);
+		/* TODO should seting the column uptodate & dirty */
 		return lsa_segment_release(segbuf, WRITE_WANT);
 	}
 
@@ -3384,7 +3397,7 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 			(unsigned long long)bio->bi_sector,
 			segbuf ? segbuf->seg_id : 0, offset);
 	if (segbuf)
-		lsa_raid_seg_put(mddev, segbuf, 0);
+		lsa_raid_seg_put(mddev, segbuf, bio->bi_rw & WRITE);
 	return 0;
 }
 
