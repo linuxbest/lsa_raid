@@ -1662,12 +1662,10 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 }
 
 struct segment_buffer_entry {
-#define SEGBUF_FLY 31
-	unsigned long type; /* 0 directory, 1 data */
+	int rw;
 	int (*done)(struct segment_buffer *segbuf, 
 			struct segment_buffer_entry *se, 
 			int error);
-	int rw;
 	struct list_head queue;
 };
 
@@ -1693,10 +1691,8 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	if (segbuf && se && se->rw == READ) {
 		if (segbuf_uptodate(segbuf))
 			se->done(segbuf, se, 0);
-		else if (segbuf_uptodate(segbuf)) {
+		else
 			list_add_tail(&segbuf->read, &se->queue);
-			set_bit(SEGBUF_FLY, &se->type);
-		}
 	}
 	if (segbuf)
 		atomic_inc(&segbuf->count);
