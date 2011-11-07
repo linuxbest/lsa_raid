@@ -2753,7 +2753,7 @@ lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
 typedef struct lcs_ondisk {
 	uint32_t magic;
 	uint32_t total;
-	uint32_t crc;
+	uint32_t sum;
 	uint32_t reserved;
 	uint32_t seg[0];
 } lcs_ondisk_t;
@@ -2786,7 +2786,7 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb->ondisk = (lcs_ondisk_t *)page_address(lb->page);
 	lb->ondisk->magic = SEG_LCS_MAGIC;
 	lb->ondisk->total = 0;
-	lb->ondisk->crc   = 0;
+	lb->ondisk->sum   = 0;
 	lb->ondisk->reserved = 0;
 
 	return lb;
@@ -2808,9 +2808,13 @@ lsa_lcs_freed(struct lsa_closed_segment *lcs)
 static void 
 lsa_lcs_insert(lcs_buffer_t *lb, uint32_t seg_id)
 {
+	BUG_ON(lb->ondisk->total == lb->lcs->max);
+	if (seg_id == lb->ondisk->seg[lb->ondisk->total])
+		return;
+
+	lb->ondisk->sum += seg_id;
 	lb->ondisk->seg[lb->ondisk->total] = seg_id;
 	lb->ondisk->total ++;
-	BUG_ON(lb->ondisk->total == lb->lcs->max);
 }
 
 static void
@@ -2868,7 +2872,7 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 
 typedef struct lsa_track_buffer {
 	uint32_t magic;
-	uint32_t crc;
+	uint32_t sum;
 	uint16_t total;
 	uint16_t prev_column;
 	uint32_t prev_seg_id;
@@ -2927,6 +2931,18 @@ __lsa_track_unref(lsa_track_t *track)
 }
 
 static void
+__lsa_track_update_sum(lsa_track_t *track, struct lsa_track_entry *lt)
+{
+	int size = sizeof(*lt);
+	uint32_t *d = (uint32_t *)lt;
+	/* the entry may update reorder, so we using sum is better. */
+	do {
+		track->buf->sum += *d;
+		d ++;
+	} while (size--);
+}
+
+static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 {
 	struct entry_buffer *eb = cookie->eb;
@@ -2944,6 +2960,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
 		lsa_entry_insert(track->dir, &lt->new);
 	}
+	__lsa_track_update_sum(track, lt);
 	if (track->segbuf)
 		lsa_segment_release(track->segbuf, WRITE_WANT);
 	else
@@ -2990,7 +3007,7 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	
 	/* TODO __lsa_track_get may return NULL */
 	track->buf->magic       = TRACK_MAGIC;
-	track->buf->crc         = 0;
+	track->buf->sum         = 0;
 	track->buf->total       = 0;
 	track->buf->prev_seg_id = segfill->meta_id;
 	track->buf->prev_column = segfill->meta_column;
