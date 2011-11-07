@@ -81,7 +81,8 @@ static inline sector_t SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
 enum {
 	COLUMN_NULL = 0xFFFF,
 	STRIPE_MASK = STRIPE_SIZE-1,
-	TRACK_MAGIC = 0xABCD, /* TODO */
+	TRACK_MAGIC   = 0xABCD0, /* TODO */
+	SEG_LCS_MAGIC = 0xABCD1,
 };
 
 /*
@@ -1580,8 +1581,6 @@ static int
 lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type);
 static int
 lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type);
-static void
-lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id);
 static int
 lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status);
 
@@ -2751,9 +2750,19 @@ lsa_ss_read(struct lsa_segment_status *ss, uint32_t seg_id,
  * LSA closed segment list 
  *
  */
+typedef struct lcs_ondisk {
+	uint32_t magic;
+	uint32_t total;
+	uint32_t crc;
+	uint32_t reserved;
+	uint32_t seg[0];
+} lcs_ondisk_t;
 typedef struct lcs_buffer {
-	uint32_t seg_id;
 	struct list_head lru;
+	struct lsa_closed_segment *lcs;
+	struct page *page;
+	lcs_ondisk_t *ondisk;
+	int          total;
 } lcs_buffer_t;
 
 static void
@@ -2774,45 +2783,66 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb = list_entry(lcs->lru.next, lcs_buffer_t, lru);
 	list_del_init(&lb->lru);
 
+	lb->ondisk = (lcs_ondisk_t *)page_address(lb->page);
+	lb->ondisk->magic = SEG_LCS_MAGIC;
+	lb->ondisk->total = 0;
+	lb->ondisk->crc   = 0;
+	lb->ondisk->reserved = 0;
+
+	return lb;
+}
+
+static lcs_buffer_t *
+lsa_lcs_freed(struct lsa_closed_segment *lcs)
+{
+	lcs_buffer_t *lb;
+	unsigned long flags;
+
+	spin_lock_irqsave(&lcs->lock, flags);
+	lb = __lsa_lcs_freed(lcs);
+	spin_unlock_irqrestore(&lcs->lock, flags);
+
 	return lb;
 }
 
 static void 
-lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id)
+lsa_lcs_insert(lcs_buffer_t *lb, uint32_t seg_id)
 {
+	lb->ondisk->seg[lb->ondisk->total] = seg_id;
+	lb->ondisk->total ++;
+	BUG_ON(lb->ondisk->total == lb->lcs->max);
+}
+
+static void
+lsa_lcs_commit(lcs_buffer_t *lb)
+{
+	struct lsa_closed_segment *lcs = lb->lcs;
 	unsigned long flags;
-	lcs_buffer_t *lb;
 
 	spin_lock_irqsave(&lcs->lock, flags);
-	lb = __lsa_lcs_freed(lcs);
-	/* TODO making sure the lb is not NULL */
-	if (lb) {
-		lb->seg_id = seg_id;
-		list_add_tail(&lcs->dirty, &lb->lru);
-	}
-	BUG_ON(lb == NULL);
+	list_add_tail(&lb->lru, &lcs->dirty);
 	spin_unlock_irqrestore(&lcs->lock, flags);
+
+	/* TODO */
 }
 
 static int
 lsa_cs_init(struct lsa_closed_segment *lcs)
 {
-	int max = PAGE_SIZE/sizeof(uint32_t), i;
+	int order = 2;
+	int max = ((PAGE_SIZE<<order) - 16)/sizeof(uint32_t), i;
 
 	lcs->max = max;
-	lcs->max --; /* for head */
-	lcs->max --; /* for size */
-	lcs->max --; /* for crc  */
-	lcs->max --; /* reserved */
-	lcs->cur = 0;
 	INIT_LIST_HEAD(&lcs->lru);
 
-	max *= 2;
-	for (i = 0; i < max; i ++) {
-		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf),
-				GFP_KERNEL);
+	for (i = 0; i < 16; i ++) {
+		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf), GFP_KERNEL);
 		if (lcs_buf == NULL)
 			return -1;
+		lcs_buf->page = alloc_pages(GFP_KERNEL, 2);
+		if (lcs_buf->page == NULL)
+			return -1;
+		lcs_buf->lcs = lcs;
 		list_add_tail(&lcs_buf->lru, &lcs->lru);
 	}
 
@@ -2822,7 +2852,6 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 static int
 lsa_cs_exit(struct lsa_closed_segment *lcs)
 {
-	WARN_ON(lcs->cur != 0);
 	while (!list_empty(&lcs->dirty)) {
 		/* TODO we must flush the dirty lcs into disk */
 		struct lcs_buffer *lcs_buf = container_of(lcs->dirty.next,
@@ -2856,10 +2885,7 @@ typedef struct lsa_track {
 	struct lsa_dirtory *dir;
 	struct segment_buffer *segbuf;
 	struct lsa_track_buffer *buf;
-	/* for fasting the closing segment */
-	struct page *closing_page;
-	uint32_t *closing_seg_id;
-	int       closing_seg_total;
+	struct lcs_buffer *lcs;
 	struct lsa_track_cookie cookie[0];
 } lsa_track_t;
 
@@ -2931,8 +2957,6 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	lsa_track_t *track = segfill->track;
 	struct lsa_track_entry  *lt = &track->buf->entry[track->buf->total];
 	struct lsa_track_cookie *cookie = &track->cookie[track->buf->total];
-	uint32_t *closing_seg_id =
-		&track->closing_seg_id[track->closing_seg_total];
 
 	track->buf->total ++;
 	lt->new.log_track_id = log_track_id;
@@ -2948,25 +2972,21 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	cookie->eb    = NULL;
 	__lsa_track_ref(track);
 
-	/* seting the seg for closing */
-	if (*closing_seg_id != segfill->segbuf->seg_id) {
-		*closing_seg_id = segfill->segbuf->seg_id;
-		track->closing_seg_total ++;
-	}
-	BUG_ON(track->closing_seg_total == segfill->max_seg_cls);
+	lsa_lcs_insert(track->lcs, segfill->segbuf->seg_id);
 }
 
 static void
 __lsa_track_open(struct lsa_segment_fill *segfill)
 {
+	raid5_conf_t *conf = container_of(segfill, raid5_conf_t, segment_fill);
 	lsa_track_t *track;
 
 	BUG_ON(segfill->track);
 	segfill->track = track = __lsa_track_get(segfill);
 
 	/* make sure the track is clean */
-	BUG_ON(track->closing_seg_total != 0);
 	BUG_ON(segfill->track == NULL);
+	BUG_ON(segfill->track->lcs != NULL);
 	
 	/* TODO __lsa_track_get may return NULL */
 	track->buf->magic       = TRACK_MAGIC;
@@ -2976,6 +2996,9 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	track->buf->prev_column = segfill->meta_column;
 	
 	track->segbuf = NULL;
+
+	track->lcs = lsa_lcs_freed(&conf->lsa_closed_status);
+	BUG_ON(track->lcs == NULL);
 }
 
 /*
@@ -3024,7 +3047,6 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	struct lsa_segment_fill *segfill = &conf->segment_fill;
 	unsigned long flags;
 	struct lsa_track *track;
-	int i;
 
 	debug("seg %d\n", segfill->segbuf->seg_id);
 	lsa_segment_event(segbuf, SEG_CLOSED);
@@ -3034,13 +3056,9 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	}
 
 	track = segbuf->column[segbuf->meta].track;
-	BUG_ON(track->closing_seg_total == 0);
-	for (i = 0; i < track->closing_seg_total; i ++) {
-		/* making segment closed */
-		lsa_lcs_insert(&conf->lsa_closed_status,
-				track->closing_seg_id[i]);
-	}
-	track->closing_seg_total = 0;
+	
+	lsa_lcs_commit(track->lcs);
+	track->lcs = NULL;
 
 	spin_lock_irqsave(&segfill->lock, flags);
 	__lsa_track_put(segfill, segbuf->column[segbuf->meta].track);
@@ -3204,16 +3222,8 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 		if (lt->page == NULL)
 			return -1;
 		lt->buf = (lsa_track_buffer_t *)page_address(lt->page);
-		
-		/* 4096/4 = 1024 hodling 1024 segment is ok. */
-		lt->closing_page = alloc_pages(GFP_KERNEL, segfill->cls_order);
-		if (lt->closing_page == NULL)
-			return -1;
-		lt->closing_seg_id =
-			(uint32_t *)page_address(lt->closing_page);
-
-		lt->closing_seg_total = 0;
 		lt->dir = &conf->lsa_dirtory;
+		lt->lcs = NULL;
 		list_add_tail(&lt->list, &segfill->free);
 	}
 
@@ -3223,12 +3233,12 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	return 0;
 }
 
-static void 
+static void
 __lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 {
 	list_del_init(&lt->list);
 	__free_pages(lt->page, STRIPE_ORDER);
-	__free_pages(lt->closing_page, segfill->cls_order);
+	BUG_ON(lt->lcs);
 	kfree(lt);
 }
 
