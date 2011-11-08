@@ -1415,7 +1415,7 @@ DIR2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 	int data_disks = conf->raid_disks - conf->max_degraded;
 	return log_track_id / data_disks;
 #else
-	return 2048 + log_track_id;
+	return 8192 + log_track_id;
 #endif
 }
 
@@ -2054,7 +2054,7 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 struct entry_buffer {
 	struct segment_buffer_entry segbuf_entry;
 	struct rb_node node;
-	struct list_head lru, dirty, queue, cookie;
+	struct list_head lru, cookie;
 	atomic_t count;
 	struct lsa_bio_list bio;
 #define EH_TREE     0
@@ -2184,7 +2184,6 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 
 	eh = list_entry(dir->lru.next, struct entry_buffer, lru);
 	/* must not dirty entry */
-	BUG_ON(!list_empty(&eh->dirty));
 	BUG_ON(entry_dirty(eh));
 	list_del_init(&eh->lru);
 	if (test_clear_entry_tree(eh))
@@ -2235,7 +2234,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 				atomic_read(&eh->count), eh->flags);
 		set_entry_uptodate(eh);
 		set_entry_dirty(eh);
-		list_add_tail(&dir->dirty, &eh->dirty);
+		list_add_tail(&eh->lru, &dir->dirty);
 		lsa_entry_set_bit(dir, eh->e.log_track_id);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
@@ -2282,7 +2281,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 		BUG_ON(!eh);
 		/* TODO handle when LRU is empty */
 		eh->e.log_track_id = log_track_id;
-		list_add_tail(&eh->queue, &dir->queue);
+		list_add_tail(&eh->lru, &dir->queue);
 		if (!test_set_entry_tree(eh))
 			__lsa_entry_insert(dir, eh);
 		tasklet_schedule(&dir->tasklet);
@@ -2323,15 +2322,13 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 
 	/* must not in any list */
 	BUG_ON(!list_empty(&eh->lru));
-	/* must not in any queue list */
-	BUG_ON(!list_empty(&eh->queue));
 	/* must in the rb tree */
 	BUG_ON(!entry_tree(eh));
 	/* must be uptodate */
 	BUG_ON(!entry_uptodate(eh));
 
 	spin_lock_irqsave(&dir->lock, flags);
-	list_add_tail(&eh->queue, &dir->dirty);
+	list_add_tail(&eh->lru, &dir->dirty);
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
@@ -2351,6 +2348,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 {
 	int fromseg = !entry_uptodate(eh);
 
+	debug("lt %d, fromseg %d\n", eh->e.log_track_id, fromseg);
 	/* TODO */
 
 	/* when copy to segment, mark the segment is dirty */
@@ -2453,8 +2451,8 @@ lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	spin_lock_irqsave(&dir->lock, flags);
 	while (!list_empty(head)) {
 		struct entry_buffer *eh = list_entry(head->next,
-				struct entry_buffer, queue);
-		list_del_init(&eh->queue);
+				struct entry_buffer, lru);
+		list_del_init(&eh->lru);
 		spin_unlock_irqrestore(&dir->lock, flags);
 
 		__lsa_dirtory_rw(seg, dir, eh, rw);
@@ -2525,8 +2523,6 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 			return -1;
 		lsa_bio_list_init(&eh->bio);
 		list_add_tail(&eh->lru, &dir->lru);
-		INIT_LIST_HEAD(&eh->dirty);
-		INIT_LIST_HEAD(&eh->queue);
 		INIT_LIST_HEAD(&eh->cookie);
 	}
 
@@ -2556,7 +2552,7 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 	while (!list_empty(&dir->dirty)) {
 		/* TODO we must flush the dirty entry into disk */
 		struct entry_buffer *eh = container_of(dir->dirty.next,
-				struct entry_buffer, dirty);
+				struct entry_buffer, lru);
 		__entry_buffer_free(dir, eh);
 	}
 	while (!list_empty(&dir->lru)) {
@@ -3050,7 +3046,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	INIT_LIST_HEAD(&lcs->lru);
 	INIT_LIST_HEAD(&lcs->dirty);
 	INIT_LIST_HEAD(&lcs->segbuf_head);
-	lcs->seg_id = 1024; /* TODO */
+	lcs->seg_id = 4096; /* TODO */
 
 	for (i = 0; i < 4; i ++) {
 		struct segment_buffer *segbuf;
