@@ -1460,6 +1460,7 @@ enum {
 	SEGBUF_UPTODATE = 1,
 	SEGBUF_DIRTY    = 2,
 	SEGBUF_META     = 3,
+	SEGBUF_LCS      = 4,
 };
 
 #define SEGBUF_FNS(bit, name) \
@@ -1488,6 +1489,7 @@ SEGBUF_FNS(TREE,     tree)
 SEGBUF_FNS(DIRTY,    dirty)
 SEGBUF_FNS(UPTODATE, uptodate)
 SEGBUF_FNS(META,     meta)
+SEGBUF_FNS(LCS,      lcs)
 
 static void 
 __segbuf_tree_delete(struct lsa_segment *seg, struct segment_buffer *segbuf)
@@ -1811,7 +1813,7 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	unsigned long flags;
 
 	if (test_set_segbuf_dirty(segbuf))
-		return 0;
+		return -EEXIST;
 
 	/* must uptodate */
 	BUG_ON(!segbuf_uptodate(segbuf));
@@ -1892,7 +1894,10 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 		return 0;
 
 	spin_lock_irqsave(&seg->lock, flags);
-	list_add_tail(&segbuf->lru_entry, &seg->lru);
+	if (!segbuf_lcs(segbuf))
+		list_add_tail(&segbuf->lru_entry, &seg->lru);
+	else 
+		list_add_tail(&segbuf->lru_entry, &seg->active);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	switch (type) {
@@ -1935,6 +1940,7 @@ lsa_segment_tasklet(unsigned long data)
 				struct segment_buffer, dirty_entry);
 		list_del_init(&segbuf->dirty_entry);
 		spin_unlock_irqrestore(&seg->lock, flags);
+		debug("seg %d\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
 		spin_lock_irqsave(&seg->lock, flags);
 	}
@@ -2999,11 +3005,12 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 
 	lb->segbuf_entry.done = lsa_lcs_write_done;
 	lb->seg = i;
-	debug("lb %d write\n", lb->seg);
 
 	set_segbuf_uptodate(segbuf);
 	lsa_segment_buffer_chain(segbuf, &lb->segbuf_entry);
-	lsa_segment_dirty(&conf->meta_segment, segbuf);
+	i = lsa_segment_dirty(&conf->meta_segment, segbuf);
+	
+	debug("lb %d write, %d\n", lb->seg, i);
 }
 
 static int
@@ -3027,9 +3034,9 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 				NULL);
 		BUG_ON(segbuf == NULL);
 		lcs->segbuf[i] = segbuf;
-
-		/* to making segment dirty check happy */
-		list_add_tail(&segbuf->lru_entry, &lcs->segbuf_head);
+		/* set lcs flag to not free to lru head */
+		set_segbuf_lcs(segbuf);
+		lsa_segment_release(segbuf, 0);
 	}
 
 	for (i = 0; i < 16; i ++) {
