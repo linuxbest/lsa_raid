@@ -2424,7 +2424,7 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 }
 
 static int
-lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir, 
+__lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir, 
 		struct entry_buffer *eh, int rw)
 {
 	int res = 0;
@@ -2444,22 +2444,9 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	return res;
 }
 
-static void
-__lsa_dirtory_handle(struct lsa_segment *seg, struct lsa_dirtory *dir,
-		struct entry_buffer *eh)
-{
-	int res = -1;
-
-	if (!entry_uptodate(eh))
-		res = lsa_dirtory_rw(seg, dir, eh, 0);
-	else if (entry_dirty(eh))
-		res = lsa_dirtory_rw(seg, dir, eh, 1);
-	BUG_ON(res != 0);
-}
-
 static void 
 lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
-		struct list_head *head)
+		struct list_head *head, int rw)
 {
 	unsigned long flags;
 
@@ -2470,7 +2457,7 @@ lsa_dirtory_job(struct lsa_segment *seg, struct lsa_dirtory *dir,
 		list_del_init(&eh->queue);
 		spin_unlock_irqrestore(&dir->lock, flags);
 
-		__lsa_dirtory_handle(seg, dir, eh);
+		__lsa_dirtory_rw(seg, dir, eh, rw);
 
 		spin_lock_irqsave(&dir->lock, flags);
 	}
@@ -2486,15 +2473,15 @@ lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry, 0);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue, 0);
 }
 
 static void 
 lsa_dirtory_commit(struct lsa_dirtory *dir)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint, 1);
 }
 
 static void 
@@ -3342,7 +3329,9 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	BUG_ON(segfill->segbuf == NULL);
 	debug("seg %d, meta %d\n", segfill->segbuf->seg_id,
 			segbuf_meta(segfill->segbuf));
-	if (segbuf_meta(segfill->segbuf)) {
+	/* TODO access checkpoint without lock is safe XXX */
+	if (segbuf_meta(segfill->segbuf) && list_empty(&conf->lsa_dirtory.checkpoint) &&
+			list_empty(&conf->lsa_segment_status.checkpoint)) {
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
 		lsa_ss_checkpoint(&conf->lsa_segment_status);
 	}
