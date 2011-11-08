@@ -1693,7 +1693,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	segbuf = __segbuf_tree_search(seg, seg_id);
 	if (segbuf) {
 		if (!list_empty(&segbuf->lru_entry))
-			list_del_init(&segbuf->lru);
+			list_del_init(&segbuf->lru_entry);
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
 		set_segbuf_tree(segbuf);
@@ -2013,12 +2013,12 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 	while (!list_empty(&seg->active)) {
 		/* TODO */
 		struct segment_buffer *sb = container_of(seg->active.next,
-				struct segment_buffer, lru);
+				struct segment_buffer, active);
 		__segment_buffer_free(seg, sb, disks);
 	}
 	while (!list_empty(&seg->lru)) {
 		struct segment_buffer *sb = container_of(seg->lru.next,
-				struct segment_buffer, lru);
+				struct segment_buffer, lru_entry);
 		__segment_buffer_free(seg, sb, disks);
 	}
 	return 0;
