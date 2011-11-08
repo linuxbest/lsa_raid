@@ -482,6 +482,7 @@ struct raid5_private_data {
 		spinlock_t lock;
 		struct list_head lru;
 		struct list_head dirty;
+		struct list_head segbuf_head;
 		unsigned int max;
 
 		struct segment_buffer *segbuf[4];
