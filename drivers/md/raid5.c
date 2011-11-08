@@ -1676,7 +1676,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	struct segment_buffer *segbuf;
 	unsigned long flags;
 
-	BUG_ON(!list_empty(&se->queue));
+	BUG_ON(se && !list_empty(&se->queue));
 	spin_lock_irqsave(&seg->lock, flags);
 	segbuf = __segbuf_tree_search(seg, seg_id);
 	if (segbuf) {
