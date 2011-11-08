@@ -1408,11 +1408,15 @@ LCS2SEG(struct lsa_closed_segment *lcs, int id)
 }
 
 static inline uint32_t
-LBA2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
+DIR2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
+#if 0
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
 	int data_disks = conf->raid_disks - conf->max_degraded;
 	return log_track_id / data_disks;
+#else
+	return 2048 + log_track_id;
+#endif
 }
 
 static inline sector_t
@@ -1708,7 +1712,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		__segbuf_tree_insert(seg, segbuf);
 	}
 	/* insert into the queue before enable IRQ */
-	if (segbuf && se && se->rw == READ) {
+	if (segbuf && se) {
 		BUG_ON(!list_empty(&se->entry));
 		BUG_ON(se->done == NULL);
 		if (segbuf_uptodate(segbuf))
@@ -2186,6 +2190,7 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	if (test_clear_entry_tree(eh))
 		__lsa_entry_delete(dir, eh);
 	clear_entry_uptodate(eh);
+	segment_buffer_entry_init(&eh->segbuf_entry);
 
 	return eh;
 }
@@ -2226,10 +2231,10 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 	/* TODO handling when lru is empty */
 	if (eh) {
 		memcpy(&eh->e, le, sizeof(*le));
-		set_entry_dirty(eh);
-		set_entry_uptodate(eh);
 		debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
 				atomic_read(&eh->count), eh->flags);
+		set_entry_uptodate(eh);
+		set_entry_dirty(eh);
 		list_add_tail(&dir->dirty, &eh->dirty);
 		lsa_entry_set_bit(dir, eh->e.log_track_id);
 		if (!test_set_entry_tree(eh))
@@ -2322,6 +2327,8 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	BUG_ON(!list_empty(&eh->queue));
 	/* must in the rb tree */
 	BUG_ON(!entry_tree(eh));
+	/* must be uptodate */
+	BUG_ON(!entry_uptodate(eh));
 
 	spin_lock_irqsave(&dir->lock, flags);
 	list_add_tail(&eh->queue, &dir->dirty);
@@ -2365,7 +2372,7 @@ static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie);
 
 static int
-lsa_dirtory_read_done(struct segment_buffer *segbuf,
+lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
 {
 	struct lsa_segment *seg = segbuf->seg;
@@ -2378,7 +2385,12 @@ lsa_dirtory_read_done(struct segment_buffer *segbuf,
 	struct lsa_bio *bio;
 	LIST_HEAD(head);
 
-	debug("dirtory %d\n", eh->e.log_track_id);
+	debug("lt %d, rw %d\n", eh->e.log_track_id, se->rw);
+	if (se->rw == WRITE) {
+		lsa_dirtory_copy(seg, segbuf, eh);
+		return 0;
+	}
+
 	lsa_bio_list_init(&bio_list);
 	lsa_dirtory_copy(seg, segbuf, eh);
 
@@ -2403,8 +2415,7 @@ lsa_dirtory_read_done(struct segment_buffer *segbuf,
 
 	while (!list_empty(&head)) {
 		lsa_track_cookie_t *cookie = list_entry(head.next, 
-				lsa_track_cookie_t, 
-				entry);
+				lsa_track_cookie_t, entry);
 		list_del_init(&cookie->entry);
 		__lsa_track_cookie_update(cookie);
 	}
@@ -2418,17 +2429,16 @@ lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 {
 	int res = 0;
 	struct segment_buffer *segbuf;
+	struct segment_buffer_entry *se = &eh->segbuf_entry;
 
-	eh->segbuf_entry.rw = rw;
-	eh->segbuf_entry.done = lsa_dirtory_read_done;
+	debug("lt %d, rw %d\n", eh->e.log_track_id, rw);
+	BUG_ON(!list_empty(&se->entry));
+	se->rw = rw;
+	se->done = lsa_dirtory_uptodate_done;
 	segbuf = lsa_segment_find_or_create(seg,
-			LBA2SEG(dir, eh->e.log_track_id),
-			&eh->segbuf_entry);
+			DIR2SEG(dir, eh->e.log_track_id), se);
 	BUG_ON(segbuf == NULL);
 
-	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
-	    (rw == WRITE && segbuf_dirty(segbuf)))
-		lsa_segment_handle(seg, segbuf);
 	lsa_segment_release(segbuf, 0);
 
 	return res;
@@ -2531,7 +2541,6 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		INIT_LIST_HEAD(&eh->dirty);
 		INIT_LIST_HEAD(&eh->queue);
 		INIT_LIST_HEAD(&eh->cookie);
-		segment_buffer_entry_init(&eh->segbuf_entry);
 	}
 
 	/* alloc the bitmap space */
@@ -2784,12 +2793,45 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 }
 
 static int 
-lsa_ss_rw_done(struct segment_buffer *segbuf,
+lsa_ss_write_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
 {
 	struct ss_buffer *ssbuf = container_of(se,
 			struct ss_buffer, segbuf_entry);
-	debug("ss %d\n", ssbuf->e.seg_id);
+	debug("ss %d, %d\n", ssbuf->e.seg_id, se->rw);
+	return 0;
+}
+
+static int
+lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
+		struct ss_buffer *ssbuf)
+{
+	int fromseg = !ss_uptodate(ssbuf);
+
+	/* TODO */
+
+	/* when copy to segment, mark the segment is dirty */
+	if (!fromseg) {
+		/* TODO, this should be column uptodate or dirty */
+		ssbuf->segbuf_entry.done = lsa_ss_write_done;
+		lsa_segment_buffer_chain(segbuf, &ssbuf->segbuf_entry);
+		set_segbuf_uptodate(segbuf);
+		lsa_segment_dirty(seg, segbuf);
+	}
+
+	return 0;
+}
+
+static int 
+lsa_ss_uptodate_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	struct ss_buffer *ssbuf = container_of(se,
+			struct ss_buffer, segbuf_entry);
+	debug("ss %d, %d\n", ssbuf->e.seg_id, se->rw);
+	if (se->rw == WRITE) {
+		lsa_ss_copy(segbuf->seg, segbuf, ssbuf);
+	}
 	return 0;
 }
 
@@ -2801,15 +2843,11 @@ lsa_ss_rw(struct lsa_segment_status *ss, struct ss_buffer *ssbuf, int rw)
 	raid5_conf_t *conf = container_of(ss, raid5_conf_t, lsa_segment_status);
 
 	ssbuf->segbuf_entry.rw = rw;
-	ssbuf->segbuf_entry.done = lsa_ss_rw_done;
+	ssbuf->segbuf_entry.done = lsa_ss_uptodate_done;
 	segbuf = lsa_segment_find_or_create(&conf->meta_segment,
 			SS2SEG(ss, ssbuf->e.seg_id),
 			&ssbuf->segbuf_entry);
 	BUG_ON(segbuf == NULL);
-
-	if ((rw == READ && !segbuf_uptodate(segbuf)) ||
-	    (rw == WRITE && segbuf_dirty(segbuf)))
-		lsa_segment_handle(&conf->meta_segment, segbuf);
 
 	lsa_segment_release(segbuf, 0);
 
@@ -3159,6 +3197,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 				sizeof(struct lsa_entry));
 		memcpy((void *)&eb->e, (void *)&lt->new,
 				sizeof(struct lsa_entry));
+		set_entry_uptodate(eb);
 		lsa_entry_dirty(track->dir, eb);
 		lsa_entry_put(track->dir, eb);
 	} else {
