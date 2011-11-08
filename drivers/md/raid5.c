@@ -1439,7 +1439,7 @@ enum {
  */
 struct segment_buffer {
 	struct rb_node   node;
-	struct list_head lru, active, dirty_entry, write, read;
+	struct list_head lru_entry, active, dirty_entry, write, read;
 	unsigned long    flags;
 	atomic_t         count;
 	unsigned int     status, meta;
@@ -1647,10 +1647,10 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	if (list_empty(&seg->lru))
 		return NULL;
 
-	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru);
+	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru_entry);
 	/* must not in active */
 	BUG_ON(!list_empty(&segbuf->active));
-	list_del_init(&segbuf->lru);
+	list_del_init(&segbuf->lru_entry);
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
 	clear_segbuf_uptodate(segbuf);
@@ -1692,7 +1692,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	spin_lock_irqsave(&seg->lock, flags);
 	segbuf = __segbuf_tree_search(seg, seg_id);
 	if (segbuf) {
-		if (!list_empty(&segbuf->lru))
+		if (!list_empty(&segbuf->lru_entry))
 			list_del_init(&segbuf->lru);
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
@@ -1810,7 +1810,7 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	/* must uptodate */
 	BUG_ON(!segbuf_uptodate(segbuf));
 	/* must in LRU */
-	BUG_ON(list_empty(&segbuf->lru));
+	BUG_ON(list_empty(&segbuf->lru_entry));
 	/* must not in any queue list */
 	BUG_ON(!list_empty(&segbuf->dirty_entry));
 
@@ -1886,7 +1886,7 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 		return 0;
 
 	spin_lock_irqsave(&seg->lock, flags);
-	list_add_tail(&segbuf->lru, &seg->lru);
+	list_add_tail(&segbuf->lru_entry, &seg->lru);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	switch (type) {
@@ -1978,7 +1978,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 		if (lsa_column_alloc(segbuf, segbuf->column, disks,
 					shift) != 0)
 			return -2;
-		list_add_tail(&segbuf->lru, &seg->lru);
+		list_add_tail(&segbuf->lru_entry, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active);
 		INIT_LIST_HEAD(&segbuf->dirty_entry);
 		INIT_LIST_HEAD(&segbuf->write);
@@ -2002,7 +2002,7 @@ __segment_buffer_free(struct lsa_segment *seg,
 {
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
-	list_del_init(&segbuf->lru);
+	list_del_init(&segbuf->lru_entry);
 	lsa_column_free(segbuf->column, disks, seg->shift);
 	kfree(segbuf);
 }
