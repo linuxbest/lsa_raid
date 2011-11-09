@@ -1750,9 +1750,11 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 	case SEG_CLOSING:
 		       if (type == SEG_CLOSED)
 			       segbuf->status = type;
+		       break;
 	case SEG_CLOSED:
 		       if (type == SEG_FREE)
 			       segbuf->status = type;
+		       break;
 	default:
 		       debug("invalid state %d -> %d\n",
 				       segbuf->status, type);
