@@ -1551,13 +1551,13 @@ static void
 __lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
 {
 	bio_init(&dev->req);
-	dev->req.bi_io_vec = &dev->vec;
-	dev->req.bi_vcnt++;
-	dev->req.bi_max_vecs++;
-	dev->req.bi_size = 1<<segbuf->seg->shift;
-	dev->vec.bv_page = dev->page;
-	dev->vec.bv_len    = 1<<segbuf->seg->shift;
-	dev->vec.bv_offset = 0;
+	dev->req.bi_io_vec   = &dev->vec;
+	dev->req.bi_vcnt     = 1;
+	dev->req.bi_max_vecs = 1;
+	dev->req.bi_size     = 1<<segbuf->seg->shift;
+	dev->vec.bv_page     = dev->page;
+	dev->vec.bv_len      = 1<<segbuf->seg->shift;
+	dev->vec.bv_offset   = 0;
 
 	dev->req.bi_private = segbuf;
 }
@@ -1802,19 +1802,25 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 		if (rdev) {
 			bi->bi_bdev = rdev->bdev;
-			debug("for %u schedule op %ld on disc %d\n",
+			debug("segid %x op %ld on disc %d, q\n",
 					segbuf->seg_id, bi->bi_rw, i);
 			atomic_inc(&segbuf->count);
-			bi->bi_sector = column->sector + rdev->data_offset;
-			bi->bi_flags  = 1 << BIO_UPTODATE;
+			bi->bi_flags = 1 << BIO_UPTODATE;
+			bi->bi_vcnt = 1;
+			bi->bi_max_vecs = 1;
+			bi->bi_idx = 0;
+			bi->bi_io_vec = &column->vec;
+			bi->bi_io_vec[0].bv_len = 1<<segbuf->seg->shift;
+			bi->bi_io_vec[0].bv_offset = 0;
+			bi->bi_size = bi->bi_io_vec[0].bv_len;
+			bi->bi_next = NULL;
 			column->vec.bv_page = column->meta_page ?
 				column->meta_page : column->page;
-			bi->bi_next   = NULL;
-			bi->bi_rw    |= REQ_NOMERGE;
+			bi->bi_rw |= REQ_NOMERGE;
 			generic_make_request(bi);
 		} else {
-			debug("skip op %ld on disc %d for sector %u\n",
-					bi->bi_rw, i, segbuf->seg_id);
+			debug("segid %x op %ld on disc %d, -\n",
+					segbuf->seg_id, bi->bi_rw, i);
 		}
 	}
 
