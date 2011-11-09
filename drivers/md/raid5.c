@@ -1661,8 +1661,12 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 		__segbuf_tree_delete(seg, segbuf);
 	clear_segbuf_uptodate(segbuf);
 
+	/* the segment must be in CLOSED or FREE state */
+	BUG_ON(segbuf->status != SEG_FREE && segbuf->status != SEG_CLOSED);
+	segbuf->status = SEG_FREE;
 	segbuf->seg_id = seg_id;
 	__lsa_column_init(seg, segbuf);
+	debug("segid %x, %p\n", seg_id, segbuf);
 
 	return segbuf;
 }
@@ -1734,6 +1738,8 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 		container_of(segbuf->seg, raid5_conf_t, data_segment);
 	int res = 0;
 
+	debug("segid %x, state %d -> %d\n",
+			segbuf->seg_id, segbuf->status, type);
 	switch (segbuf->status) {
 	case SEG_FREE: if (type == SEG_OPEN)
 			       segbuf->status = type;
@@ -1748,6 +1754,8 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 		       if (type == SEG_FREE)
 			       segbuf->status = type;
 	default:
+		       debug("invalid state %d -> %d\n",
+				       segbuf->status, type);
 		       res = -1;
 		       break;
 	}
@@ -2885,7 +2893,6 @@ static void
 lsa_ss_checkpoint(struct lsa_segment_status *ss)
 {
 	unsigned long flags;
-	struct ss_buffer *ssbuf;
 
 	BUG_ON(!list_empty(&ss->checkpoint));
 
@@ -3342,11 +3349,11 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 
 	/* TODO, adding real segment id allocate. */
 	seg = lsa_seg_alloc(&conf->lsa_dirtory);
-	debug("segid %x\n", seg);
 
 	segbuf = lsa_segment_find_or_create(segfill->seg, /* handle */
 			seg,  /* ID */
 			NULL);/* no entry for callback */
+	debug("segid %x, %p\n", seg, segbuf);
 	/* TODO making this never happen */
 	BUG_ON(segbuf == NULL);
 
