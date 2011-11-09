@@ -499,6 +499,7 @@ struct raid5_private_data {
 		struct list_head lru;
 		struct list_head active;
 		struct list_head dirty;
+		struct list_head lcs_head;
 		struct tasklet_struct tasklet;
 	} meta_segment, data_segment;
 

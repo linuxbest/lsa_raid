@@ -1443,7 +1443,7 @@ enum {
  */
 struct segment_buffer {
 	struct rb_node   node;
-	struct list_head lru_entry, active, dirty_entry, write, read;
+	struct list_head lru_entry, active_entry, dirty_entry, write, read;
 	unsigned long    flags;
 	atomic_t         count;
 	unsigned int     status, meta;
@@ -1465,6 +1465,7 @@ enum {
 	SEGBUF_DIRTY    = 2,
 	SEGBUF_META     = 3,
 	SEGBUF_LCS      = 4,
+	SEGBUF_LOCKED   = 5,
 };
 
 #define SEGBUF_FNS(bit, name) \
@@ -1494,6 +1495,7 @@ SEGBUF_FNS(DIRTY,    dirty)
 SEGBUF_FNS(UPTODATE, uptodate)
 SEGBUF_FNS(META,     meta)
 SEGBUF_FNS(LCS,      lcs)
+SEGBUF_FNS(LOCKED,   locked)
 
 static void 
 __segbuf_tree_delete(struct lsa_segment *seg, struct segment_buffer *segbuf)
@@ -1655,7 +1657,7 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 
 	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru_entry);
 	/* must not in active */
-	BUG_ON(!list_empty(&segbuf->active));
+	BUG_ON(!list_empty(&segbuf->active_entry));
 	list_del_init(&segbuf->lru_entry);
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
@@ -1726,6 +1728,11 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	}
 	if (segbuf)
 		atomic_inc(&segbuf->count);
+	if (segbuf && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
+			list_empty(&segbuf->active_entry)) {
+		list_add_tail(&segbuf->active_entry, &seg->active);
+		tasklet_schedule(&seg->tasklet);
+	}
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	return segbuf;
@@ -1802,8 +1809,9 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 		if (rdev) {
 			bi->bi_bdev = rdev->bdev;
-			debug("segid %x op %ld on disc %d, q\n",
-					segbuf->seg_id, bi->bi_rw, i);
+			debug("segid %x op %ld on disc %d, %s\n",
+					segbuf->seg_id, bi->bi_rw, i,
+					bi->bi_rw & WRITE ? "W" : "R");
 			atomic_inc(&segbuf->count);
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
@@ -1913,11 +1921,12 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
+	clear_segbuf_locked(segbuf);
 	spin_lock_irqsave(&seg->lock, flags);
 	if (!segbuf_lcs(segbuf))
 		list_add_tail(&segbuf->lru_entry, &seg->lru);
 	else 
-		list_add_tail(&segbuf->lru_entry, &seg->active);
+		list_add_tail(&segbuf->lru_entry, &seg->lcs_head);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	switch (type) {
@@ -1955,10 +1964,21 @@ lsa_segment_tasklet(unsigned long data)
 	unsigned long flags;
 
 	spin_lock_irqsave(&seg->lock, flags);
+	while (!list_empty(&seg->active)) {
+		struct segment_buffer *segbuf = container_of(seg->active.next,
+				struct segment_buffer, active_entry);
+		list_del_init(&segbuf->active_entry);
+		set_segbuf_locked(segbuf);
+		spin_unlock_irqrestore(&seg->lock, flags);
+		debug("segid %x\n", segbuf->seg_id);
+		lsa_segment_handle(seg, segbuf);
+		spin_lock_irqsave(&seg->lock, flags);
+	}
 	while (!list_empty(&seg->dirty)) {
 		struct segment_buffer *segbuf = container_of(seg->dirty.next,
 				struct segment_buffer, dirty_entry);
 		list_del_init(&segbuf->dirty_entry);
+		set_segbuf_locked(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
 		debug("segid %x\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
@@ -1991,6 +2011,8 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 	INIT_LIST_HEAD(&seg->active);
 	INIT_LIST_HEAD(&seg->dirty);
 	spin_lock_init(&seg->lock);
+	
+	INIT_LIST_HEAD(&seg->lcs_head);
 
 	seg->shift = shift;
 	seg->shift_sector = shift - 9;
@@ -2011,7 +2033,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 					shift) != 0)
 			return -2;
 		list_add_tail(&segbuf->lru_entry, &seg->lru);
-		INIT_LIST_HEAD(&segbuf->active);
+		INIT_LIST_HEAD(&segbuf->active_entry);
 		INIT_LIST_HEAD(&segbuf->dirty_entry);
 		INIT_LIST_HEAD(&segbuf->write);
 		INIT_LIST_HEAD(&segbuf->read);
@@ -2045,7 +2067,7 @@ lsa_segment_exit(struct lsa_segment *seg, int disks)
 	while (!list_empty(&seg->active)) {
 		/* TODO */
 		struct segment_buffer *sb = container_of(seg->active.next,
-				struct segment_buffer, active);
+				struct segment_buffer, active_entry);
 		__segment_buffer_free(seg, sb, disks);
 	}
 	while (!list_empty(&seg->lru)) {
