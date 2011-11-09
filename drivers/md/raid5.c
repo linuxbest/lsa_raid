@@ -1656,6 +1656,10 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 		return NULL;
 
 	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru_entry);
+	debug("segid %x, %x, state %d\n",
+			segbuf->seg_id, seg_id, segbuf->status);
+	/* the segment must be in CLOSED or FREE state */
+	BUG_ON(segbuf->status != SEG_FREE && segbuf->status != SEG_CLOSED);
 	/* must not in active */
 	BUG_ON(!list_empty(&segbuf->active_entry));
 	list_del_init(&segbuf->lru_entry);
@@ -1663,12 +1667,10 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 		__segbuf_tree_delete(seg, segbuf);
 	clear_segbuf_uptodate(segbuf);
 
-	/* the segment must be in CLOSED or FREE state */
-	BUG_ON(segbuf->status != SEG_FREE && segbuf->status != SEG_CLOSED);
+	/* ok, reused it */
 	segbuf->status = SEG_FREE;
 	segbuf->seg_id = seg_id;
 	__lsa_column_init(seg, segbuf);
-	debug("segid %x, %p\n", seg_id, segbuf);
 
 	return segbuf;
 }
@@ -1809,7 +1811,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 		if (rdev) {
 			bi->bi_bdev = rdev->bdev;
-			debug("segid %x op %ld on disc %d, %s\n",
+			debug("segid %x, op %ld on disc %d, %s\n",
 					segbuf->seg_id, bi->bi_rw, i,
 					bi->bi_rw & WRITE ? "W" : "R");
 			atomic_inc(&segbuf->count);
@@ -1827,7 +1829,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			bi->bi_rw |= REQ_NOMERGE;
 			generic_make_request(bi);
 		} else {
-			debug("segid %x op %ld on disc %d, -\n",
+			debug("segid %x, op %ld on disc %d, -\n",
 					segbuf->seg_id, bi->bi_rw, i);
 		}
 	}
@@ -1846,7 +1848,7 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	/* must uptodate */
 	BUG_ON(!segbuf_uptodate(segbuf));
 	/* must in LRU */
-	BUG_ON(list_empty(&segbuf->lru_entry));
+	/*BUG_ON(list_empty(&segbuf->lru_entry));*/
 	/* must not in any queue list */
 	BUG_ON(!list_empty(&segbuf->dirty_entry));
 
@@ -1915,28 +1917,24 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 {
 	struct lsa_segment *seg = segbuf->seg;
 	unsigned long flags;
+	int lru = 1;
 
 	debug("segid %x, ref %d, event %d\n", segbuf->seg_id,
 			atomic_read(&segbuf->count), type);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
-	clear_segbuf_locked(segbuf);
-	spin_lock_irqsave(&seg->lock, flags);
-	if (!segbuf_lcs(segbuf))
-		list_add_tail(&segbuf->lru_entry, &seg->lru);
-	else 
-		list_add_tail(&segbuf->lru_entry, &seg->lcs_head);
-	spin_unlock_irqrestore(&seg->lock, flags);
-
 	switch (type) {
 	case READ_DONE:
+		clear_segbuf_locked(segbuf);
 		lsa_segment_read_done(seg, segbuf);
 		break;
 	case WRITE_DONE:
+		clear_segbuf_locked(segbuf);
 		lsa_segment_write_done(seg, segbuf);
 		break;
 	case WRITE_WANT:
+		lru = 0;
 		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(segbuf->seg, segbuf);
 		lsa_segment_event(segbuf, SEG_CLOSING);
@@ -1944,6 +1942,10 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	default:
 		break;
 	}
+
+	spin_lock_irqsave(&seg->lock, flags);
+	list_add_tail(&segbuf->lru_entry, &seg->lru);
+	spin_unlock_irqrestore(&seg->lock, flags);
 
 	return 0;
 }
@@ -1970,7 +1972,7 @@ lsa_segment_tasklet(unsigned long data)
 		list_del_init(&segbuf->active_entry);
 		set_segbuf_locked(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
-		debug("segid %x\n", segbuf->seg_id);
+		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
 		spin_lock_irqsave(&seg->lock, flags);
 	}
@@ -1980,7 +1982,7 @@ lsa_segment_tasklet(unsigned long data)
 		list_del_init(&segbuf->dirty_entry);
 		set_segbuf_locked(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
-		debug("segid %x\n", segbuf->seg_id);
+		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
 		spin_lock_irqsave(&seg->lock, flags);
 	}
@@ -3093,7 +3095,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 		lsa_segment_release(segbuf, 0);
 	}
 
-	for (i = 0; i < 16; i ++) {
+	for (i = 0; i < 128; i ++) {
 		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf), GFP_KERNEL);
 		if (lcs_buf == NULL)
 			return -1;
@@ -3639,7 +3641,7 @@ int
 lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 {
 	if (dirty) {
-		debug("segid %x\n", segbuf->seg_id);
+		debug("segid %x,\n", segbuf->seg_id);
 		/* TODO should seting the column uptodate & dirty */
 		return lsa_segment_release(segbuf, WRITE_WANT);
 	}
@@ -3658,7 +3660,7 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 		struct lsa_bio *bio, struct segment_buffer *segbuf, 
 		struct page *page, unsigned int offset)
 {
-	debug("bio %llu, segbuf %d, offset %d\n",
+	debug("bio %llu, segid %x, offset %d\n",
 			(unsigned long long)bio->bi_sector,
 			segbuf ? segbuf->seg_id : 0, offset);
 	if (segbuf)
