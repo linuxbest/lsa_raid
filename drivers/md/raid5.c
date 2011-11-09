@@ -2400,7 +2400,7 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 	while ((bio = __lsa_entry_bio_pop(eh))) {
 		lsa_bio_list_add(&bio_list, bio);
 	}
-	list_splice(&eh->cookie, &head);
+	list_splice_init(&eh->cookie, &head);
 	spin_unlock_irqrestore(&dir->lock, flags);
 
 	if (lsa_bio_list_empty(&bio_list))
@@ -2490,7 +2490,7 @@ lsa_dirtory_checkpoint(struct lsa_dirtory *dir)
 	BUG_ON(!list_empty(&dir->checkpoint));
 
 	spin_lock_irqsave(&dir->lock, flags);
-	list_splice(&dir->dirty, &dir->checkpoint);
+	list_splice_init(&dir->dirty, &dir->checkpoint);
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
@@ -2764,8 +2764,8 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 		if (ssbuf) {
 			ssbuf->e.seg_id    = seg_id;
 			BUG_ON(__ss_entry_insert(ss, ssbuf) == 0);
+			set_ss_uptodate(ssbuf);
 		}
-		set_ss_uptodate(ssbuf);
 	}
 	if (ssbuf) {
 		ssbuf->e.status    = status;
@@ -2885,11 +2885,12 @@ static void
 lsa_ss_checkpoint(struct lsa_segment_status *ss)
 {
 	unsigned long flags;
+	struct ss_buffer *ssbuf;
 
 	BUG_ON(!list_empty(&ss->checkpoint));
 
 	spin_lock_irqsave(&ss->lock, flags);
-	list_splice(&ss->dirty, &ss->checkpoint);
+	list_splice_init(&ss->dirty, &ss->checkpoint);
 	spin_unlock_irqrestore(&ss->lock, flags);
 }
 
