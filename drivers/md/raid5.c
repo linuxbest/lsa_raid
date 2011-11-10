@@ -1656,8 +1656,8 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 		return NULL;
 
 	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru_entry);
-	debug("segid %x, %x, state %d\n",
-			segbuf->seg_id, seg_id, segbuf->status);
+	debug("segid %x, %x, state %d, flags %lx\n",
+			segbuf->seg_id, seg_id, segbuf->status, segbuf->flags);
 	/* the segment must be in CLOSED or FREE state */
 	BUG_ON(segbuf->status != SEG_FREE && segbuf->status != SEG_CLOSED);
 	/* must not in active */
@@ -1702,6 +1702,18 @@ lsa_segment_buffer_chain(struct segment_buffer *segbuf,
 	spin_unlock_irqrestore(&seg->lock, flags);
 }
 
+static void
+lsa_segment_ref(struct segment_buffer *segbuf)
+{
+	atomic_inc(&segbuf->count);
+}
+
+static void
+lsa_segment_unref(struct segment_buffer *segbuf)
+{
+	atomic_dec(&segbuf->count);
+}
+
 static struct segment_buffer *
 lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		struct segment_buffer_entry *se)
@@ -1717,7 +1729,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
 		set_segbuf_tree(segbuf);
-		__segbuf_tree_insert(seg, segbuf);
+		BUG_ON(__segbuf_tree_insert(seg, segbuf) == 0);
 	}
 	/* insert into the queue before enable IRQ */
 	if (segbuf && se) {
@@ -1729,11 +1741,12 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 			list_add_tail(&se->entry, &segbuf->read);
 	}
 	if (segbuf)
-		atomic_inc(&segbuf->count);
+		lsa_segment_ref(segbuf);
 	/* when se is NULL, meaning we doing fill segment */
-	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
-			list_empty(&segbuf->active_entry)) {
+	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf)) {
+		/* doing real job @ tasklet, so just ref the segbuf */
 		list_add_tail(&segbuf->active_entry, &seg->active);
+		lsa_segment_ref(segbuf);
 		tasklet_schedule(&seg->tasklet);
 	}
 	spin_unlock_irqrestore(&seg->lock, flags);
@@ -1815,7 +1828,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			debug("segid %x, op %ld on disc %d, %s\n",
 					segbuf->seg_id, bi->bi_rw, i,
 					bi->bi_rw & WRITE ? "W" : "R");
-			atomic_inc(&segbuf->count);
+			lsa_segment_ref(segbuf);
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
 			bi->bi_max_vecs = 1;
@@ -1857,6 +1870,8 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	list_add_tail(&segbuf->dirty_entry, &seg->dirty);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
+	/* doing real job @ tasklet, so just ref the segbuf */
+	atomic_inc(&segbuf->count);
 	tasklet_schedule(&seg->tasklet);
 
 	return 0;
@@ -1920,8 +1935,8 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	unsigned long flags;
 	int lru = 1;
 
-	debug("segid %x, ref %d, event %d\n", segbuf->seg_id,
-			atomic_read(&segbuf->count), type);
+	debug("segid %x, ref %d, event %d, flags %lx\n", segbuf->seg_id,
+			atomic_read(&segbuf->count), type, segbuf->flags);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
@@ -1951,12 +1966,6 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	return 0;
 }
 
-static void
-lsa_segment_get(struct segment_buffer *segbuf)
-{
-	atomic_inc(&segbuf->count);
-}
-
 /* write the dirty segment into disk 
  */
 static void
@@ -1972,6 +1981,8 @@ lsa_segment_tasklet(unsigned long data)
 				struct segment_buffer, active_entry);
 		list_del_init(&segbuf->active_entry);
 		set_segbuf_locked(segbuf);
+		/* unref the segbuf */
+		lsa_segment_unref(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
 		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
@@ -1982,6 +1993,8 @@ lsa_segment_tasklet(unsigned long data)
 				struct segment_buffer, dirty_entry);
 		list_del_init(&segbuf->dirty_entry);
 		set_segbuf_locked(segbuf);
+		/* unref the segbuf */
+		lsa_segment_unref(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
 		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
@@ -3363,7 +3376,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 		__lsa_track_unref(track);
 		if (atomic_read(&track->count) == 0)
 			break;
-		lsa_segment_get(segbuf);
+		lsa_segment_ref(segbuf);
 	} while (atomic_read(&track->count));
 	track->segbuf = segbuf;
 }
@@ -3460,7 +3473,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	struct segment_buffer *segbuf = segfill->segbuf;
 	struct page *page = segbuf->column[data].page;
 
-	lsa_segment_get(segbuf);
+	lsa_segment_ref(segbuf);
 	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset);
 	segfill->data_column ++;
 	BUG_ON(segfill->data_column > segfill->max_column);
