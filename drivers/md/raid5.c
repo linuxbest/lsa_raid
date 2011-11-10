@@ -2098,6 +2098,7 @@ struct entry_buffer {
 	struct list_head lru, cookie;
 	atomic_t count;
 	struct lsa_bio_list bio;
+	struct lsa_dirtory *dir;
 #define EH_TREE     0
 #define EH_DIRTY    1
 #define EH_UPTODATE 2
@@ -2258,11 +2259,15 @@ __lsa_entry_bio_pop(struct entry_buffer *eb)
 	return lsa_bio_list_pop(&eb->bio);
 }
 
-static void 
+static void
 __lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
+	set_entry_uptodate(eh);
+	set_entry_dirty(eh);
+	BUG_ON(!list_empty(&eh->lru));
 	list_add_tail(&eh->lru, &dir->dirty);
 	atomic_inc(&dir->dirty_cnt);
+	atomic_inc(&eh->count);
 }
 
 static int
@@ -2280,8 +2285,6 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 		memcpy(&eh->e, le, sizeof(*le));
 		debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
 				atomic_read(&eh->count), eh->flags);
-		set_entry_uptodate(eh);
-		set_entry_dirty(eh);
 		__lsa_entry_dirty(dir, eh);
 		lsa_entry_set_bit(dir, eh->e.log_track_id);
 		if (!test_set_entry_tree(eh))
@@ -2319,12 +2322,7 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 
 	spin_lock_irqsave(&dir->lock, flags);
 	cookie->eb = eh = __lsa_entry_search(dir, log_track_id);
-	if (eh) {
-		if (!list_empty(&eh->lru))
-			list_del_init(&eh->lru);
-		else
-			res = -EBUSY;
-	} else { /* alloc new entry, schedule it doing IO request */
+	if (eh == NULL) { /* alloc new entry, schedule it doing IO request */
 		cookie->eb = eh = __lsa_entry_freed(dir);
 		BUG_ON(!eh);
 		/* TODO handle when LRU is empty */
@@ -2355,8 +2353,11 @@ lsa_entry_put(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
 			atomic_read(&eh->count), eh->flags);
 	spin_lock_irqsave(&dir->lock, flags);
-	if (atomic_dec_and_test(&eh->count))
+	if (atomic_dec_and_test(&eh->count)) {
+		BUG_ON(!list_empty(&eh->lru));
+		BUG_ON(entry_dirty(eh));
 		list_add_tail(&eh->lru, &dir->lru);
+	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
@@ -2365,7 +2366,7 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
 	unsigned long flags;
 
-	if (test_set_entry_dirty(eh))
+	if (entry_dirty(eh))
 		return;
 
 	/* must not in any list */
@@ -2387,6 +2388,8 @@ lsa_dirtory_write_done(struct segment_buffer *segbuf,
 	struct entry_buffer *eh = container_of(se,
 			struct entry_buffer, segbuf_entry);
 	debug("dirtory %d\n", eh->e.log_track_id);
+	clear_entry_dirty(eh);
+	lsa_entry_put(eh->dir, eh);
 	return 0;
 }
 
@@ -2545,12 +2548,13 @@ lsa_dirtory_checkpoint(struct lsa_dirtory *dir)
 	int res;
 	unsigned long flags;
 
+	BUG_ON(!list_empty(&dir->checkpoint));
 	BUG_ON(atomic_read(&dir->checkpoint_cnt) != 0);
 
 	spin_lock_irqsave(&dir->lock, flags);
-	BUG_ON(!list_empty(&dir->checkpoint));
 	res = atomic_read(&dir->dirty_cnt);
 	if (res) {
+		BUG_ON(list_empty(&dir->dirty));
 		atomic_set(&dir->dirty_cnt, 0);
 		atomic_set(&dir->checkpoint_cnt, res);
 		list_splice_init(&dir->dirty, &dir->checkpoint);
@@ -2585,6 +2589,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		struct entry_buffer *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
 		if (eh == NULL)
 			return -1;
+		eh->dir = dir;
 		lsa_bio_list_init(&eh->bio);
 		list_add_tail(&eh->lru, &dir->lru);
 		INIT_LIST_HEAD(&eh->cookie);
@@ -2962,12 +2967,13 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 	int res;
 	unsigned long flags;
 
+	BUG_ON(!list_empty(&ss->checkpoint));
 	BUG_ON(atomic_read(&ss->checkpoint_cnt) != 0);
 
 	spin_lock_irqsave(&ss->lock, flags);
-	BUG_ON(!list_empty(&ss->checkpoint));
 	res = atomic_read(&ss->dirty_cnt);
 	if (res) {
+		BUG_ON(list_empty(&ss->dirty));
 		atomic_set(&ss->dirty_cnt, 0);
 		atomic_set(&ss->checkpoint_cnt, res);
 		list_splice_init(&ss->dirty, &ss->checkpoint);
