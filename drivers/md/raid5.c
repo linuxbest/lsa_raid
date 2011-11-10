@@ -3023,6 +3023,7 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, segbuf_entry);
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
+	int i;
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_del(&lb->lru);
@@ -3036,7 +3037,8 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	 *  2) LSA segment status 
 	 * into disk
 	 */
-	segbuf->column[0].meta_page = NULL;
+	for (i = 0; i < segbuf->seg->disks; i ++)
+		segbuf->column[i].meta_page = NULL;
 	lsa_dirtory_commit(&conf->lsa_dirtory);
 	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
@@ -3058,7 +3060,8 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 	spin_unlock_irqrestore(&lcs->lock, flags);
 
 	segbuf = lcs->segbuf[i];
-	segbuf->column[0].meta_page = lb->page;
+	for (i = 0; i < segbuf->seg->disks; i ++)
+		segbuf->column[i].meta_page = lb->page;
 
 	lb->segbuf_entry.done = lsa_lcs_write_done;
 	lb->seg = i;
