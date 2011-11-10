@@ -1500,7 +1500,6 @@ SEGBUF_FNS(LOCKED,   locked)
 static void 
 __segbuf_tree_delete(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
-	debug("segbuf %p, %p\n", segbuf, seg);
 	rb_erase(&segbuf->node, &seg->tree);
 }
 
