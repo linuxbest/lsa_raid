@@ -468,6 +468,7 @@ struct raid5_private_data {
 		struct list_head retry;
 		struct list_head wip;
 		struct tasklet_struct tasklet;
+		atomic_t dirty_cnt, checkpoint_cnt;
 	} lsa_dirtory;
 
 	struct lsa_segment_status {
@@ -476,6 +477,7 @@ struct raid5_private_data {
 		struct list_head lru;
 		struct list_head dirty;
 		struct list_head checkpoint;
+		atomic_t dirty_cnt, checkpoint_cnt;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
