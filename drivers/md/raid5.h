@@ -478,6 +478,9 @@ struct raid5_private_data {
 		struct list_head dirty;
 		struct list_head checkpoint;
 		atomic_t dirty_cnt, checkpoint_cnt;
+		/* ondisk seg id */
+		int per_page;
+		uint32_t seg_id;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {

@@ -1397,17 +1397,23 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *
  */
 
+static inline int
+SS2OFFSET(struct lsa_segment_status *ss, uint32_t seg_id)
+{
+	int off = seg_id & (ss->per_page-1);
+	return off * sizeof(uint32_t);
+}
+
 static inline uint32_t
 SS2SEG(struct lsa_segment_status *ss, uint32_t seg_id)
 {
-	/* TODO */
-	return 7168 + seg_id;
+	return ss->seg_id + (seg_id/ss->per_page);
 }
 
 static inline uint32_t
 LCS2SEG(struct lsa_closed_segment *lcs, int id)
 {
-	return lcs->seg_id + id;
+	return lcs->seg_id + (id * 0x100);
 }
 
 static inline int
@@ -1443,6 +1449,9 @@ enum {
 
 	SUPER_ID   = 0x0,
 	DIR_SEG_ID = 0x1,
+	SS_SEG_ID  = 0x40000,
+	LCS_SEG_ID = 0x70000,
+	DATA_SEG_ID= 0x80000,
 };
 /*
  * LSA segment operations
@@ -1765,7 +1774,8 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	if (segbuf)
 		lsa_segment_ref(segbuf);
 	/* when se is NULL, meaning we doing fill segment */
-	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf)) {
+	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
+			list_empty(&segbuf->active_entry)) {
 		/* doing real job @ tasklet, so just ref the segbuf */
 		list_add_tail(&segbuf->active_entry, &seg->active);
 		lsa_segment_ref(segbuf);
@@ -2615,7 +2625,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 
 	spin_lock_init(&dir->lock);
 	dir->tree = RB_ROOT;
-	dir->seg  = 0x80000;
+	dir->seg  = DATA_SEG_ID;
 	INIT_LIST_HEAD(&dir->dirty);
 	INIT_LIST_HEAD(&dir->checkpoint);
 	INIT_LIST_HEAD(&dir->lru);
@@ -2660,13 +2670,13 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 /*
  * LSA segment status 
  */
-typedef struct segment_status {
+typedef struct {
 	uint32_t seg_id;
 	uint32_t timestamp;
 	uint32_t occupancy;
 	uint8_t  status;
 	uint8_t  reserved[3];
-} segment_status_t;
+} __attribute__ ((packed)) segment_status_t;
 
 /* we using 16Mbyte LRU cache for entry */
 #define SEGSTAT_HEAD_SIZE (16*1024*1024)
@@ -2783,6 +2793,10 @@ lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
 	INIT_LIST_HEAD(&ss->checkpoint);
 	INIT_LIST_HEAD(&ss->lru);
 	atomic_set(&ss->dirty_cnt, 0);
+
+	BUG_ON(sizeof(segment_status_t) != 16);
+	ss->per_page = PAGE_SIZE/sizeof(segment_status_t);
+	ss->seg_id = SS_SEG_ID;
 
 	for (i = 0; i < SEGSTAT_HEAD_NR; i ++) {
 		struct ss_buffer *ssbuf;
@@ -3149,7 +3163,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	INIT_LIST_HEAD(&lcs->lru);
 	INIT_LIST_HEAD(&lcs->dirty);
 	INIT_LIST_HEAD(&lcs->segbuf_head);
-	lcs->seg_id = 4096; /* TODO */
+	lcs->seg_id = LCS_SEG_ID;
 
 	for (i = 0; i < 4; i ++) {
 		struct segment_buffer *segbuf;
