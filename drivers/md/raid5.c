@@ -2171,30 +2171,6 @@ static uint32_t lsa_seg_alloc(struct lsa_dirtory *dir)
 	return dir->seg++;
 }
 
-enum {
-	LSA_BIT_SHIFT = PAGE_SHIFT+3,
-	LSA_BIT_SIZE  = 1<<LSA_BIT_SHIFT,
-	LSA_BIT_MASK  = LSA_BIT_SIZE-1
-};
-
-static int inline
-lsa_entry_test_bit(struct lsa_dirtory *dir, uint32_t lt)
-{
-	uint32_t index = lt >> LSA_BIT_SHIFT;
-	uint32_t offset= lt & LSA_BIT_MASK;
-	unsigned long *bitmap = dir->bitmap[index];
-	return test_bit(offset, bitmap);
-}
-
-static void inline
-lsa_entry_set_bit(struct lsa_dirtory *dir, uint32_t lt)
-{
-	uint32_t index = lt >> LSA_BIT_SHIFT;
-	uint32_t offset= lt & LSA_BIT_MASK;
-	unsigned long *bitmap = dir->bitmap[index];
-	set_bit(offset, bitmap);
-}
-
 static struct entry_buffer *
 __lsa_entry_search(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
@@ -2318,7 +2294,6 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
 		debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
 				atomic_read(&eh->count), eh->flags);
 		__lsa_entry_dirty(dir, eh);
-		lsa_entry_set_bit(dir, eh->e.log_track_id);
 		if (!test_set_entry_tree(eh))
 			res = __lsa_entry_insert(dir, eh);
 		else 
@@ -2348,15 +2323,11 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 	unsigned long flags;
 	struct entry_buffer *eh = NULL;
 
-	/* first checking the bitmap */
-	if (lsa_entry_test_bit(dir, log_track_id) == 0)
-		return -ENOENT;
-
 	spin_lock_irqsave(&dir->lock, flags);
 	cookie->eb = eh = __lsa_entry_search(dir, log_track_id);
 	if (eh == NULL) { /* alloc new entry, schedule it doing IO request */
 		cookie->eb = eh = __lsa_entry_freed(dir);
-		BUG_ON(!eh);
+		BUG_ON(eh == NULL);
 		/* TODO handle when LRU is empty */
 		eh->e.log_track_id = log_track_id;
 		list_add_tail(&eh->lru, &dir->queue);
@@ -2370,9 +2341,8 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 		__lsa_entry_cookie_push(eh, bio, cookie);
 		res = -EINPROGRESS;
 	}
-	spin_unlock_irqrestore(&dir->lock, flags);
-
 	atomic_inc(&eh->count);
+	spin_unlock_irqrestore(&dir->lock, flags);
 
 	return res;
 }
@@ -2607,7 +2577,7 @@ __entry_buffer_free(struct lsa_dirtory *dir, struct entry_buffer *eh)
 static int
 lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 {
-	int i, nr = seg_nr >> (PAGE_SHIFT+3);
+	int i;
 
 	spin_lock_init(&dir->lock);
 	dir->tree = RB_ROOT;
@@ -2615,6 +2585,8 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 	INIT_LIST_HEAD(&dir->dirty);
 	INIT_LIST_HEAD(&dir->checkpoint);
 	INIT_LIST_HEAD(&dir->lru);
+	INIT_LIST_HEAD(&dir->queue);
+	INIT_LIST_HEAD(&dir->retry);
 	tasklet_init(&dir->tasklet, lsa_dirtory_tasklet, (unsigned long)dir);
 
 	for (i = 0; i < ENTRY_HEAD_NR; i ++) {
@@ -2626,30 +2598,12 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 		list_add_tail(&eh->lru, &dir->lru);
 		INIT_LIST_HEAD(&eh->cookie);
 	}
-
-	/* alloc the bitmap space */
-	dir->bitmap = kzalloc(sizeof(unsigned long *)*nr, GFP_KERNEL);
-	if (dir->bitmap == NULL)
-		return -2;
-
-	for (i = 0; i < nr; i++) {
-		unsigned long *bitmap;
-		bitmap = (unsigned long *)get_zeroed_page(GFP_KERNEL);
-		if (bitmap == NULL)
-			return -3;
-		dir->bitmap[i] = bitmap;
-	}
-	dir->bitmap_nr = nr;
-
-	/* TODO rebuild the bitmap or loading it from disk */
-
 	return 0;
 }
 
 static int
 lsa_dirtory_exit(struct lsa_dirtory *dir)
 {
-	int i;
 	while (!list_empty(&dir->dirty)) {
 		/* TODO we must flush the dirty entry into disk */
 		struct entry_buffer *eh = container_of(dir->dirty.next,
@@ -2661,15 +2615,6 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 				struct entry_buffer, lru);
 		__entry_buffer_free(dir, eh);
 	}
-	/* in this time the RB tree is empty */
-
-	/* clear the bitmap space */
-	/* TODO saving into disk ? */
-	for (i = 0; i < dir->bitmap_nr; i ++) {
-		free_page((unsigned long)dir->bitmap[i]);
-	}
-	kfree(dir->bitmap);
-
 	return 0;
 }
 

@@ -460,9 +460,6 @@ struct raid5_private_data {
 		struct list_head lru;
 		struct list_head dirty;
 		struct list_head checkpoint;
-		/* bitmap */
-		uint32_t bitmap_nr;
-		unsigned long **bitmap;
 		/* dirtory tasklet */
 		struct list_head queue;
 		struct list_head retry;
