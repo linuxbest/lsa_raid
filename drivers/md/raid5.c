@@ -2261,12 +2261,8 @@ __lsa_entry_bio_pop(struct entry_buffer *eb)
 static void 
 __lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&dir->lock, flags);
 	list_add_tail(&eh->lru, &dir->dirty);
 	atomic_inc(&dir->dirty_cnt);
-	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
 static int
@@ -2367,6 +2363,8 @@ lsa_entry_put(struct lsa_dirtory *dir, struct entry_buffer *eh)
 static void
 lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 {
+	unsigned long flags;
+
 	if (test_set_entry_dirty(eh))
 		return;
 
@@ -2377,7 +2375,9 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	/* must be uptodate */
 	BUG_ON(!entry_uptodate(eh));
 
+	spin_lock_irqsave(&dir->lock, flags);
 	__lsa_entry_dirty(dir, eh);
+	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
 static int
@@ -2521,21 +2521,22 @@ lsa_dirtory_tasklet(unsigned long data)
 {
 	struct lsa_dirtory *dir = (struct lsa_dirtory *)data;
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry, 0);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue, 0);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->retry, READ);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->queue, READ);
 }
 
 static void 
 lsa_dirtory_commit(struct lsa_dirtory *dir)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint, 1);
+	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint, WRITE);
 }
 
-static int
-lsa_dirtory_checkpoint_busy(struct lsa_dirtory *dir) 
+static void
+lsa_dirtory_checkpoint_sts(struct lsa_dirtory *dir, int *dirty, int *point)
 {
-	return atomic_read(&dir->checkpoint_cnt);
+	*dirty = atomic_read(&dir->dirty_cnt);
+	*point = atomic_read(&dir->checkpoint_cnt);
 }
 
 static void
@@ -2544,10 +2545,10 @@ lsa_dirtory_checkpoint(struct lsa_dirtory *dir)
 	int res;
 	unsigned long flags;
 
-	BUG_ON(!list_empty(&dir->checkpoint));
 	BUG_ON(atomic_read(&dir->checkpoint_cnt) != 0);
 
 	spin_lock_irqsave(&dir->lock, flags);
+	BUG_ON(!list_empty(&dir->checkpoint));
 	res = atomic_read(&dir->dirty_cnt);
 	if (res) {
 		atomic_set(&dir->dirty_cnt, 0);
@@ -2948,10 +2949,11 @@ lsa_ss_read(struct lsa_segment_status *ss,
 	return lsa_ss_rw(ss, ssbuf, READ);
 }
 
-static int
-lsa_ss_checkpoint_busy(struct lsa_segment_status *ss)
+static void
+lsa_ss_checkpoint_sts(struct lsa_segment_status *ss, int *dirty, int *point)
 {
-	return atomic_read(&ss->checkpoint_cnt);
+	*dirty = atomic_read(&ss->dirty_cnt);
+	*point = atomic_read(&ss->checkpoint_cnt);
 }
 
 static void
@@ -2960,10 +2962,10 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 	int res;
 	unsigned long flags;
 
-	BUG_ON(!list_empty(&ss->checkpoint));
 	BUG_ON(atomic_read(&ss->checkpoint_cnt) != 0);
 
 	spin_lock_irqsave(&ss->lock, flags);
+	BUG_ON(!list_empty(&ss->checkpoint));
 	res = atomic_read(&ss->dirty_cnt);
 	if (res) {
 		atomic_set(&ss->dirty_cnt, 0);
@@ -2976,7 +2978,7 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 static void 
 lsa_ss_commit(struct lsa_segment_status *ss)
 {
-	lsa_ss_job(ss, &ss->checkpoint, 1);
+	lsa_ss_job(ss, &ss->checkpoint, WRITE);
 }
 
 /*
@@ -3099,11 +3101,11 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 	spin_unlock_irqrestore(&lcs->lock, flags);
 
 	segbuf = lcs->segbuf[i];
+	lb->seg = i;
+	lb->segbuf_entry.done = lsa_lcs_write_done;
+
 	for (i = 0; i < segbuf->seg->disks; i ++)
 		segbuf->column[i].meta_page = lb->page;
-
-	lb->segbuf_entry.done = lsa_lcs_write_done;
-	lb->seg = i;
 
 	set_segbuf_uptodate(segbuf);
 	lsa_segment_buffer_chain(segbuf, &lb->segbuf_entry);
@@ -3399,14 +3401,15 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
-	int dir_busy = lsa_dirtory_checkpoint_busy(&conf->lsa_dirtory);
-	int ss_busy = lsa_ss_checkpoint_busy(&conf->lsa_segment_status);
+	int dir_dirty, dir_point, ss_dirty, ss_point;
 
 	BUG_ON(segfill->segbuf == NULL);
-	debug("segid %x, meta %d, busy(%d/%d)\n", segfill->segbuf->seg_id,
-			segbuf_meta(segfill->segbuf), dir_busy, ss_busy);
-	/* TODO access checkpoint without lock is safe XXX */
-	if (segbuf_meta(segfill->segbuf) && !ss_busy && !dir_busy) {
+	lsa_dirtory_checkpoint_sts(&conf->lsa_dirtory, &dir_dirty, &dir_point);
+	lsa_ss_checkpoint_sts(&conf->lsa_segment_status, &ss_dirty, &ss_point);
+	debug("segid %x, meta %d, dir(%d/%d), ss(%d/%d)\n",
+			segfill->segbuf->seg_id, segbuf_meta(segfill->segbuf),
+			dir_dirty, dir_point, ss_dirty, ss_point);
+	if (segbuf_meta(segfill->segbuf) && !ss_point && !dir_point) {
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
 		lsa_ss_checkpoint(&conf->lsa_segment_status);
 	}
