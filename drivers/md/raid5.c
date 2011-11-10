@@ -3061,14 +3061,6 @@ lsa_ss_commit(struct lsa_segment_status *ss)
  * LSA closed segment list 
  *
  */
-typedef struct lcs_ondisk {
-	uint32_t magic;
-	uint32_t total;
-	uint32_t sum;
-	uint32_t timestamp;
-	uint32_t seg[0];
-} __attribute__ ((packed)) lcs_ondisk_t;
-
 typedef struct lcs_buffer {
 	struct segment_buffer_entry segbuf_entry;
 	struct list_head lru;
@@ -3253,18 +3245,6 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 	}
 	return 0;
 }
-
-typedef struct lsa_track_buffer {
-	uint32_t magic;
-	uint32_t sum;
-	uint16_t total;
-	uint16_t prev_column;
-	uint32_t prev_seg_id;
-	struct lsa_track_entry {
-		struct lsa_entry old;
-		struct lsa_entry new;
-	} entry[0];
-} lsa_track_buffer_t;
 
 typedef struct lsa_track {
 	struct list_head entry;

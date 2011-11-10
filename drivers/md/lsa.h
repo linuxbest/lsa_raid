@@ -20,4 +20,24 @@ typedef struct {
 	uint8_t  reserved[3];
 } __attribute__ ((packed)) segment_status_t;
 
+typedef struct lsa_track_buffer {
+	uint32_t magic;
+	uint32_t sum;
+	uint16_t total;
+	uint16_t prev_column;
+	uint32_t prev_seg_id;
+	struct lsa_track_entry {
+		struct lsa_entry old;
+		struct lsa_entry new;
+	} __attribute__ ((packed)) entry[0];
+} __attribute__ ((packed)) lsa_track_buffer_t;
+
+typedef struct lcs_ondisk {
+	uint32_t magic;
+	uint32_t total;
+	uint32_t sum;
+	uint32_t timestamp;
+	uint32_t seg[0];
+} __attribute__ ((packed)) lcs_ondisk_t;
+
 #endif
