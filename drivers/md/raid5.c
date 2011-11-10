@@ -3720,7 +3720,7 @@ static int
 lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector,
 		struct entry_buffer *eb)
 {
-#if 0
+#if 1
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	struct page *page = sh->dev[0].page;
 	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);

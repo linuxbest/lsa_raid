@@ -227,6 +227,7 @@ targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr,
 		bio->bi_sector   = blknr;
 		bio->bi_nr       = bios;
 		bio->bi_state    = IO_INIT; /* overload as state */
+		bio->bi_size     = len << 9;
 
 		lsa_bio_list_add(&req->bio_list, bio);
 		bios ++;
