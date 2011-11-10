@@ -1658,10 +1658,20 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	segbuf = list_entry(seg->lru.next, struct segment_buffer, lru_entry);
 	debug("segid %x, %x, state %d, flags %lx\n",
 			segbuf->seg_id, seg_id, segbuf->status, segbuf->flags);
+
 	/* the segment must be in CLOSED or FREE state */
 	BUG_ON(segbuf->status != SEG_FREE && segbuf->status != SEG_CLOSED);
 	/* must not in active */
 	BUG_ON(!list_empty(&segbuf->active_entry));
+	/* must not dirty */
+	BUG_ON(!list_empty(&segbuf->dirty_entry));
+	BUG_ON(segbuf_dirty(segbuf));
+	/* read/write queue must empty */
+	BUG_ON(!list_empty(&segbuf->write));
+	BUG_ON(!list_empty(&segbuf->read));
+	/* not LCS reserved entry */
+	BUG_ON(segbuf_lcs(segbuf));
+
 	list_del_init(&segbuf->lru_entry);
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
@@ -1960,7 +1970,9 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	}
 
 	spin_lock_irqsave(&seg->lock, flags);
-	list_add_tail(&segbuf->lru_entry, &seg->lru);
+	/* LCS entry must reserved, not in the lru tree */
+	if (!segbuf_lcs(segbuf))
+		list_add_tail(&segbuf->lru_entry, &seg->lru);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	return 0;
@@ -3178,7 +3190,10 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 {
 	int i;
 	for (i = 0; i < 4; i ++) {
-		lsa_segment_release(lcs->segbuf[i], 0);
+		struct segment_buffer *segbuf = lcs->segbuf[i];
+		lsa_segment_ref(segbuf);
+		clear_segbuf_lcs(segbuf);
+		lsa_segment_release(segbuf, 0);
 	}
 	while (!list_empty(&lcs->dirty)) {
 		/* TODO we must flush the dirty lcs into disk */
