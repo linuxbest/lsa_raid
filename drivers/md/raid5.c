@@ -1401,7 +1401,7 @@ static inline int
 SS2OFFSET(struct lsa_segment_status *ss, uint32_t seg_id)
 {
 	int off = seg_id & (ss->per_page-1);
-	return off * sizeof(uint32_t);
+	return off * sizeof(segment_status_t);
 }
 
 static inline uint32_t
@@ -2446,6 +2446,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 			ln->seg_column, ln->offset, ln->length);
 	debug("lo %x, %x, %x, %x, %x\n", lo->log_track_id, lo->seg_id,
 			lo->seg_column, lo->offset, lo->length);
+	BUG_ON(len < sizeof(*lo));
 
 	/* when copy to segment, mark the segment is dirty */
 	if (!fromseg) {
@@ -2578,6 +2579,9 @@ static void
 lsa_dirtory_commit(struct lsa_dirtory *dir)
 {
 	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
+	debug("dirty %d, point %d, empty %d\n", atomic_read(&dir->dirty_cnt),
+			atomic_read(&dir->checkpoint_cnt),
+			list_empty(&dir->checkpoint));
 	lsa_dirtory_job(&conf->meta_segment, dir, &dir->checkpoint, WRITE);
 }
 
@@ -2604,6 +2608,7 @@ lsa_dirtory_checkpoint(struct lsa_dirtory *dir)
 		atomic_set(&dir->dirty_cnt, 0);
 		atomic_set(&dir->checkpoint_cnt, res);
 		list_splice_init(&dir->dirty, &dir->checkpoint);
+		BUG_ON(list_empty(&dir->checkpoint));
 	}
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
@@ -2670,14 +2675,6 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 /*
  * LSA segment status 
  */
-typedef struct {
-	uint32_t seg_id;
-	uint32_t timestamp;
-	uint32_t occupancy;
-	uint8_t  status;
-	uint8_t  reserved[3];
-} __attribute__ ((packed)) segment_status_t;
-
 /* we using 16Mbyte LRU cache for entry */
 #define SEGSTAT_HEAD_SIZE (16*1024*1024)
 #define SEGSTAT_HEAD_NR   (SEGSTAT_HEAD_SIZE/sizeof(segment_status_t))
@@ -2804,6 +2801,7 @@ lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
 		ssbuf = kzalloc(sizeof(*ssbuf), GFP_KERNEL);
 		if (ssbuf == NULL)
 			return -1;
+		ssbuf->ss = ss;
 		list_add_tail(&ssbuf->entry, &ss->lru);
 	}
 
@@ -2869,7 +2867,8 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 			BUG_ON(__ss_entry_insert(ss, ssbuf) == 0);
 			set_ss_uptodate(ssbuf);
 		}
-	} else {
+	} else if (!ss_dirty(ssbuf)) {
+		/* detel from the lru */
 		list_del_init(&ssbuf->entry);
 	}
 	if (ssbuf) {
@@ -2894,6 +2893,7 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 	debug("ssid %x, %d\n", ssbuf->e.seg_id, se->rw);
 
 	clear_ss_dirty(ssbuf);
+	BUG_ON(!list_empty(&ssbuf->entry));
 
 	spin_lock_irqsave(&ss->lock, flags);
 	list_add_tail(&ssbuf->entry, &ss->lru);
@@ -2907,17 +2907,32 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct ss_buffer *ssbuf)
 {
 	int fromseg = !ss_uptodate(ssbuf);
+	int len = 0;
+	int offset = SS2OFFSET(ssbuf->ss, ssbuf->e.seg_id);
+	const char *buf = lsa_segment_buf_addr(segbuf, offset, &len);
+	segment_status_t *n = &ssbuf->e;
+	segment_status_t *o = (segment_status_t *)buf;
 
-	debug("ssid %x, %d\n", ssbuf->e.seg_id, fromseg);
-	/* TODO */
+	debug("ssid %x, fromseg %d, off %d, len %d\n", 
+			ssbuf->e.seg_id, fromseg, offset, len);
+	debug("new %x, %x, %x, %x\n",
+			n->seg_id, n->timestamp, n->occupancy, n->status);
+	debug("old %x, %x, %x, %x\n",
+			o->seg_id, o->timestamp, n->occupancy, o->status);
+
+	BUG_ON(len < sizeof(*n));
 
 	/* when copy to segment, mark the segment is dirty */
 	if (!fromseg) {
+		memcpy(o, n, sizeof(*o));
+
 		/* TODO, this should be column uptodate or dirty */
 		ssbuf->segbuf_entry.done = lsa_ss_write_done;
 		lsa_segment_buffer_chain(segbuf, &ssbuf->segbuf_entry);
 		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(seg, segbuf);
+	} else {
+		memcpy(n, o, sizeof(*o));
 	}
 
 	return 0;
@@ -3021,6 +3036,7 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 		atomic_set(&ss->dirty_cnt, 0);
 		atomic_set(&ss->checkpoint_cnt, res);
 		list_splice_init(&ss->dirty, &ss->checkpoint);
+		BUG_ON(list_empty(&ss->checkpoint));
 	}
 	spin_unlock_irqrestore(&ss->lock, flags);
 }
@@ -3028,6 +3044,9 @@ lsa_ss_checkpoint(struct lsa_segment_status *ss)
 static void 
 lsa_ss_commit(struct lsa_segment_status *ss)
 {
+	debug("dirty %d, point %d, empty %d\n", atomic_read(&ss->dirty_cnt),
+			atomic_read(&ss->checkpoint_cnt),
+			list_empty(&ss->checkpoint));
 	lsa_ss_job(ss, &ss->checkpoint, WRITE);
 }
 
