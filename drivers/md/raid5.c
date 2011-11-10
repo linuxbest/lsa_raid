@@ -2428,6 +2428,12 @@ lsa_dirtory_write_done(struct segment_buffer *segbuf,
 	return 0;
 }
 
+#define lsa_entry_dump(s, x) \
+do { \
+	debug(s " lba %x, segid %x, col %d, off %d, len %d\n", \
+		x->log_track_id, x->seg_id, x->seg_column, x->offset, x->length); \
+} while (0)
+
 static int
 lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct entry_buffer *eh)
@@ -2442,10 +2448,8 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	debug("lt %d, fromseg %d, off %d, len %d\n",
 			eh->e.log_track_id, fromseg, offset, len);
 
-	debug("ln %x, %x, %x, %x, %x\n", ln->log_track_id, ln->seg_id,
-			ln->seg_column, ln->offset, ln->length);
-	debug("lo %x, %x, %x, %x, %x\n", lo->log_track_id, lo->seg_id,
-			lo->seg_column, lo->offset, lo->length);
+	lsa_entry_dump("new", ln);
+	lsa_entry_dump("old", lo);
 	BUG_ON(len < sizeof(*lo));
 
 	/* when copy to segment, mark the segment is dirty */
@@ -2902,6 +2906,12 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 	return 0;
 }
 
+#define lsa_ss_dump(s, x) \
+do { \
+	debug(s " segid %x, time %x, occup %x, sts %x\n", \
+		x->seg_id, x->timestamp, x->occupancy, x->status); \
+} while (0)
+
 static int
 lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct ss_buffer *ssbuf)
@@ -2915,11 +2925,8 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 
 	debug("ssid %x, fromseg %d, off %d, len %d\n", 
 			ssbuf->e.seg_id, fromseg, offset, len);
-	debug("new %x, %x, %x, %x\n",
-			n->seg_id, n->timestamp, n->occupancy, n->status);
-	debug("old %x, %x, %x, %x\n",
-			o->seg_id, o->timestamp, n->occupancy, o->status);
-
+	lsa_ss_dump("new", n);
+	lsa_ss_dump("old", o);
 	BUG_ON(len < sizeof(*n));
 
 	/* when copy to segment, mark the segment is dirty */
@@ -3327,12 +3334,10 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 	lsa_track_t *track = cookie->track;
 	lsa_entry_t *ln = &lt->new;
 
-	debug("ln %x, %x, %x, %x, %x\n", ln->log_track_id, ln->seg_id,
-			ln->seg_column, ln->offset, ln->length);
+	lsa_entry_dump("new", ln);
 	if (eb) {
 		lsa_entry_t *lo = &eb->e;
-		debug("lo %x, %x, %x, %x, %x\n", lo->log_track_id, lo->seg_id,
-				lo->seg_column, lo->offset, lo->length);
+		lsa_entry_dump("old", lo);
 
 		memcpy((void *)&lt->old, (void *)&eb->e,
 				sizeof(struct lsa_entry));
