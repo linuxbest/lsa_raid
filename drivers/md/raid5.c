@@ -1730,7 +1730,8 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	}
 	if (segbuf)
 		atomic_inc(&segbuf->count);
-	if (segbuf && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
+	/* when se is NULL, meaning we doing fill segment */
+	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
 			list_empty(&segbuf->active_entry)) {
 		list_add_tail(&segbuf->active_entry, &seg->active);
 		tasklet_schedule(&seg->tasklet);
