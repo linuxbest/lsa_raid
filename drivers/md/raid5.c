@@ -1500,6 +1500,7 @@ SEGBUF_FNS(LOCKED,   locked)
 static void 
 __segbuf_tree_delete(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
+	debug("segbuf %p, %p\n", segbuf, seg);
 	rb_erase(&segbuf->node, &seg->tree);
 }
 
@@ -1534,6 +1535,7 @@ __segbuf_tree_insert(struct lsa_segment *seg, struct segment_buffer *data)
 				struct segment_buffer, node);
 		int result = this->seg_id - data->seg_id;
 
+		parent = *new;
 		if (result < 0)
 			new = &((*new)->rb_left);
 		else if (result > 0)
@@ -1671,6 +1673,10 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	BUG_ON(!list_empty(&segbuf->read));
 	/* not LCS reserved entry */
 	BUG_ON(segbuf_lcs(segbuf));
+	/* must not locked */
+	BUG_ON(segbuf_locked(segbuf));
+	/* meta must cleared */
+	BUG_ON(segbuf_meta(segbuf));
 
 	list_del_init(&segbuf->lru_entry);
 	if (test_clear_segbuf_tree(segbuf))
@@ -2046,6 +2052,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 	seg->shift_sector = shift - 9;
 	seg->disks = disks;
 	seg->conf  = conf;
+	seg->tree = RB_ROOT;
 	
 	tasklet_init(&seg->tasklet, lsa_segment_tasklet, (unsigned long)seg);
 
@@ -2220,6 +2227,7 @@ __lsa_entry_insert(struct lsa_dirtory *dir, struct entry_buffer *data)
 				struct entry_buffer, node);
 		int result = this->e.log_track_id - data->e.log_track_id;
 
+		parent = *new;
 		if (result < 0)
 			new = &((*new)->rb_left);
 		else if (result > 0)
@@ -2750,6 +2758,7 @@ __ss_entry_insert(struct lsa_segment_status *ss, struct ss_buffer *data)
 				struct ss_buffer, node);
 		int result = this->e.seg_id - data->e.seg_id;
 
+		parent = *new;
 		if (result < 0)
 			new = &((*new)->rb_left);
 		else if (result > 0)
