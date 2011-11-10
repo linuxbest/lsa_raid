@@ -1372,12 +1372,15 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *
  *  LSA super block     4096 byte                            4096 byte
  *  LSA dirtory         (disk size/block size)*16         2T 512M byte
- *  LSA dirtory bitmap  (disk size/block size)/8          2T   4M byte
  *  LSA segment status  (disk_size/block size)*16/disks   2T 512M byte
  *  LSA closed segment  (8192 byte)                          8192 byte
  *
  *   entry size     = 16byte
  *   segment status = 16byte
+ *
+ *  meta size  total size
+ *         2G         2T
+ *         4G         4T
  */
 
 /***
@@ -1407,16 +1410,17 @@ LCS2SEG(struct lsa_closed_segment *lcs, int id)
 	return lcs->seg_id + id;
 }
 
+static inline int
+DIR2OFFSET(struct lsa_dirtory *dir, uint32_t log_track_id)
+{
+	int off = log_track_id & (dir->per_page-1);
+	return off * sizeof(lsa_entry_t);
+}
+
 static inline uint32_t
 DIR2SEG(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
-#if 0
-	raid5_conf_t *conf = container_of(dir, raid5_conf_t, lsa_dirtory);
-	int data_disks = conf->raid_disks - conf->max_degraded;
-	return log_track_id / data_disks;
-#else
-	return 8192 + log_track_id;
-#endif
+	return dir->seg_id + (log_track_id/dir->per_page);
 }
 
 static inline sector_t
@@ -1436,6 +1440,9 @@ enum {
 	STRIPE_MASK = STRIPE_SIZE-1,
 	TRACK_MAGIC   = 0xABCD0, /* TODO */
 	SEG_LCS_MAGIC = 0xABCD1,
+
+	SUPER_ID   = 0x0,
+	DIR_SEG_ID = 0x1,
 };
 /*
  * LSA segment operations
@@ -1449,11 +1456,11 @@ struct segment_buffer {
 	unsigned int     status, meta;
 	uint32_t         seg_id;
 	struct lsa_segment *seg;
+	sector_t         sector;
 	struct column {
 		struct bio     req;
 		struct bio_vec vec;
 		struct page   *page, *meta_page;
-		sector_t       sector;
 		unsigned long  flags;
 		struct lsa_track *track;
 	} column[1];
@@ -1573,7 +1580,6 @@ __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	int i;
 
 	for (i = 0; i < conf->raid_disks; i ++, column ++) {
-		column->sector = SEG2PSECTOR(seg, segbuf->seg_id);
 		column->flags  = 0;
 		column->req.bi_xor_disk = i;
 	}
@@ -1685,6 +1691,7 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	/* ok, reused it */
 	segbuf->status = SEG_FREE;
 	segbuf->seg_id = seg_id;
+	segbuf->sector = SEG2PSECTOR(seg, segbuf->seg_id);
 	__lsa_column_init(seg, segbuf);
 
 	return segbuf;
@@ -1809,6 +1816,21 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 	return res;
 }
 
+static char *
+lsa_segment_buf_addr(struct segment_buffer *segbuf, int offset, int *len)
+{
+	struct lsa_segment *seg = segbuf->seg;
+	int data = offset > seg->shift;
+	struct page *page = segbuf->column[data].page;
+	char *addr = page_address(page);
+	
+	offset &= ((1<<seg->shift)-1);
+	*len = 1<<seg->shift;
+	*len -= offset;
+
+	return addr + offset;
+}
+
 /* 
  * TODO:
  * 0) parity data write.
@@ -1844,6 +1866,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 					segbuf->seg_id, bi->bi_rw, i,
 					bi->bi_rw & WRITE ? "W" : "R");
 			lsa_segment_ref(segbuf);
+			bi->bi_sector = segbuf->sector + rdev->data_offset;
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
 			bi->bi_max_vecs = 1;
@@ -2400,17 +2423,31 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		struct entry_buffer *eh)
 {
 	int fromseg = !entry_uptodate(eh);
+	int len = 0;
+	int offset = DIR2OFFSET(eh->dir, eh->e.log_track_id);
+	const char *buf = lsa_segment_buf_addr(segbuf, offset, &len);
+	lsa_entry_t *lo = (lsa_entry_t *)buf;
+	lsa_entry_t *ln = &eh->e;
 
-	debug("lt %d, fromseg %d\n", eh->e.log_track_id, fromseg);
-	/* TODO */
+	debug("lt %d, fromseg %d, off %d, len %d\n",
+			eh->e.log_track_id, fromseg, offset, len);
+
+	debug("ln %x, %x, %x, %x, %x\n", ln->log_track_id, ln->seg_id,
+			ln->seg_column, ln->offset, ln->length);
+	debug("lo %x, %x, %x, %x, %x\n", lo->log_track_id, lo->seg_id,
+			lo->seg_column, lo->offset, lo->length);
 
 	/* when copy to segment, mark the segment is dirty */
 	if (!fromseg) {
+		memcpy(lo, &eh->e, sizeof(*lo));
+
 		/* TODO, this should be column uptodate or dirty */
 		eh->segbuf_entry.done = lsa_dirtory_write_done;
 		lsa_segment_buffer_chain(segbuf, &eh->segbuf_entry);
 		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(seg, segbuf);
+	} else {
+		memcpy(&eh->e, lo, sizeof(*lo));
 	}
 
 	return 0;
@@ -2455,9 +2492,6 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 	}
 	list_splice_init(&eh->cookie, &head);
 	spin_unlock_irqrestore(&dir->lock, flags);
-
-	if (lsa_bio_list_empty(&bio_list))
-		return 0;
 
 	/* moving the bio into target list then doing retry */
 	while ((bio = lsa_bio_list_pop(&bio_list))) {
@@ -2581,13 +2615,18 @@ lsa_dirtory_init(struct lsa_dirtory *dir, int seg_nr)
 
 	spin_lock_init(&dir->lock);
 	dir->tree = RB_ROOT;
-	dir->seg  = 0;
+	dir->seg  = 0x80000;
 	INIT_LIST_HEAD(&dir->dirty);
 	INIT_LIST_HEAD(&dir->checkpoint);
 	INIT_LIST_HEAD(&dir->lru);
 	INIT_LIST_HEAD(&dir->queue);
 	INIT_LIST_HEAD(&dir->retry);
 	tasklet_init(&dir->tasklet, lsa_dirtory_tasklet, (unsigned long)dir);
+
+	BUG_ON(PAGE_SIZE != 4096);
+	BUG_ON(sizeof(lsa_entry_t) != 16);
+	dir->per_page = PAGE_SIZE/sizeof(lsa_entry_t);
+	dir->seg_id = DIR_SEG_ID;
 
 	for (i = 0; i < ENTRY_HEAD_NR; i ++) {
 		struct entry_buffer *eh = kzalloc(sizeof(*eh), GFP_KERNEL);
@@ -2975,7 +3014,7 @@ typedef struct lcs_ondisk {
 	uint32_t sum;
 	uint32_t timestamp;
 	uint32_t seg[0];
-} lcs_ondisk_t;
+} __attribute__ ((packed)) lcs_ondisk_t;
 
 typedef struct lcs_buffer {
 	struct segment_buffer_entry segbuf_entry;
@@ -3240,8 +3279,15 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 	struct entry_buffer *eb = cookie->eb;
 	struct lsa_track_entry *lt = cookie->lt;
 	lsa_track_t *track = cookie->track;
+	lsa_entry_t *ln = &lt->new;
 
+	debug("ln %x, %x, %x, %x, %x\n", ln->log_track_id, ln->seg_id,
+			ln->seg_column, ln->offset, ln->length);
 	if (eb) {
+		lsa_entry_t *lo = &eb->e;
+		debug("lo %x, %x, %x, %x, %x\n", lo->log_track_id, lo->seg_id,
+				lo->seg_column, lo->offset, lo->length);
+
 		memcpy((void *)&lt->old, (void *)&eb->e,
 				sizeof(struct lsa_entry));
 		memcpy((void *)&eb->e, (void *)&lt->new,
@@ -3273,7 +3319,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	lt->new.seg_id       = segfill->segbuf->seg_id;
 	lt->new.seg_column   = segfill->data_column;
 	lt->new.offset       = bi->bi_sector & segfill->mask_offset;
-	lt->new.length       = bi->bi_size;
+	lt->new.length       = bi->bi_size>>9;
 
 	/* setup the cookie */
 	*ck = cookie;
@@ -3517,7 +3563,7 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 
 	segfill->seg         = &conf->data_segment;
 	segfill->meta_max    =(STRIPE_SIZE - 16)/sizeof(struct lsa_track_entry);
-	segfill->mask_offset = STRIPE_SIZE - 1;
+	segfill->mask_offset = (STRIPE_SIZE>>9)-1;
 	segfill->data_shift  = STRIPE_SHIFT;
 	segfill->max_column  = data_disks;
 

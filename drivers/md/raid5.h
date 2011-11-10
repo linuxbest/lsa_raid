@@ -466,6 +466,9 @@ struct raid5_private_data {
 		struct list_head wip;
 		struct tasklet_struct tasklet;
 		atomic_t dirty_cnt, checkpoint_cnt;
+		/* ondisk seg index */
+		int per_page;
+		uint32_t seg_id;
 	} lsa_dirtory;
 
 	struct lsa_segment_status {
