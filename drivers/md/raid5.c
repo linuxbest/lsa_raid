@@ -1461,7 +1461,7 @@ struct segment_buffer {
 	struct rb_node   node;
 	struct list_head lru_entry, active_entry, dirty_entry, write, read;
 	unsigned long    flags;
-	atomic_t         count;
+	atomic_t         count, bios;
 	unsigned int     status, meta;
 	uint32_t         seg_id;
 	struct lsa_segment *seg;
@@ -1622,6 +1622,10 @@ static int
 lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type);
 static int
 lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status);
+static int
+lsa_segment_read_done(struct lsa_segment *seg, struct segment_buffer *segbuf);
+static int
+lsa_segment_write_done(struct lsa_segment *seg, struct segment_buffer *segbuf);
 
 static void 
 lsa_column_end_write(struct bio *bi, int error)
@@ -1632,14 +1636,17 @@ lsa_column_end_write(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	debug("segid %x, col %d, ref %d, uptodate %d.\n", segbuf->seg_id, disks,
-			atomic_read(&segbuf->count), uptodate);
+	debug("segid %x, col %d, bios %d, uptodate %d.\n", segbuf->seg_id, disks,
+			atomic_read(&segbuf->bios), uptodate);
 
 	if (!uptodate) {
 		set_bit(R5_WriteError, &column->flags);
 	}
 
-	lsa_segment_release(segbuf, WRITE_DONE);
+	if (atomic_dec_and_test(&segbuf->bios)) {
+		clear_segbuf_locked(segbuf);
+		lsa_segment_read_done(segbuf->seg, segbuf);
+	}
 }
 
 static void 
@@ -1651,8 +1658,8 @@ lsa_column_end_read(struct bio *bi, int error)
 	int disks = bi->bi_xor_disk;
 	struct column *column = &segbuf->column[disks];
 
-	debug("segid %x, col %d, ref %d, uptodate %d.\n", segbuf->seg_id, disks,
-			atomic_read(&segbuf->count), uptodate);
+	debug("segid %x, col %d, bios %d, uptodate %d.\n", segbuf->seg_id, disks,
+			atomic_read(&segbuf->bios), uptodate);
 
 	if (uptodate) {
 		set_bit(R5_UPTODATE, &column->flags);
@@ -1660,7 +1667,10 @@ lsa_column_end_read(struct bio *bi, int error)
 		clear_bit(R5_UPTODATE, &column->flags);
 	}
 
-	lsa_segment_release(segbuf, READ_DONE);
+	if (atomic_dec_and_test(&segbuf->bios)) {
+		clear_segbuf_locked(segbuf);
+		lsa_segment_write_done(segbuf->seg, segbuf);
+	}
 }
 
 static struct segment_buffer *
@@ -1703,6 +1713,8 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	segbuf->sector = SEG2PSECTOR(seg, segbuf->seg_id);
 	__lsa_column_init(seg, segbuf);
 
+	atomic_set(&segbuf->bios, 1);
+
 	return segbuf;
 }
 
@@ -1740,9 +1752,9 @@ lsa_segment_ref(struct segment_buffer *segbuf)
 }
 
 static void
-lsa_segment_unref(struct segment_buffer *segbuf)
+lsa_segment_bio_ref(struct segment_buffer *segbuf)
 {
-	atomic_dec(&segbuf->count);
+	atomic_inc(&segbuf->bios);
 }
 
 static struct segment_buffer *
@@ -1759,6 +1771,8 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 			list_del_init(&segbuf->lru_entry);
 	} else {
 		segbuf = __lsa_segment_freed(seg, seg_id);
+		/* TODO */
+		BUG_ON(segbuf == NULL);
 		set_segbuf_tree(segbuf);
 		BUG_ON(__segbuf_tree_insert(seg, segbuf) == 0);
 	}
@@ -1778,7 +1792,6 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 			list_empty(&segbuf->active_entry)) {
 		/* doing real job @ tasklet, so just ref the segbuf */
 		list_add_tail(&segbuf->active_entry, &seg->active);
-		lsa_segment_ref(segbuf);
 		tasklet_schedule(&seg->tasklet);
 	}
 	spin_unlock_irqrestore(&seg->lock, flags);
@@ -1875,7 +1888,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			debug("segid %x, op %ld on disc %d, %s\n",
 					segbuf->seg_id, bi->bi_rw, i,
 					bi->bi_rw & WRITE ? "W" : "R");
-			lsa_segment_ref(segbuf);
+			atomic_inc(&segbuf->bios);
 			bi->bi_sector = segbuf->sector + rdev->data_offset;
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
@@ -1981,31 +1994,11 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 {
 	struct lsa_segment *seg = segbuf->seg;
 	unsigned long flags;
-	int lru = 1;
 
 	debug("segid %x, ref %d, event %d, flags %lx\n", segbuf->seg_id,
 			atomic_read(&segbuf->count), type, segbuf->flags);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
-
-	switch (type) {
-	case READ_DONE:
-		clear_segbuf_locked(segbuf);
-		lsa_segment_read_done(seg, segbuf);
-		break;
-	case WRITE_DONE:
-		clear_segbuf_locked(segbuf);
-		lsa_segment_write_done(seg, segbuf);
-		break;
-	case WRITE_WANT:
-		lru = 0;
-		set_segbuf_uptodate(segbuf);
-		lsa_segment_dirty(segbuf->seg, segbuf);
-		lsa_segment_event(segbuf, SEG_CLOSING);
-		break;
-	default:
-		break;
-	}
 
 	spin_lock_irqsave(&seg->lock, flags);
 	/* LCS entry must reserved, not in the lru tree */
@@ -2031,8 +2024,6 @@ lsa_segment_tasklet(unsigned long data)
 				struct segment_buffer, active_entry);
 		list_del_init(&segbuf->active_entry);
 		set_segbuf_locked(segbuf);
-		/* unref the segbuf */
-		lsa_segment_unref(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
 		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
@@ -2043,8 +2034,6 @@ lsa_segment_tasklet(unsigned long data)
 				struct segment_buffer, dirty_entry);
 		list_del_init(&segbuf->dirty_entry);
 		set_segbuf_locked(segbuf);
-		/* unref the segbuf */
-		lsa_segment_unref(segbuf);
 		spin_unlock_irqrestore(&seg->lock, flags);
 		debug("segid %x,\n", segbuf->seg_id);
 		lsa_segment_handle(seg, segbuf);
@@ -2428,6 +2417,7 @@ lsa_dirtory_write_done(struct segment_buffer *segbuf,
 	debug("dirtory %d\n", eh->e.log_track_id);
 	clear_entry_dirty(eh);
 	lsa_entry_put(eh->dir, eh);
+	lsa_segment_release(segbuf, 0);
 	return 0;
 }
 
@@ -2522,6 +2512,8 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 		list_del_init(&cookie->entry);
 		__lsa_track_cookie_update(cookie);
 	}
+	
+	lsa_segment_release(segbuf, 0);
 
 	return 0;
 }
@@ -2541,8 +2533,6 @@ __lsa_dirtory_rw(struct lsa_segment *seg, struct lsa_dirtory *dir,
 	segbuf = lsa_segment_find_or_create(seg,
 			DIR2SEG(dir, eh->e.log_track_id), se);
 	BUG_ON(segbuf == NULL);
-
-	lsa_segment_release(segbuf, 0);
 
 	return res;
 }
@@ -2906,6 +2896,8 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 	list_add_tail(&ssbuf->entry, &ss->lru);
 	spin_unlock_irqrestore(&ss->lock, flags);
 	
+	lsa_segment_release(segbuf, 0);
+	
 	return 0;
 }
 
@@ -2957,7 +2949,9 @@ lsa_ss_uptodate_done(struct segment_buffer *segbuf,
 	debug("ssid %x, %d\n", ssbuf->e.seg_id, se->rw);
 	if (se->rw == WRITE) {
 		lsa_ss_copy(segbuf->seg, segbuf, ssbuf);
+		return 0;
 	}
+	lsa_segment_release(segbuf, 0);
 	return 0;
 }
 
@@ -2977,7 +2971,6 @@ lsa_ss_rw(struct lsa_segment_status *ss, struct ss_buffer *ssbuf, int rw)
 			SS2SEG(ss, ssbuf->e.seg_id), se);
 	BUG_ON(segbuf == NULL);
 
-	lsa_segment_release(segbuf, 0);
 
 	return res;
 }
@@ -3311,6 +3304,19 @@ __lsa_track_update_sum(lsa_track_t *track, struct lsa_track_entry *lt)
 	} while (size--);
 }
 
+static int 
+__lsa_segment_write_want(struct segment_buffer *segbuf)
+{
+	debug("segid %x, bios %d\n", segbuf->seg_id,
+			atomic_read(&segbuf->bios));
+	if (atomic_dec_and_test(&segbuf->bios)) {
+		lsa_segment_event(segbuf, SEG_CLOSING);
+		set_segbuf_uptodate(segbuf);
+		lsa_segment_dirty(segbuf->seg, segbuf);
+	}
+	return 0;
+}
+
 static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 {
@@ -3337,7 +3343,7 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 	}
 	__lsa_track_update_sum(track, lt);
 	if (track->segbuf)
-		lsa_segment_release(track->segbuf, WRITE_WANT);
+		__lsa_segment_write_want(track->segbuf);
 	else
 		__lsa_track_unref(track);
 }
@@ -3426,7 +3432,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 		__lsa_track_unref(track);
 		if (atomic_read(&track->count) == 0)
 			break;
-		lsa_segment_ref(segbuf);
+		lsa_segment_bio_ref(segbuf);
 	} while (atomic_read(&track->count));
 	track->segbuf = segbuf;
 }
@@ -3443,6 +3449,7 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	debug("segid %x, meta %d, seg %p\n",
 			segbuf->seg_id, segbuf->meta, segbuf->seg);
 	lsa_segment_event(segbuf, SEG_CLOSED);
+	lsa_segment_release(segbuf, 0);
 	if (!test_clear_segbuf_meta(segbuf)) {
 		/* without meta data */
 		return 0;
@@ -3482,7 +3489,7 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
 		lsa_ss_checkpoint(&conf->lsa_segment_status);
 	}
-	lsa_segment_release(segfill->segbuf, WRITE_WANT);
+	__lsa_segment_write_want(segfill->segbuf);
 	segfill->segbuf = NULL;
 }
 
@@ -3523,7 +3530,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	struct segment_buffer *segbuf = segfill->segbuf;
 	struct page *page = segbuf->column[data].page;
 
-	lsa_segment_ref(segbuf);
+	lsa_segment_bio_ref(segbuf);
 	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset);
 	segfill->data_column ++;
 	BUG_ON(segfill->data_column > segfill->max_column);
@@ -3760,7 +3767,7 @@ lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 	if (dirty) {
 		debug("segid %x,\n", segbuf->seg_id);
 		/* TODO should seting the column uptodate & dirty */
-		return lsa_segment_release(segbuf, WRITE_WANT);
+		return __lsa_segment_write_want(segbuf);
 	}
 
 	return 0;
