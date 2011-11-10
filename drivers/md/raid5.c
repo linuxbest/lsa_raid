@@ -2687,6 +2687,7 @@ struct ss_buffer {
 	struct rb_node node;
 	struct list_head entry;
 	atomic_t count;
+	struct lsa_segment_status *ss;
 #define SEGSTAT_TREE     0
 #define SEGSTAT_DIRTY    1
 #define SEGSTAT_UPTODATE 2
@@ -2868,6 +2869,8 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 			BUG_ON(__ss_entry_insert(ss, ssbuf) == 0);
 			set_ss_uptodate(ssbuf);
 		}
+	} else {
+		list_del_init(&ssbuf->entry);
 	}
 	if (ssbuf) {
 		ssbuf->e.status    = status;
@@ -2885,7 +2888,17 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 {
 	struct ss_buffer *ssbuf = container_of(se,
 			struct ss_buffer, segbuf_entry);
+	struct lsa_segment_status *ss = ssbuf->ss;
+	unsigned long flags;
+
 	debug("ssid %x, %d\n", ssbuf->e.seg_id, se->rw);
+
+	clear_ss_dirty(ssbuf);
+
+	spin_lock_irqsave(&ss->lock, flags);
+	list_add_tail(&ssbuf->entry, &ss->lru);
+	spin_unlock_irqrestore(&ss->lock, flags);
+	
 	return 0;
 }
 
