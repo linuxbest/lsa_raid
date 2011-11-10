@@ -2367,6 +2367,9 @@ lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
 		if (!test_set_entry_tree(eh))
 			__lsa_entry_insert(dir, eh);
 		tasklet_schedule(&dir->tasklet);
+	} else if (!entry_dirty(eh)) {
+		/* detel from the lru */
+		list_del_init(&eh->lru);
 	}
 	debug("eh %d, ref %d, %08lx\n", eh->e.log_track_id, 
 			atomic_read(&eh->count), eh->flags);
@@ -3011,6 +3014,8 @@ lsa_ss_read(struct lsa_segment_status *ss,
 	ssbuf = __ss_entry_search(ss, seg_id);
 	if (ssbuf == NULL) {
 		ssbuf = __lsa_ss_freed(ss);
+	} else if (!ss_dirty(ssbuf)) {
+		list_del_init(&ssbuf->entry);
 	}
 	spin_unlock_irqrestore(&ss->lock, flags);
 
