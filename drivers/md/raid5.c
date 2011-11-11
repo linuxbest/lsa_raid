@@ -2021,9 +2021,9 @@ lsa_segment_write_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
 }
 
 static int
-lsa_segment_half_full(struct lsa_segment *seg)
+lsa_segment_almost_full(struct lsa_segment *seg)
 {
-	return seg->free_cnt < (seg->total_cnt/2);
+	return seg->free_cnt < (seg->total_cnt/8);
 }
 
 static int
@@ -2045,7 +2045,7 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 		seg->free_cnt ++;
 		list_add_tail(&segbuf->lru_entry, &seg->lru);
 
-		if (!lsa_segment_half_full(&seg->conf->data_segment) && 
+		if (!lsa_segment_almost_full(&seg->conf->data_segment) && 
 				seg == &seg->conf->data_segment)
 			tasklet_schedule(&seg->conf->lsa_tasklet);
 	}
@@ -3848,7 +3848,7 @@ lsa_bio_tasklet(unsigned long data)
 
 	while (kfifo_len(&conf->lsa_bio)) {
 		struct lsa_bio *bi = NULL;
-		int full = lsa_segment_half_full(&conf->data_segment);
+		int full = lsa_segment_almost_full(&conf->data_segment);
 		int res;
 		res = kfifo_out_locked(&conf->lsa_bio,
 				(unsigned char *)&bi,
@@ -3871,7 +3871,7 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
-	int full = lsa_segment_half_full(&conf->data_segment), res;
+	int full = lsa_segment_almost_full(&conf->data_segment), res;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
