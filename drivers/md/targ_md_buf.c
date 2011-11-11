@@ -165,7 +165,6 @@ static void targ_bio_put(targ_req_t *req)
 static void targ_bio_end_io(struct lsa_bio *bi, int error)
 {
 	bi->bi_state = IO_END;
-	lsa_bio_put(bi);
 }
 
 targ_buf_t *targ_buf_new(targ_dev_t *dev, uint64_t blknr, 

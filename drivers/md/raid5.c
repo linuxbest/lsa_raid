@@ -3939,6 +3939,8 @@ static void lsa_bio_end_io(struct lsa_bio *bio, int error)
 			bi->bi_phys_segments);
 	if (!raid5_dec_bi_phys_segments(bi))
 		bio_endio(bi, 0);
+
+	lsa_bio_put(bio);
 }
 
 static int lsa_make_request(mddev_t *mddev, struct bio * bi)
@@ -3947,7 +3949,6 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 	sector_t remainning = bi->bi_size >> SECTOR_SHIFT;
 	sector_t len = 0;
 	sector_t blknr = bi->bi_sector;
-	struct lsa_bio *bio;
 	int nr = 0;
 
 	if (unlikely(bi->bi_rw & REQ_FLUSH)) {
@@ -3957,6 +3958,7 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 
 	bi->bi_phys_segments = 1;
 	do {
+		struct lsa_bio *bio;
 		sector_t split_io = STRIPE_SECTORS;
 		sector_t offset   = bi->bi_sector;
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
@@ -3983,7 +3985,8 @@ static int lsa_make_request(mddev_t *mddev, struct bio * bi)
 	} while (remainning -= len);
 
 	spin_lock_irq(&conf->device_lock);
-	lsa_bio_end_io(bio, 0);
+	if (!raid5_dec_bi_phys_segments(bi))
+		bio_endio(bi, 0);
 	spin_unlock_irq(&conf->device_lock);
 
 	return 0;
@@ -8421,11 +8424,19 @@ struct lsa_bio *lsa_bio_alloc(gfp_t gfp)
 	struct lsa_bio *bio;
 	bio = kmem_cache_alloc(bio_kmem, gfp);
 	atomic_set(&bio->count, 1);
+	debug("bio %p, ref %d\n", bio, 1);
 	return bio;
+}
+
+void lsa_bio_ref(struct lsa_bio *bio)
+{
+	debug("bio %p, ref %d\n", bio, atomic_read(&bio->count));
+	atomic_inc(&bio->count);
 }
 
 void lsa_bio_put(struct lsa_bio *bio)
 {
+	debug("bio %p, ref %d\n", bio, atomic_read(&bio->count));
 	if (atomic_dec_and_test(&bio->count))
 		kmem_cache_free(bio_kmem, bio);
 }

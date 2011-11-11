@@ -257,6 +257,7 @@ static inline struct lsa_bio *lsa_bio_list_pop(struct lsa_bio_list *bl)
 
 struct lsa_bio * lsa_bio_alloc(gfp_t gfp);
 void             lsa_bio_put(struct lsa_bio *bio);
+void             lsa_bio_ref(struct lsa_bio *bio);
 void             lsa_bio_endio(struct lsa_bio *bio, int error);
 
 int              lsa_raid_bio_queue (struct mddev_s *mddev, struct lsa_bio * bi);
