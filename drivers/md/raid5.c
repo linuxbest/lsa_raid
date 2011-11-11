@@ -2338,8 +2338,8 @@ lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
  *                request is finished.
  */
 static int
-lsa_entry_get(struct lsa_dirtory *dir, uint32_t log_track_id,
-	     struct lsa_bio *bio, lsa_track_cookie_t *cookie)
+lsa_entry_find_or_create(struct lsa_dirtory *dir, uint32_t log_track_id,
+		struct lsa_bio *bio, lsa_track_cookie_t *cookie)
 {
 	int res = 0;
 	unsigned long flags;
@@ -3582,7 +3582,7 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 	res = __lsa_segment_fill_append(segfill, bi, &cookie, log_track_id);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
-	res = lsa_entry_get(&conf->lsa_dirtory, log_track_id, NULL, cookie);
+	res = lsa_entry_find_or_create(&conf->lsa_dirtory, log_track_id, NULL, cookie);
 	debug("ltid %d, res %d\n", log_track_id, res);
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
