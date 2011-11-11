@@ -445,6 +445,9 @@ struct raid5_private_data {
 	struct tasklet_struct   tasklet;
 	struct stripe_head  *lsa_zero_sh;
 
+	struct tasklet_struct lsa_tasklet;
+	struct kfifo lsa_bio;
+
 	/* TODO: data cache is holding buffer for read/write */
 	struct lsa_data_cache {
 	} lsa_data_cache;
@@ -509,7 +512,7 @@ struct raid5_private_data {
 		struct list_head dirty;
 		struct list_head lcs_head;
 		struct tasklet_struct tasklet;
-		int free_cnt;
+		int free_cnt, total_cnt;
 	} meta_segment, data_segment;
 
 	struct lsa_segment_fill {

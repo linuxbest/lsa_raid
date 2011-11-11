@@ -53,10 +53,10 @@
 #include <linux/slab.h>
 #include <linux/ratelimit.h>
 #include "md.h"
-#include "raid5.h"
 #include "raid0.h"
 #include "bitmap.h"
 #include "target.h"
+#include "raid5.h"
 
 #include "lsa.h"
 
@@ -1797,7 +1797,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	segbuf = __segbuf_tree_search(seg, seg_id);
 	if (segbuf && test_clear_segbuf_lru(segbuf)) {
 		list_del_init(&segbuf->lru_entry);
-	} else if (segbuf == NULL){
+	} else if (segbuf == NULL) {
 		segbuf = __lsa_segment_freed(seg, seg_id);
 		/* TODO */
 		BUG_ON(segbuf == NULL);
@@ -1818,7 +1818,6 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	/* when se is NULL, meaning we doing fill segment */
 	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
 			list_empty(&segbuf->active_entry)) {
-		/* doing real job @ tasklet, so just ref the segbuf */
 		list_add_tail(&segbuf->active_entry, &seg->active);
 		tasklet_schedule(&seg->tasklet);
 	}
@@ -2022,13 +2021,20 @@ lsa_segment_write_done(struct lsa_segment *seg, struct segment_buffer *segbuf)
 }
 
 static int
+lsa_segment_half_full(struct lsa_segment *seg)
+{
+	return seg->free_cnt < (seg->total_cnt/2);
+}
+
+static int
 lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 {
 	struct lsa_segment *seg = segbuf->seg;
 	unsigned long flags;
 
-	debug("segid %x, ref %d, event %d, flags %lx\n", segbuf->seg_id,
-			atomic_read(&segbuf->count), type, segbuf->flags);
+	debug("segid %x, ref %d, event %d, flags %lx, free %d\n",
+			segbuf->seg_id, atomic_read(&segbuf->count), type,
+			segbuf->flags, seg->free_cnt);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
@@ -2038,6 +2044,10 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 		set_segbuf_lru(segbuf);
 		seg->free_cnt ++;
 		list_add_tail(&segbuf->lru_entry, &seg->lru);
+
+		if (!lsa_segment_half_full(&seg->conf->data_segment) && 
+				seg == &seg->conf->data_segment)
+			tasklet_schedule(&seg->conf->lsa_tasklet);
 	}
 	spin_unlock_irqrestore(&seg->lock, flags);
 
@@ -2131,6 +2141,7 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 		INIT_LIST_HEAD(&segbuf->read);
 		seg->free_cnt ++;
 	}
+	seg->total_cnt = seg->free_cnt;
 
 	return 0;
 }
@@ -3773,6 +3784,8 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	return 0;
 }
 
+static void lsa_bio_tasklet(unsigned long data);
+
 static int lsa_stripe_init(raid5_conf_t *conf)
 {
 	int res;
@@ -3794,7 +3807,11 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_set(&sh->count, 1);
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
-	
+
+	res = kfifo_alloc(&conf->lsa_bio, sizeof(struct lsa_bio *) * 512, GFP_KERNEL);
+	debug("res %d\n", res);
+	tasklet_init(&conf->lsa_tasklet, lsa_bio_tasklet, (unsigned long)conf);
+
 	res = lsa_dirtory_init(&conf->lsa_dirtory,
 			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 	debug("res %d\n", res);
@@ -3830,24 +3847,55 @@ lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector,
 	return 0;
 }
 
+static void 
+lsa_bio_tasklet(unsigned long data)
+{
+	raid5_conf_t *conf = (raid5_conf_t *)data;
+
+	while (kfifo_len(&conf->lsa_bio)) {
+		struct lsa_bio *bi = NULL;
+		int full = lsa_segment_half_full(&conf->data_segment);
+		int res;
+		res = kfifo_out_locked(&conf->lsa_bio,
+				(unsigned char *)&bi,
+				sizeof(bi),
+				&conf->device_lock);
+		BUG_ON(res != sizeof(bi));
+		debug("bio %llu, %u, %s, full %d\n", (unsigned long long)bi->bi_sector,
+				bi->lt, bio_data_dir(bi) == WRITE ? "W" : "R", full);
+		if (bio_data_dir(bi) == WRITE)
+			lsa_segment_fill_write(&conf->segment_fill, bi, bi->lt);
+		else
+			lsa_page_read(conf, bi, bi->lt, NULL);
+		if (full)
+			break;
+	};
+}
+
 static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 {
 	const int rw = bio_data_dir(bi);
 	unsigned int chunk_offset;
 	sector_t logical_sector;
+	int full = lsa_segment_half_full(&conf->data_segment), res;
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
-	debug("bio %llu, %u, %s\n",
-			(unsigned long long)bi->bi_sector,
-			(uint32_t)logical_sector,
-			rw == WRITE ? "W" : "R");
+	debug("bio %llu, %u, %s, full %d\n", (unsigned long long)bi->bi_sector,
+			(uint32_t)logical_sector, rw == WRITE ? "W" : "R", full);
+	bi->lt = (uint32_t)logical_sector;
 
-	if (rw == WRITE)
-		return lsa_segment_fill_write(&conf->segment_fill, bi,
-				(uint32_t)logical_sector);
-	return lsa_page_read(conf, bi, (uint32_t)logical_sector, NULL);
+	res = kfifo_in_locked(&conf->lsa_bio, 
+			(unsigned char *)&bi,
+			sizeof(bi),
+			&conf->device_lock);
+	BUG_ON(res != sizeof(bi));
+
+	if (full == 0)
+		tasklet_schedule(&conf->lsa_tasklet);
+
+	return 0;
 }
 
 int

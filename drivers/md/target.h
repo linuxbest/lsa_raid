@@ -206,6 +206,7 @@ struct lsa_bio {
 	unsigned int bi_state;
 	atomic_t     count;
 	unsigned long bi_flags;
+	uint32_t lt;
 	struct lsa_bio *bi_next;
 	void *bi_private;
 	void (*bi_end_io)(struct lsa_bio *bio, int error);
