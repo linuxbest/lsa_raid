@@ -3482,10 +3482,15 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	BUG_ON(track->segbuf != NULL);
 
 	res = atomic_read(&track->count);
+	BUG_ON(res == 0);
+	res --;
 	__lsa_segment_write_ref(segbuf, res);
 	atomic_set(&track->count, 0);
 
 	track->segbuf = segbuf;
+	debug("segid %x, col %d, res %d, total %x, sum %08x\n",
+			segfill->meta_id, segfill->meta_column, res,
+			track->buf->total, track->buf->sum);
 }
 
 static int
