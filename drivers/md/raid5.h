@@ -521,12 +521,9 @@ struct raid5_private_data {
 		struct lsa_track *track;
 		struct segment_buffer *segbuf;
 		struct lsa_segment *seg;
-		unsigned int data_shift;
 		unsigned int data_column;
 		unsigned int max_column;
 		unsigned int meta_max;
-		unsigned int cls_order;
-		unsigned int max_seg_cls;
 		uint32_t     meta_id;
 		unsigned int meta_column;
 		struct list_head head;

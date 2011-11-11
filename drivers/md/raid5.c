@@ -3343,7 +3343,8 @@ static void
 __lsa_track_put(lsa_track_t *track)
 {
 	struct lsa_segment_fill *segfill = track->segfill;
-	debug("track %p, ref %d\n", track, atomic_read(&track->count));
+	debug("track %p, ref %d, free %d\n",
+			track, atomic_read(&track->count), segfill->free_cnt);
 	if (atomic_dec_and_test(&track->count) == 0)
 		return;
 
@@ -3517,7 +3518,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	BUG_ON(res == 0);
 	res --;
 	__lsa_segment_write_ref(segbuf, res);
-	atomic_set(&track->count, 0);
+	atomic_set(&track->count, 1);
 
 	track->segbuf = segbuf;
 	debug("segid %x, col %d, res %d, total %x, sum %08x\n",
@@ -3694,16 +3695,9 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	spin_lock_init(&segfill->lock);
 
 	segfill->seg         = &conf->data_segment;
-	segfill->meta_max    =(STRIPE_SIZE - 16)/sizeof(struct lsa_track_entry);
+	segfill->meta_max    = 256;
 	segfill->mask_offset = (STRIPE_SIZE>>9)-1;
-	segfill->data_shift  = STRIPE_SHIFT;
 	segfill->max_column  = data_disks;
-
-	/* for fasting test */
-	segfill->meta_max    = min_t(int, segfill->meta_max, 128);
-
-	segfill->cls_order   = 1;
-	segfill->max_seg_cls = (1<<(segfill->cls_order+PAGE_SHIFT))/sizeof(uint32_t);
 
 	/* TODO loading from the super block */
 	segfill->meta_id     = 0;
@@ -3711,25 +3705,25 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 
 	segfill->free_cnt    = 0;
 
-	max_tracks = STRIPE_SECTORS;
+	max_tracks = segfill->meta_max;
 	lt_len = sizeof(lsa_track_t) + max_tracks*sizeof(lsa_track_cookie_t);
 
-	for (i = 0; i < max_tracks*2; i ++) {
-		lsa_track_t *lt = kzalloc(lt_len, GFP_KERNEL);
-		if (lt == NULL)
+	for (i = 0; i < max_tracks; i ++) {
+		lsa_track_t *track = kzalloc(lt_len, GFP_KERNEL);
+		if (track == NULL)
 			return -1;
 
 		/* 64kpage, 16 disks, with 32byte per.
 		 * ((65536/512)*16)*32 = 65536 
 		 */
-		lt->page = alloc_pages(GFP_KERNEL, STRIPE_ORDER);
-		if (lt->page == NULL)
+		track->page = alloc_pages(GFP_KERNEL, STRIPE_ORDER);
+		if (track->page == NULL)
 			return -1;
-		lt->buf = (lsa_track_buffer_t *)page_address(lt->page);
-		lt->dir = &conf->lsa_dirtory;
-		lt->lcs = NULL;
-		lt->segfill = segfill;
-		list_add_tail(&lt->entry, &segfill->free);
+		track->buf = (lsa_track_buffer_t *)page_address(track->page);
+		track->dir = &conf->lsa_dirtory;
+		track->lcs = NULL;
+		track->segfill = segfill;
+		list_add_tail(&track->entry, &segfill->free);
 		segfill->free_cnt ++;
 	}
 
