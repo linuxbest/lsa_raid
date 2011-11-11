@@ -3802,7 +3802,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
 
-	res = kfifo_alloc(&conf->lsa_bio, sizeof(struct lsa_bio *) * 512, GFP_KERNEL);
+	res = kfifo_alloc(&conf->lsa_bio, STRIPE_SIZE, GFP_KERNEL);
 	debug("res %d\n", res);
 	tasklet_init(&conf->lsa_tasklet, lsa_bio_tasklet, (unsigned long)conf);
 
