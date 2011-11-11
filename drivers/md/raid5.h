@@ -469,6 +469,7 @@ struct raid5_private_data {
 		/* ondisk seg index */
 		int per_page;
 		uint32_t seg_id;
+		int free_cnt;
 	} lsa_dirtory;
 
 	struct lsa_segment_status {
@@ -481,6 +482,7 @@ struct raid5_private_data {
 		/* ondisk seg id */
 		int per_page;
 		uint32_t seg_id;
+		int free_cnt;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
@@ -493,6 +495,7 @@ struct raid5_private_data {
 		struct segment_buffer *segbuf[4];
 		unsigned int seg;
 		uint32_t seg_id;
+		int free_cnt;
 	} lsa_closed_status;
 
 	/* memory segment buffer */
@@ -506,6 +509,7 @@ struct raid5_private_data {
 		struct list_head dirty;
 		struct list_head lcs_head;
 		struct tasklet_struct tasklet;
+		int free_cnt;
 	} meta_segment, data_segment;
 
 	struct lsa_segment_fill {
@@ -524,6 +528,7 @@ struct raid5_private_data {
 		unsigned int meta_column;
 		struct list_head head;
 		struct list_head free;
+		int free_cnt;
 	} segment_fill;
 };
 
