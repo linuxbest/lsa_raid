@@ -1931,7 +1931,6 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			bi->bi_next = NULL;
 			column->vec.bv_page = column->meta_page ?
 				column->meta_page : column->page;
-			bi->bi_rw |= REQ_NOMERGE;
 			lsa_segment_bio_ref(segbuf);
 			generic_make_request(bi);
 		} else {
