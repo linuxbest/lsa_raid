@@ -3216,28 +3216,6 @@ lsa_ss_job(struct lsa_segment_status *ss, struct list_head *head, int rw)
 	spin_unlock_irqrestore(&ss->lock, flags);
 }
 
-static int
-lsa_ss_read(struct lsa_segment_status *ss,
-		uint32_t seg_id, segment_status_t *e)
-{
-	struct ss_buffer *ssbuf;
-	unsigned long flags;
-
-	spin_lock_irqsave(&ss->lock, flags);
-	ssbuf = __ss_entry_search(ss, seg_id);
-	if (ssbuf == NULL) {
-		ssbuf = __lsa_ss_freed(ss);
-	} else if (!ss_dirty(ssbuf)) {
-		list_del_init(&ssbuf->entry);
-	}
-	spin_unlock_irqrestore(&ss->lock, flags);
-
-	if (ssbuf == NULL)
-		return -ENOMEM;
-
-	return lsa_ss_rw(ss, ssbuf, READ);
-}
-
 static void
 lsa_ss_checkpoint_sts(struct lsa_segment_status *ss, int *dirty, int *point)
 {
@@ -3580,6 +3558,118 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 	debug("lb %d write, %d\n", lb->seg, i);
 }
 
+static void 
+proc_lcs_read_done(struct lsa_track_cookie *cookie)
+{
+	debug("cookie %p\n", cookie);
+	complete(cookie->comp);
+}
+
+static void *
+proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
+{
+#if 0
+	struct completion done;
+	struct lsa_track_cookie cookie;
+	int res;
+	lsa_entry_t *x;
+
+	init_completion(&done);
+	INIT_LIST_HEAD(&cookie.entry);
+	cookie.track= NULL;
+	cookie.lt   = NULL;
+	cookie.eb   = NULL;
+	cookie.done = proc_dirtory_read_done;
+	cookie.comp = &done;
+	res = lsa_entry_find_or_create(dir, seq, NULL, &cookie);
+	debug("ltid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
+	if (res == -EINPROGRESS) {
+		wait_for_completion(&done);
+	}
+	x = &cookie.eb->e;
+	/*        (p, "-------- -------- --- ------- ------- ---- ------  ---\n");*/
+	seq_printf(p, "%08x %08x %03x %07x %07x %04x %06x %03x\n",
+			x->log_track_id, x->seg_id, x->seg_column,
+			x->offset, x->length, x->age, x->status, x->activity);
+	lsa_entry_put(dir, cookie.eb);
+#endif
+	return lcs;
+}
+
+static void *
+proc_lcs_start(struct seq_file *p, loff_t *pos)
+{
+	struct lsa_closed_segment *lcs = p->private;
+	
+	if (lcs == NULL)
+		return NULL;
+
+	if (*pos == 0) {
+		seq_printf(p, "MAX LBA: %08x\n", lcs->max_lcs);
+		seq_printf(p, "LBA      SEGID    COL OFFSET  LENGTH  AGE  STATUS ACT\n");
+		seq_printf(p, "-------- -------- --- ------- ------- ---- ------ ---\n");
+	}
+
+	if (*pos < lcs->max_lcs)
+		return proc_lcs_read(p, lcs, *pos);
+	return NULL;
+}
+
+static void *
+proc_lcs_next(struct seq_file *p, void *v, loff_t *pos)
+{
+	struct lsa_closed_segment *lcs = p->private;
+
+	(*pos) ++;
+	if (*pos < lcs->max_lcs)
+		return proc_lcs_read(p, lcs, *pos);
+	return NULL;
+}
+
+static void
+proc_lcs_stop(struct seq_file *p, void *v)
+{
+}
+
+static int
+proc_lcs_show(struct seq_file *m, void *v)
+{
+	return 0;
+}
+
+static ssize_t
+proc_lcs_write(struct file *file, const char __user *buf,
+		size_t size, loff_t *_pos)
+{
+	return size;
+}
+
+static const struct seq_operations proc_lcs_ops = {
+	.start = proc_lcs_start,
+	.next  = proc_lcs_next,
+	.stop  = proc_lcs_stop,
+	.show  = proc_lcs_show,
+};
+
+static int 
+proc_lcs_open(struct inode *inode, struct file *file)
+{
+	int res = seq_open(file, &proc_lcs_ops);
+	if (!res) {
+		((struct seq_file *)file->private_data)->private = PDE(inode)->data;
+	}
+	return 0;
+}
+
+static const struct file_operations proc_lcs_fops = {
+	.open  = proc_lcs_open,
+	.read  = seq_read,
+	.write = proc_lcs_write,
+	.llseek= seq_lseek,
+	.release = seq_release,
+	.owner = THIS_MODULE,
+};
+
 static int
 lsa_cs_init(struct lsa_closed_segment *lcs)
 {
@@ -3593,6 +3683,14 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	INIT_LIST_HEAD(&lcs->dirty);
 	INIT_LIST_HEAD(&lcs->segbuf_head);
 	lcs->seg_id = LCS_SEG_ID;
+
+	lcs->max_lcs = 1<<2;
+	lcs->max_mask= lcs->max_lcs-1;
+
+	lcs->proc = proc_create(LSA_LCS_STS, 0, conf->proc, &proc_lcs_fops);
+	if (lcs->proc == NULL)
+		return -1;
+	lcs->proc->data = (void *)lcs;
 
 	for (i = 0; i < 4; i ++) {
 		struct segment_buffer *segbuf;
@@ -3624,6 +3722,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 static int
 lsa_cs_exit(struct lsa_closed_segment *lcs)
 {
+	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 	int i;
 	for (i = 0; i < 4; i ++) {
 		struct segment_buffer *segbuf = lcs->segbuf[i];
@@ -3642,6 +3741,7 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 				struct lcs_buffer, lru);
 		__lcs_buffer_free(lcs, lcs_buf);
 	}
+	remove_proc_entry(LSA_LCS_STS, conf->proc);
 	debug("free_cnt %d\n", lcs->free_cnt);
 	return 0;
 }

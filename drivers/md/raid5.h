@@ -509,6 +509,8 @@ struct raid5_private_data {
 		int free_cnt;
 		
 		struct proc_dir_entry *proc;
+		int max_lcs;
+		int max_mask;
 	} lsa_closed_status;
 
 	/* memory segment buffer */
