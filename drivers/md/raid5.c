@@ -2706,7 +2706,8 @@ proc_dirtory_read(struct seq_file *p, struct lsa_dirtory *dir, loff_t seq)
 		wait_for_completion(&done);
 	}
 	x = &cookie.eb->e;
-	seq_printf(p, "%08x %08x %04x %04x %02x %02x %02x %02x\n",
+	/*        (p, "-------- -------- --- ------- ------- ---- ------  ---\n");*/
+	seq_printf(p, "%08x %08x %03x %07x %07x %04x %06x %03x\n",
 			x->log_track_id, x->seg_id, x->seg_column,
 			x->offset, x->length, x->age, x->status, x->activity);
 	lsa_entry_put(dir, cookie.eb);
@@ -2724,8 +2725,8 @@ proc_dirtory_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX LBA: %08x\n", dir->max_lba);
-		seq_printf(p, "LBA       SEGID   OFFS LENG CO AG ST AC \n");
-		/*             01234567 01234567 0123 0123 01 01 02 02 */
+		seq_printf(p, "LBA      SEGID    COL OFFSET  LENGTH  AGE  STATUS ACT\n");
+		seq_printf(p, "-------- -------- --- ------- ------- ---- ------ ---\n");
 	}
 
 	if (*pos < dir->max_lba)
