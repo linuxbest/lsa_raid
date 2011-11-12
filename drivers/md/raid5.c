@@ -1450,10 +1450,10 @@ enum {
 	SEG_LCS_MAGIC = 0xABCD1,
 
 	SUPER_ID   = 0x0,
-	DIR_SEG_ID = 0x1,
-	SS_SEG_ID  = 0x40000,
-	LCS_SEG_ID = 0x70000,
-	DATA_SEG_ID= 0x80000,
+	DIR_SEG_ID = 0x1,     /* block size 4k */
+	SS_SEG_ID  = 0x40000, /* block size 4k */
+	LCS_SEG_ID = 0x70000, /* block size 4k */
+	DATA_SEG_ID= 0x8000 , /* data segment block size is 64k byte */
 };
 /*
  * LSA segment operations
@@ -2991,6 +2991,10 @@ static void
 lsa_ss_put(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 {
 	unsigned long flags;
+	
+	debug("ssid %x, ref %d, free %d\n",
+			ssbuf->e.seg_id, atomic_read(&ssbuf->count),
+			ss->free_cnt);
 
 	spin_lock_irqsave(&ss->lock, flags);
 	if (atomic_dec_and_test(&ssbuf->count)) {
@@ -3014,7 +3018,7 @@ typedef struct lsa_ss_cookie {
 } lsa_ss_cookie_t;
 
 static int 
-lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id, 
+lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id,
 		lsa_ss_cookie_t *cookie)
 {
 	int res = 0;
@@ -3039,6 +3043,9 @@ lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id,
 			set_ss_uptodate(ssbuf);
 		}
 	}
+	debug("ssid %x, ref %d, flags %lx, free %d\n",
+			ssbuf->e.seg_id, atomic_read(&ssbuf->count),
+			ssbuf->flags, ss->free_cnt);
 	if (!ss_uptodate(ssbuf)) {
 		list_add_tail(&cookie->entry, &ssbuf->cookie);
 		res = -EINPROGRESS;
@@ -3063,6 +3070,7 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 
 		ssbuf->e.status    = status;
 		ssbuf->e.timestamp = 0; /* TODO */
+
 		spin_lock_irqsave(&ss->lock, flags);
 		__lsa_ss_dirty(ss, ssbuf);
 		spin_unlock_irqrestore(&ss->lock, flags);
@@ -3284,8 +3292,9 @@ proc_ss_read(struct seq_file *p, struct lsa_segment_status *ss, loff_t seq)
 	cookie.ssbuf= NULL;
 	cookie.done = proc_ss_read_done;
 	cookie.comp = &done;
+	seq += DATA_SEG_ID;
 	res = lsa_ss_find_or_create(ss, seq, &cookie);
-	debug("setid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
+	debug("segid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
 	if (res == -EINPROGRESS) {
 		wait_for_completion(&done);
 	}
