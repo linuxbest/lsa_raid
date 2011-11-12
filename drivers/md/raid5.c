@@ -3469,7 +3469,7 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb->ondisk->total = 0;
 
 	lb->ondisk->timestamp = get_seconds();
-	lb->ondisk->sum   = lb->ondisk->timestamp;
+	lb->ondisk->sum = lb->ondisk->timestamp;
 
 	return lb;
 }
@@ -3507,7 +3507,9 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, segbuf_entry);
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
+#if 0
 	int i;
+#endif
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_del(&lb->lru);
@@ -3522,8 +3524,11 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	 *  2) LSA segment status 
 	 * into disk
 	 */
+	/* not release the meta page, using for lcs read proc interface. */
+#if 0
 	for (i = 0; i < segbuf->seg->disks; i ++)
 		segbuf->column[i].meta_page = NULL;
+#endif
 	lsa_dirtory_commit(&conf->lsa_dirtory);
 	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
@@ -3540,7 +3545,7 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_add_tail(&lb->lru, &lcs->dirty);
-	i = lcs->seg & 0x3;
+	i = lcs->seg & lcs->max_mask;
 	lcs->seg ++;
 	spin_unlock_irqrestore(&lcs->lock, flags);
 
@@ -3558,41 +3563,35 @@ lsa_lcs_commit(lcs_buffer_t *lb)
 	debug("lb %d write, %d\n", lb->seg, i);
 }
 
-static void 
-proc_lcs_read_done(struct lsa_track_cookie *cookie)
-{
-	debug("cookie %p\n", cookie);
-	complete(cookie->comp);
-}
-
 static void *
 proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 {
-#if 0
-	struct completion done;
-	struct lsa_track_cookie cookie;
-	int res;
-	lsa_entry_t *x;
+	int i = seq & lcs->max_mask;
+	struct segment_buffer *segbuf = lcs->segbuf[i];
+	struct page *page = segbuf->column[0].page;
+	lcs_ondisk_t *ondisk;
+	uint32_t sum;
 
-	init_completion(&done);
-	INIT_LIST_HEAD(&cookie.entry);
-	cookie.track= NULL;
-	cookie.lt   = NULL;
-	cookie.eb   = NULL;
-	cookie.done = proc_dirtory_read_done;
-	cookie.comp = &done;
-	res = lsa_entry_find_or_create(dir, seq, NULL, &cookie);
-	debug("ltid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
-	if (res == -EINPROGRESS) {
-		wait_for_completion(&done);
+	if (segbuf->column[0].meta_page)
+		page = segbuf->column[0].meta_page;
+	if (page == NULL)
+		return NULL;
+	ondisk = (lcs_ondisk_t *)page_address(page);
+
+	sum = ondisk->timestamp;
+	for (i = 0; i < ondisk->total; i ++) {
+		sum += ondisk->seg[i];
 	}
-	x = &cookie.eb->e;
-	/*        (p, "-------- -------- --- ------- ------- ---- ------  ---\n");*/
-	seq_printf(p, "%08x %08x %03x %07x %07x %04x %06x %03x\n",
-			x->log_track_id, x->seg_id, x->seg_column,
-			x->offset, x->length, x->age, x->status, x->activity);
-	lsa_entry_put(dir, cookie.eb);
-#endif
+	seq_printf(p, "[%d] magic %08x, total %08x, sum %08x, time %08x, check %08x\n",
+			(int)seq, ondisk->magic, ondisk->total,
+			ondisk->sum, ondisk->timestamp, sum);
+	seq_printf(p, "    ");
+	for (i = 0; i < ondisk->total; i ++) {
+		seq_printf(p, "%03x: %08x ", i, ondisk->seg[i]);
+		if ((i+1)%4 == 0)
+			seq_printf(p, "\n    ");
+	}
+
 	return lcs;
 }
 
@@ -3605,9 +3604,9 @@ proc_lcs_start(struct seq_file *p, loff_t *pos)
 		return NULL;
 
 	if (*pos == 0) {
-		seq_printf(p, "MAX LBA: %08x\n", lcs->max_lcs);
-		seq_printf(p, "LBA      SEGID    COL OFFSET  LENGTH  AGE  STATUS ACT\n");
-		seq_printf(p, "-------- -------- --- ------- ------- ---- ------ ---\n");
+		seq_printf(p, "MAX LCS: %08x\n", lcs->max_lcs);
+//		seq_printf(p, "LBA      SEGID    COL OFFSET  LENGTH  AGE  STATUS ACT\n");
+//		seq_printf(p, "-------- -------- --- ------- ------- ---- ------ ---\n");
 	}
 
 	if (*pos < lcs->max_lcs)
@@ -3670,6 +3669,25 @@ static const struct file_operations proc_lcs_fops = {
 	.owner = THIS_MODULE,
 };
 
+struct lcs_segment_buffer {
+	struct segment_buffer_entry segbuf_entry;
+	struct completion done;
+};
+
+static int 
+lsa_lcs_uptodate_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	struct lcs_segment_buffer *lcs = container_of(se,
+			struct lcs_segment_buffer , segbuf_entry);
+	debug("lcsseg %p\n", lcs);
+	complete(&lcs->done);
+	/* set lcs flag to not free to lru head */
+	set_segbuf_lcs(segbuf);
+	lsa_segment_release(segbuf, 0);
+	return 0;
+}
+
 static int
 lsa_cs_init(struct lsa_closed_segment *lcs)
 {
@@ -3692,16 +3710,22 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 		return -1;
 	lcs->proc->data = (void *)lcs;
 
-	for (i = 0; i < 4; i ++) {
+	for (i = 0; i < lcs->max_lcs; i ++) {
 		struct segment_buffer *segbuf;
+		struct lcs_segment_buffer lcs_se;
+
+		init_completion(&lcs_se.done);
+		segment_buffer_entry_init(&lcs_se.segbuf_entry);
+		lcs_se.segbuf_entry.rw = READ;
+		lcs_se.segbuf_entry.done = lsa_lcs_uptodate_done;
+
 		segbuf = lsa_segment_find_or_create(&conf->meta_segment,
 				LCS2SEG(lcs, i),
-				NULL);
+				&lcs_se.segbuf_entry);
+		wait_for_completion(&lcs_se.done);
+
 		BUG_ON(segbuf == NULL);
 		lcs->segbuf[i] = segbuf;
-		/* set lcs flag to not free to lru head */
-		set_segbuf_lcs(segbuf);
-		lsa_segment_release(segbuf, 0);
 	}
 
 	for (i = 0; i < 128; i ++) {
