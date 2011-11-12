@@ -3069,7 +3069,7 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 		unsigned long flags;
 
 		ssbuf->e.status    = status;
-		ssbuf->e.timestamp = 0; /* TODO */
+		ssbuf->e.timestamp = get_seconds();
 
 		spin_lock_irqsave(&ss->lock, flags);
 		__lsa_ss_dirty(ss, ssbuf);
@@ -3485,7 +3485,7 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb->ondisk->magic = SEG_LCS_MAGIC;
 	lb->ondisk->total = 0;
 
-	lb->ondisk->timestamp = 0; /* TODO */
+	lb->ondisk->timestamp = get_seconds();
 	lb->ondisk->sum   = lb->ondisk->timestamp;
 
 	return lb;
