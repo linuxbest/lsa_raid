@@ -448,6 +448,8 @@ struct raid5_private_data {
 	struct tasklet_struct lsa_tasklet;
 	struct kfifo lsa_bio;
 
+	struct proc_dir_entry *proc;
+
 	/* TODO: data cache is holding buffer for read/write */
 	struct lsa_data_cache {
 	} lsa_data_cache;
@@ -473,6 +475,8 @@ struct raid5_private_data {
 		int per_page;
 		uint32_t seg_id;
 		int free_cnt;
+		uint32_t max_lba;
+		struct proc_dir_entry *proc;
 	} lsa_dirtory;
 
 	struct lsa_segment_status {
@@ -486,6 +490,7 @@ struct raid5_private_data {
 		int per_page;
 		uint32_t seg_id;
 		int free_cnt;
+		struct proc_dir_entry *proc;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
@@ -499,6 +504,8 @@ struct raid5_private_data {
 		unsigned int seg;
 		uint32_t seg_id;
 		int free_cnt;
+		
+		struct proc_dir_entry *proc;
 	} lsa_closed_status;
 
 	/* memory segment buffer */
@@ -513,6 +520,7 @@ struct raid5_private_data {
 		struct list_head lcs_head;
 		struct tasklet_struct tasklet;
 		int free_cnt, total_cnt;
+		struct proc_dir_entry *proc;
 	} meta_segment, data_segment;
 
 	struct lsa_segment_fill {
@@ -529,6 +537,7 @@ struct raid5_private_data {
 		struct list_head head;
 		struct list_head free;
 		int free_cnt;
+		struct proc_dir_entry *proc;
 	} segment_fill;
 };
 
