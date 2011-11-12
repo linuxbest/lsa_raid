@@ -1799,6 +1799,7 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 	segbuf = __segbuf_tree_search(seg, seg_id);
 	if (segbuf && test_clear_segbuf_lru(segbuf)) {
 		list_del_init(&segbuf->lru_entry);
+		seg->free_cnt --;
 	} else if (segbuf == NULL) {
 		segbuf = __lsa_segment_freed(seg, seg_id);
 		/* TODO */
@@ -2400,6 +2401,7 @@ lsa_entry_find_or_create(struct lsa_dirtory *dir, uint32_t log_track_id,
 	cookie->eb = eh = __lsa_entry_search(dir, log_track_id);
 	if (eh && test_clear_entry_lru(eh)) {
 		list_del_init(&eh->lru);
+		dir->free_cnt --;
 	} else if (eh == NULL) { /* alloc new entry, schedule it doing IO request */
 		cookie->eb = eh = __lsa_entry_freed(dir);
 		BUG_ON(eh == NULL);
@@ -2510,6 +2512,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		lsa_segment_dirty(seg, segbuf);
 	} else {
 		memcpy(&eh->e, lo, sizeof(*lo));
+		set_entry_uptodate(eh);
 	}
 
 	return 0;
@@ -2690,8 +2693,11 @@ proc_dirtory_read(struct seq_file *p, struct lsa_dirtory *dir, loff_t seq)
 
 	init_completion(&done);
 	INIT_LIST_HEAD(&cookie.entry);
-	cookie.comp = &done;
+	cookie.track= NULL;
+	cookie.lt   = NULL;
+	cookie.eb   = NULL;
 	cookie.done = proc_dirtory_read_done;
+	cookie.comp = &done;
 	res = lsa_entry_find_or_create(dir, seq, NULL, &cookie);
 	debug("ltid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
 	if (res == -EINPROGRESS) {
@@ -2716,8 +2722,8 @@ proc_dirtory_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX LBA: %08x\n", dir->max_lba);
-		/*             012345678 012345678 01234 01234 01 01 02 02 */
-		seq_printf(p, "LBA       SEGID      OFFS LENG  CO AG ST AC \n");
+		seq_printf(p, "LBA       SEGID   OFFS LENG CO AG ST AC \n");
+		/*             01234567 01234567 0123 0123 01 01 02 02 */
 	}
 
 	if (*pos < dir->max_lba)
@@ -3034,6 +3040,7 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 	ssbuf = __ss_entry_search(ss, seg_id);
 	if (ssbuf && test_clear_ss_lru(ssbuf)) {
 		list_del_init(&ssbuf->entry);
+		ss->free_cnt --;
 	} else if (ssbuf == NULL) {
 		ssbuf = __lsa_ss_freed(ss);
 		if (ssbuf) {
@@ -3112,6 +3119,7 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		lsa_segment_dirty(seg, segbuf);
 	} else {
 		memcpy(n, o, sizeof(*o));
+		set_ss_uptodate(ssbuf);
 	}
 
 	return 0;
