@@ -485,12 +485,15 @@ struct raid5_private_data {
 		struct list_head lru;
 		struct list_head dirty;
 		struct list_head checkpoint;
+		struct list_head queue;
 		atomic_t dirty_cnt, checkpoint_cnt;
+		struct tasklet_struct tasklet;
 		/* ondisk seg id */
 		int per_page;
 		uint32_t seg_id;
 		int free_cnt;
 		struct proc_dir_entry *proc;
+		uint32_t max_seg;
 	} lsa_segment_status;
 
 	struct lsa_closed_segment {
