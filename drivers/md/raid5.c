@@ -1398,6 +1398,10 @@ static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
  *    closed segment list.
  *
  */
+#define LSA_DIRTORY "dirtory_entry"
+#define LSA_SEG_STS "segment_status"
+#define LSA_LCS_STS "segment_closed"
+#define LSA_DIR_INF "segment_dirtory"
 
 static inline int
 SS2OFFSET(struct lsa_segment_status *ss, uint32_t seg_id)
@@ -2811,7 +2815,7 @@ lsa_dirtory_init(struct lsa_dirtory *dir, sector_t size)
 	dir->seg_id = DIR_SEG_ID;
 
 	dir->max_lba = size >> (STRIPE_SS_SHIFT-SECTOR_SHIFT);
-	dir->proc = proc_create("dirtorys", 0, conf->proc, &proc_dirtory_fops);
+	dir->proc = proc_create(LSA_DIRTORY, 0, conf->proc, &proc_dirtory_fops);
 	if (dir->proc == NULL)
 		return -1;
 	dir->proc->data = (void *)dir;
@@ -2844,7 +2848,7 @@ lsa_dirtory_exit(struct lsa_dirtory *dir)
 				struct entry_buffer, lru);
 		__entry_buffer_free(dir, eh);
 	}
-	remove_proc_entry("dirtorys", conf->proc);
+	remove_proc_entry(LSA_DIRTORY, conf->proc);
 	debug("free_cnt %d\n", dir->free_cnt);
 	return 0;
 }
@@ -3410,7 +3414,7 @@ lsa_ss_init(struct lsa_segment_status *ss, int seg_nr)
 	tasklet_init(&ss->tasklet, lsa_ss_tasklet, (unsigned long)ss);
 
 	ss->max_seg = seg_nr;
-	ss->proc = proc_create("segment_status", 0, conf->proc, &proc_ss_fops);
+	ss->proc = proc_create(LSA_SEG_STS,  0, conf->proc, &proc_ss_fops);
 	if (ss->proc == NULL)
 		return -1;
 	ss->proc->data = (void *)ss;
@@ -3444,7 +3448,7 @@ lsa_ss_exit(struct lsa_segment_status *ss)
 				struct ss_buffer, entry);
 		__ss_buffer_free(ss, ssbuf);
 	}
-	remove_proc_entry("segment_status", conf->proc);
+	remove_proc_entry(LSA_SEG_STS, conf->proc);
 	return 0;
 }
 
