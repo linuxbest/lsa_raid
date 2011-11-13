@@ -3075,6 +3075,7 @@ lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
 
 		ssbuf->e.status    = status;
 		ssbuf->e.timestamp = get_seconds();
+		ssbuf->e.jiffies   = jiffies;
 
 		spin_lock_irqsave(&ss->lock, flags);
 		__lsa_ss_dirty(ss, ssbuf);
@@ -3283,8 +3284,8 @@ proc_ss_read(struct seq_file *p, struct lsa_segment_status *ss, loff_t seq)
 	}
 	x = &cookie.ssbuf->e;
 	/*             01234567 01234567 02 */
-	seq_printf(p, "%08x %08x %02x\n",
-			x->seg_id, x->timestamp, x->status);
+	seq_printf(p, "%08x %08x %08x %02x\n",
+			x->seg_id, x->timestamp, x->jiffies, x->status);
 	lsa_ss_put(ss, cookie.ssbuf);
 
 	return ss;
@@ -3300,8 +3301,8 @@ proc_ss_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX SEG: %08x\n", ss->max_seg);
-		seq_printf(p, "SEGID    TIME     status\n");
-		/*             01234567 01234567 02 */
+		seq_printf(p, "SEGID    TIME     JIFFIES status\n");
+		/*             01234567 01234567 0123467 02 */
 	}
 
 	if (*pos < ss->max_seg)
@@ -3469,6 +3470,7 @@ __lsa_lcs_freed(struct lsa_closed_segment *lcs)
 	lb->ondisk->total = 0;
 
 	lb->ondisk->timestamp = get_seconds();
+	lb->ondisk->jiffies   = jiffies;
 	lb->ondisk->sum = lb->ondisk->timestamp;
 
 	return lb;
@@ -3582,9 +3584,9 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 	for (i = 0; i < ondisk->total; i ++) {
 		sum += ondisk->seg[i];
 	}
-	seq_printf(p, "[%d] magic %08x, total %08x, sum %08x, time %08x, check %08x\n",
+	seq_printf(p, "[%d] magic %08x, total %08x, sum %08x/%08x, time %08x %08x\n",
 			(int)seq, ondisk->magic, ondisk->total,
-			ondisk->sum, ondisk->timestamp, sum);
+			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies);
 	seq_printf(p, "    ");
 	for (i = 0; i < ondisk->total; i ++) {
 		seq_printf(p, "%03x: %08x ", i, ondisk->seg[i]);
@@ -3693,7 +3695,7 @@ static int
 lsa_cs_init(struct lsa_closed_segment *lcs)
 {
 	int order = 2;
-	int max = ((PAGE_SIZE<<order) - 16)/sizeof(uint32_t), i;
+	int max = ((PAGE_SIZE<<order) - sizeof(lcs_ondisk_t))/sizeof(uint32_t), i;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 
 	lcs->max = max;

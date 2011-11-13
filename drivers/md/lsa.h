@@ -15,9 +15,10 @@ typedef struct lsa_entry {
 typedef struct {
 	uint32_t seg_id;
 	uint32_t timestamp;
+	uint16_t jiffies;
 	uint32_t occupancy;
 	uint8_t  status;
-	uint8_t  reserved[3];
+	uint8_t  reserved;
 } __attribute__ ((packed)) segment_status_t;
 
 typedef struct lsa_track_buffer {
@@ -37,6 +38,7 @@ typedef struct lcs_ondisk {
 	uint32_t total;
 	uint32_t sum;
 	uint32_t timestamp;
+	uint32_t jiffies;
 	uint32_t seg[0];
 } __attribute__ ((packed)) lcs_ondisk_t;
 
