@@ -41,6 +41,8 @@ typedef struct {
 	uint32_t sum;
 	uint32_t timestamp;
 	uint32_t jiffies;
+	uint16_t meta_column; /* last segment dirtory col */
+	uint32_t meta_seg_id; /* last segment information id */
 	uint32_t seg[0];
 } __attribute__ ((packed)) lcs_ondisk_t;
 

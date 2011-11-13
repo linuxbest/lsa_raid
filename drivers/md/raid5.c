@@ -3537,13 +3537,20 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 }
 
 static void
-lsa_lcs_commit(lcs_buffer_t *lb)
+lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col)
 {
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 	struct segment_buffer *segbuf;
 	unsigned long flags;
 	int i;
+
+	/* saving the seg id and col for meta data */
+	lb->ondisk->meta_seg_id = seg_id;
+	lb->ondisk->meta_column = col;
+	/* sum the seg id & col */
+	lb->ondisk->sum += seg_id;
+	lb->ondisk->sum += col;
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_add_tail(&lb->lru, &lcs->dirty);
@@ -3584,9 +3591,12 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 	for (i = 0; i < ondisk->total; i ++) {
 		sum += ondisk->seg[i];
 	}
-	seq_printf(p, "[%d] magic %08x, total %08x, sum %08x/%08x, time %08x %08x\n",
+	sum += ondisk->meta_seg_id;
+	sum += ondisk->meta_column;
+	seq_printf(p, "[%d] magic %08x, total %04x, sum %08x/%08x, time %08x,%08x, meta %08x/%d\n",
 			(int)seq, ondisk->magic, ondisk->total,
-			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies);
+			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies,
+			ondisk->meta_seg_id, ondisk->meta_column);
 	seq_printf(p, "    ");
 	for (i = 0; i < ondisk->total; i ++) {
 		if (i && (i&3) == 0)
@@ -3955,7 +3965,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 {
 	int data_column = segfill->data_column;
 	struct lsa_track *track = segfill->track;
-	struct lsa_track_buffer *track_buffer;
+	lsa_track_buffer_t *track_buffer;
 	struct segment_buffer *segbuf = segfill->segbuf;
 	int res;
 
@@ -4011,7 +4021,7 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	track = segbuf->column[segbuf->meta].track;
 
 	BUG_ON(track->lcs == NULL);
-	lsa_lcs_commit(track->lcs);
+	lsa_lcs_commit(track->lcs, segbuf->seg_id, segbuf->meta);
 	track->lcs = NULL;
 
 	spin_lock_irqsave(&segfill->lock, flags);
