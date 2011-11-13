@@ -3589,9 +3589,9 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies);
 	seq_printf(p, "    ");
 	for (i = 0; i < ondisk->total; i ++) {
-		seq_printf(p, "%03x: %08x ", i, ondisk->seg[i]);
-		if ((i+1)%4 == 0)
+		if (i && (i&3) == 0)
 			seq_printf(p, "\n    ");
+		seq_printf(p, "%03x: %08x ", i, ondisk->seg[i]);
 	}
 	seq_printf(p, "\n");
 
