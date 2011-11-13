@@ -1,7 +1,7 @@
 #ifndef _LOG_STRUCTED_ARRAY_
 #define _LOG_STRUCTED_ARRAY_
 
-typedef struct lsa_entry {
+typedef struct {
 	uint32_t log_track_id; /* logic track address */
 	uint32_t seg_id;       /* segment number */
 	uint8_t  seg_column;   /* 0 - N+M */
@@ -21,19 +21,21 @@ typedef struct {
 	uint8_t  reserved;
 } __attribute__ ((packed)) segment_status_t;
 
-typedef struct lsa_track_buffer {
+typedef struct {
+	lsa_entry_t old;
+	lsa_entry_t new;
+} __attribute__ ((packed)) lsa_track_entry_t;
+
+typedef struct {
 	uint32_t magic;
 	uint32_t sum;
 	uint16_t total;
 	uint16_t prev_column;
 	uint32_t prev_seg_id;
-	struct lsa_track_entry {
-		struct lsa_entry old;
-		struct lsa_entry new;
-	} __attribute__ ((packed)) entry[0];
+	lsa_track_entry_t entry[0];
 } __attribute__ ((packed)) lsa_track_buffer_t;
 
-typedef struct lcs_ondisk {
+typedef struct {
 	uint32_t magic;
 	uint32_t total;
 	uint32_t sum;

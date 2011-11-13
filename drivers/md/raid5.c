@@ -2206,7 +2206,7 @@ struct entry_buffer {
 #define EH_UPTODATE 2
 #define EH_LRU      3
 	unsigned long flags;
-	struct lsa_entry e;
+	lsa_entry_t e;
 };
 #define ENTRY_HEAD_SIZE (16*1024*1024)
 #define ENTRY_HEAD_NR   (ENTRY_HEAD_SIZE/sizeof(struct entry_buffer))
@@ -2323,7 +2323,7 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 typedef struct lsa_track_cookie {
 	struct list_head       entry;
 	struct lsa_track       *track;
-	struct lsa_track_entry *lt;
+	lsa_track_entry_t      *lt;
 	struct entry_buffer    *eb;
 	void (*done)(struct lsa_track_cookie *);
 	struct completion      *comp;
@@ -2357,7 +2357,7 @@ __lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 }
 
 static int
-lsa_entry_insert(struct lsa_dirtory *dir, struct lsa_entry *le)
+lsa_entry_insert(struct lsa_dirtory *dir, lsa_entry_t *le)
 {
 	unsigned long flags;
 	struct entry_buffer *eh = NULL;
@@ -3301,8 +3301,8 @@ proc_ss_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX SEG: %08x\n", ss->max_seg);
-		seq_printf(p, "SEGID    TIME     JIFFIES status\n");
-		/*             01234567 01234567 0123467 02 */
+		seq_printf(p, "SEGID    TIME     JIFFIES  status\n");
+		/*             01234567 01234567 01234567 02 */
 	}
 
 	if (*pos < ss->max_seg)
@@ -3779,7 +3779,7 @@ typedef struct lsa_track {
 	struct page *page;
 	struct lsa_dirtory *dir;
 	struct segment_buffer *segbuf;
-	struct lsa_track_buffer *buf;
+	lsa_track_buffer_t *buf;
 	struct lcs_buffer *lcs;
 	struct lsa_segment_fill *segfill;
 	struct lsa_track_cookie cookie[0];
@@ -3824,7 +3824,7 @@ __lsa_track_ref(lsa_track_t *track)
 }
 
 static void
-__lsa_track_update_sum(lsa_track_t *track, struct lsa_track_entry *lt)
+__lsa_track_update_sum(lsa_track_t *track, lsa_track_entry_t *lt)
 {
 	int size = sizeof(*lt);
 	uint32_t *d = (uint32_t *)lt;
@@ -3869,7 +3869,7 @@ static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 {
 	struct entry_buffer *eb = cookie->eb;
-	struct lsa_track_entry *lt = cookie->lt;
+	lsa_track_entry_t *lt = cookie->lt;
 	lsa_track_t *track = cookie->track;
 	lsa_entry_t *ln = &lt->new;
 
@@ -3878,15 +3878,13 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 		lsa_entry_t *lo = &eb->e;
 		lsa_entry_dump("old", lo);
 
-		memcpy((void *)&lt->old, (void *)&eb->e,
-				sizeof(struct lsa_entry));
-		memcpy((void *)&eb->e, (void *)&lt->new,
-				sizeof(struct lsa_entry));
+		memcpy((void *)&lt->old, (void *)&eb->e, sizeof(lsa_entry_t));
+		memcpy((void *)&eb->e, (void *)&lt->new, sizeof(lsa_entry_t));
 		set_entry_uptodate(eb);
 		lsa_entry_dirty(track->dir, eb);
 		lsa_entry_put(track->dir, eb);
 	} else {
-		memset((void *)&lt->old, 0, sizeof(struct lsa_entry));
+		memset((void *)&lt->old, 0, sizeof(lsa_entry_t));
 		lsa_entry_insert(track->dir, &lt->new);
 	}
 	__lsa_track_update_sum(track, lt);
@@ -3901,7 +3899,7 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		struct lsa_track_cookie **ck, uint32_t log_track_id)
 {
 	lsa_track_t *track = segfill->track;
-	struct lsa_track_entry  *lt = &track->buf->entry[track->buf->total];
+	lsa_track_entry_t *lt = &track->buf->entry[track->buf->total];
 	struct lsa_track_cookie *cookie = &track->cookie[track->buf->total];
 
 	track->buf->total ++;
@@ -3910,6 +3908,10 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	lt->new.seg_column   = segfill->data_column;
 	lt->new.offset       = bi->bi_sector & segfill->mask_offset;
 	lt->new.length       = bi->bi_size>>9;
+
+	lt->new.age          = 0;
+	lt->new.status       = 0;
+	lt->new.activity     = 0;
 
 	/* setup the cookie */
 	*ck = cookie;
