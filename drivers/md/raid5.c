@@ -3591,6 +3591,7 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 		if ((i+1)%4 == 0)
 			seq_printf(p, "\n    ");
 	}
+	seq_printf(p, "\n");
 
 	return lcs;
 }
@@ -3914,8 +3915,6 @@ __lsa_track_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	cookie->lt    = lt;
 	cookie->eb    = NULL;
 	__lsa_track_ref(track);
-
-	lsa_lcs_insert(track->lcs, segfill->segbuf->seg_id);
 }
 
 static void
@@ -4030,6 +4029,9 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	int dir_dirty, dir_point, ss_dirty, ss_point;
 
 	BUG_ON(segfill->segbuf == NULL);
+	BUG_ON(segfill->track == NULL);
+	lsa_lcs_insert(segfill->track->lcs, segfill->segbuf->seg_id);
+
 	lsa_dirtory_checkpoint_sts(&conf->lsa_dirtory, &dir_dirty, &dir_point);
 	lsa_ss_checkpoint_sts(&conf->lsa_segment_status, &ss_dirty, &ss_point);
 	debug("segid %x, meta %d, dir(%d/%d), ss(%d/%d)\n",
