@@ -3939,6 +3939,17 @@ __lsa_segment_write_put(struct segment_buffer *segbuf)
 	return 0;
 }
 
+static uint8_t
+__lsa_entry_flag(lsa_entry_t *o, lsa_entry_t *n)
+{
+	uint32_t flags = 0;
+	if ((n->length < o->length) ||
+	    (n->offset > o->offset) ||
+	    (n->offset + n->length < o->offset + o->length))
+		flags |= DATA_PARTIAL;
+	return flags;
+}
+
 static void
 __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 {
@@ -3946,12 +3957,13 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 	lsa_track_entry_t *lt = cookie->lt;
 	lsa_track_t *track = cookie->track;
 	lsa_entry_t *ln = &lt->new;
+	lsa_entry_t *lo = &eb->e;
 
+	lsa_entry_dump("old", lo);
 	lsa_entry_dump("new", ln);
-	if (eb) {
-		lsa_entry_t *lo = &eb->e;
-		lsa_entry_dump("old", lo);
-
+	if (lo->log_track_id == ln->log_track_id) {
+		uint8_t flags = __lsa_entry_flag(lo, ln);
+		lt->new.status = flags;
 		memcpy((void *)&lt->old, (void *)&eb->e, sizeof(lsa_entry_t));
 		memcpy((void *)&eb->e, (void *)&lt->new, sizeof(lsa_entry_t));
 		set_entry_uptodate(eb);
@@ -4523,16 +4535,80 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 	return 0;
 }
 
-static int 
-lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector,
-		struct entry_buffer *eb)
+static void 
+lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
-#if 1
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	struct page *page = sh->dev[0].page;
 	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
-#endif
 	lsa_bio_endio(bi, 0);
+}
+
+static void lsa_read_thread(mddev_t *mddev)
+{
+	raid5_conf_t *conf = mddev->private;
+	struct lsa_bio *bi;
+
+	spin_lock_irq(&conf->device_lock);
+	while ((bi = lsa_bio_list_pop(&conf->read_queue))) {
+		spin_unlock_irq(&conf->device_lock);
+
+		debug("bi %p\n", bi);
+		lsa_read_handle(conf, bi);
+
+		spin_lock_irq(&conf->device_lock);
+	}
+	spin_unlock_irq(&conf->device_lock);
+}
+
+static void
+lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
+{
+	raid5_conf_t *conf = (raid5_conf_t *)cookie->comp;
+	struct lsa_bio *bi = (struct lsa_bio *)cookie->track;
+	struct lsa_dirtory *dir = &conf->lsa_dirtory;
+	lsa_entry_t *lo = &cookie->eb->e;
+
+	/* ok we have the lastest version of this block
+	 * if the size is ok, just reading data from disk.
+	 * or geting the dirtory information for prev block.
+	 */
+	lsa_entry_dump("read", lo);
+	if (DATA_PARTIAL & lo->status) {
+		/* must doing it @ thread context */
+		unsigned long flags;
+		spin_lock_irqsave(&conf->device_lock, flags);
+		lsa_bio_list_add(&conf->read_queue, bi);
+		spin_unlock_irqrestore(&conf->device_lock, flags);
+		md_wakeup_thread(conf->read_thread);
+	} else {
+		lsa_read_handle(conf, bi);
+	}
+	lsa_entry_put(dir, cookie->eb);
+}
+
+static int 
+lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector)
+{
+	struct lsa_dirtory *dir = &conf->lsa_dirtory;
+	struct lsa_track_cookie *cookie;
+	int res = 0;
+
+	bi ++;
+	cookie = (struct lsa_track_cookie *)(bi);
+	bi --;
+	cookie->track = (struct lsa_track*)(bi);
+	cookie->lt    = NULL;
+	cookie->eb    = NULL;
+	cookie->done  = lsa_dirtory_read_done;
+	cookie->comp  = (struct completion *)conf;
+	INIT_LIST_HEAD(&cookie->entry);
+	res = lsa_entry_find_or_create(dir, sector, cookie);
+	debug("ltid %x, res %d, cookie %p\n", sector, res, cookie);
+	if (res != -EINPROGRESS) {/* LRU hit */
+		lsa_dirtory_read_done(cookie);
+	}
+
 	return 0;
 }
 
@@ -4555,7 +4631,7 @@ lsa_bio_tasklet(unsigned long data)
 		if (bio_data_dir(bi) == WRITE)
 			lsa_segment_fill_write(&conf->segment_fill, bi, bi->lt);
 		else
-			lsa_page_read(conf, bi, bi->lt, NULL);
+			lsa_page_read(conf, bi, bi->lt);
 		if (full)
 			break;
 	};
@@ -4794,6 +4870,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_set(&sh->count, 1);
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
+	lsa_bio_list_init(&conf->read_queue);
 
 	conf->proc = proc_mkdir(mdname(conf->mddev), NULL);
 	if (conf->proc == NULL)
@@ -8170,6 +8247,14 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 		goto abort;
 	}
 
+	conf->read_thread = md_register_thread(lsa_read_thread, mddev, NULL);
+	if (!conf->read_thread) {
+		printk(KERN_ERR
+		       "md/raid:%s: couldn't allocate thread.\n",
+		       mdname(mddev));
+		goto abort;
+	}
+
 	return conf;
 
  abort:
@@ -9292,9 +9377,9 @@ void lsa_bio_endio(struct lsa_bio *bio, int error)
 
 static int lsa_bio_init(void)
 {
+	int len = sizeof(struct lsa_bio) + sizeof(struct lsa_track_cookie);
 	bio_kmem = kmem_cache_create("lsa_bio",
-			sizeof(struct lsa_bio), 0,
-			0, NULL);
+			len, 0, 0, NULL);
 	if (bio_kmem)
 		return -1;
 	return 0;
