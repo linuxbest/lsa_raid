@@ -1931,7 +1931,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 			bi->bi_io_vec[0].bv_offset = 0;
 			bi->bi_size = bi->bi_io_vec[0].bv_len;
 			bi->bi_next = NULL;
-			column->vec.bv_page = column->meta_page ?
+			column->vec.bv_page = column->track ?
 				column->meta_page : column->page;
 			lsa_segment_bio_ref(segbuf);
 			generic_make_request(bi);
@@ -3220,7 +3220,6 @@ lsa_ss_commit(struct lsa_segment_status *ss)
 	lsa_ss_job(ss, &ss->checkpoint, WRITE);
 }
 
-
 static void 
 proc_ss_read_done(struct lsa_ss_cookie *cookie)
 {
@@ -3802,13 +3801,11 @@ __lsa_track_ref(lsa_track_t *track)
 static void
 __lsa_track_update_sum(lsa_track_t *track, lsa_track_entry_t *lt)
 {
-	int size = sizeof(*lt);
+	int i;
 	uint32_t *d = (uint32_t *)lt;
 	/* the entry may update reorder, so we using sum is better. */
-	do {
+	for (i = 0; i < sizeof(lsa_track_entry_t)/4; i ++, d++)
 		track->buf->sum += *d;
-		d ++;
-	} while (size--);
 }
 
 static void
@@ -3995,7 +3992,6 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
 	segbuf->column[segbuf->meta].track     = NULL;
-	segbuf->column[segbuf->meta].meta_page = NULL;
 	segbuf->meta                           = 0;
 
 	return 0;
@@ -4162,6 +4158,166 @@ lsa_segment_fill_timeout(unsigned long data)
 }
 
 static int
+proc_segfill_read_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	struct lcs_segment_buffer *lcs = container_of(se,
+			struct lcs_segment_buffer , segbuf_entry);
+	complete(&lcs->done);
+	return 0;
+}
+
+static void *
+proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t seq)
+{
+	struct segment_buffer *segbuf;
+	struct lcs_segment_buffer lcs_se;
+	raid5_conf_t *conf = container_of(segfill, raid5_conf_t, segment_fill);
+	struct page *page;
+	lsa_track_buffer_t *track_buffer;
+	uint32_t sum = 0, *dbuf;
+	int i, col = segfill->seq_show.cur_col;
+
+	debug("meta %08x/%02x, valid %d\n", segfill->seq_show.cur_meta,
+			segfill->seq_show.cur_col, segfill->seq_show.valid);
+
+	if (segfill->seq_show.valid == 0 || col > segfill->max_column)
+		return NULL;
+
+	init_completion(&lcs_se.done);
+	segment_buffer_entry_init(&lcs_se.segbuf_entry);
+	lcs_se.segbuf_entry.rw = READ;
+	lcs_se.segbuf_entry.done = proc_segfill_read_done;
+
+	segbuf = lsa_segment_find_or_create(&conf->data_segment,
+			segfill->seq_show.cur_meta,
+			&lcs_se.segbuf_entry);
+	wait_for_completion(&lcs_se.done);
+
+	if (segbuf->column[col].meta_page)
+		page = segbuf->column[col].meta_page;
+	else
+		page = segbuf->column[col].page;
+	track_buffer = page_address(page);
+
+	dbuf = (uint32_t *)track_buffer->entry;
+	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
+		sum += *dbuf;
+
+	seq_printf(p, "magic %08x, sum %08x/%08x, total %04x, %08x/%02x\n",
+			track_buffer->magic, track_buffer->sum, sum,
+			track_buffer->total,
+			track_buffer->prev_seg_id,
+			track_buffer->prev_column);
+	seq_printf(p, " ID LBA      SEGID             COL   OFFSET  LENGTH\n");
+	/*              00 000000e0 00008202/00008204 00/01 000/078 08/08" */
+	segfill->seq_show.valid    = track_buffer->magic == TRACK_MAGIC &&
+		track_buffer->sum == sum;
+	segfill->seq_show.cur_meta = track_buffer->prev_seg_id;
+	segfill->seq_show.cur_col  = track_buffer->prev_column;
+
+	segfill->seq_show.segbuf = segbuf;
+	segfill->seq_show.track_buffer = (char *)track_buffer;
+
+	return segfill;
+}
+
+static void *
+proc_segfill_start(struct seq_file *p, loff_t *pos)
+{
+	struct lsa_segment_fill *segfill = p->private;
+
+	debug("%d\n", (int)*pos);
+	if (segfill == NULL)
+		return NULL;
+	if (*pos == 0) {
+		segfill->seq_show.cur_meta = segfill->meta_id;
+		segfill->seq_show.cur_col  = segfill->meta_column;
+		segfill->seq_show.valid    = 1;
+	}
+	return proc_segfill_read(p, segfill, *pos);
+}
+
+static void *
+proc_segfill_next(struct seq_file *p, void *v, loff_t *pos)
+{
+	struct lsa_segment_fill *segfill = p->private;
+	if (segfill->seq_show.segbuf) {
+		lsa_segment_release(segfill->seq_show.segbuf, 0);
+		segfill->seq_show.segbuf = NULL;
+	}
+	(*pos) ++; 
+	return proc_segfill_read(p, segfill, *pos);
+}
+
+static void
+proc_segfill_stop(struct seq_file *p, void *v)
+{	
+	struct lsa_segment_fill *segfill = p->private;
+	if (segfill->seq_show.segbuf) {
+		lsa_segment_release(segfill->seq_show.segbuf, 0);
+		segfill->seq_show.segbuf = NULL;
+	}
+}
+
+static int
+proc_segfill_show(struct seq_file *p, void *v)
+{
+	struct lsa_segment_fill *segfill = p->private;
+	lsa_track_buffer_t *track_buffer =
+		(lsa_track_buffer_t *)segfill->seq_show.track_buffer;
+	int i;
+
+	debug("\n");
+	
+	for (i = 0; i < track_buffer->total; i ++) {
+		lsa_entry_t *n = &track_buffer->entry[i].new;
+		lsa_entry_t *o = &track_buffer->entry[i].old;
+		seq_printf(p, " %02x %08x %08x/%08x %02x/%02x %03x/%03x %02x/%02x\n", 
+				i, n->log_track_id, /*o->log_track_id,*/
+				n->seg_id, o->seg_id,
+				n->seg_column, o->seg_column,
+				n->offset, o->offset,
+				n->length, o->length);
+	}
+
+	return 0;
+}
+
+static ssize_t
+proc_segfill_write(struct file *file, const char __user *buf,
+		size_t size, loff_t *_pos)
+{
+	return size;
+}
+
+static const struct seq_operations proc_segfill_ops = {
+	.start = proc_segfill_start,
+	.next  = proc_segfill_next,
+	.stop  = proc_segfill_stop,
+	.show  = proc_segfill_show,
+};
+
+static int 
+proc_segfill_open(struct inode *inode, struct file *file)
+{
+	int res = seq_open(file, &proc_segfill_ops);
+	if (!res) {
+		((struct seq_file *)file->private_data)->private = PDE(inode)->data;
+	}
+	return 0;
+}
+
+static const struct file_operations proc_segfill_fops = {
+	.open  = proc_segfill_open,
+	.read  = seq_read,
+	.write = proc_segfill_write,
+	.llseek = seq_lseek,
+	.release = seq_release,
+	.owner = THIS_MODULE,
+};
+
+static int
 lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 {
 	raid5_conf_t *conf =
@@ -4210,6 +4366,12 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	segfill->timer.data = (unsigned long)segfill;
 	segfill->timer.function = lsa_segment_fill_timeout;
 
+	segfill->proc = proc_create(LSA_DIR_INF, 0, conf->proc,
+			&proc_segfill_fops);
+	if (segfill->proc == NULL)
+		return -1;
+	segfill->proc->data = (void *)segfill;
+
 	return 0;
 }
 
@@ -4226,6 +4388,8 @@ __lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 static int
 lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 {
+	raid5_conf_t *conf =
+		container_of(segfill, raid5_conf_t, segment_fill);
 	while (!list_empty(&segfill->head)) {
 		/* TODO */
 		lsa_track_t *lt = container_of(segfill->head.next,
@@ -4238,6 +4402,7 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 				lsa_track_t, entry);
 		__lsa_track_free(segfill, lt);
 	}
+	remove_proc_entry(LSA_DIR_INF, conf->proc);
 	debug("free_cnt %d\n", segfill->free_cnt);
 	return 0;
 }
