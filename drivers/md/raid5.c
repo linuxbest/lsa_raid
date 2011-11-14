@@ -4535,13 +4535,48 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 	return 0;
 }
 
+typedef struct {
+	uint32_t seg_id;
+	uint8_t  seg_col;
+	uint8_t  status;
+	uint16_t offset;
+	uint16_t length;
+} __attribute__ ((packed)) lsa_read_buf_t;
+
+static void 
+lsa_read_handle_done(struct lsa_track_cookie *cookie)
+{
+	complete(cookie->comp);
+}
+
+static struct lsa_track_cookie *
+lsa_bio2track(struct lsa_bio *bi)
+{
+	struct lsa_track_cookie *cookie;
+	bi ++;
+	cookie = (struct lsa_track_cookie *)(bi);
+	return cookie;
+}
+
+static lsa_read_buf_t *
+lsa_track2lrb(struct lsa_track_cookie *cookie)
+{
+	return (lsa_read_buf_t *)cookie->track;
+}
+
 static void 
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
-	struct stripe_head *sh = conf->lsa_zero_sh;
-	struct page *page = sh->dev[0].page;
-	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
-	lsa_bio_endio(bi, 0);
+	struct lsa_dirtory *dir = &conf->lsa_dirtory;
+	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
+	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
+
+	{
+		struct stripe_head *sh = conf->lsa_zero_sh;
+		struct page *page = sh->dev[0].page;
+		bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
+		lsa_bio_endio(bi, 0);
+	}
 }
 
 static void lsa_read_thread(mddev_t *mddev)
@@ -4568,12 +4603,20 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 	struct lsa_bio *bi = (struct lsa_bio *)cookie->track;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	lsa_entry_t *lo = &cookie->eb->e;
+	lsa_read_buf_t *lrb = (lsa_read_buf_t *)cookie->track;
 
 	/* ok we have the lastest version of this block
 	 * if the size is ok, just reading data from disk.
 	 * or geting the dirtory information for prev block.
 	 */
 	lsa_entry_dump("read", lo);
+
+	lrb->seg_id  = lo->seg_id;
+	lrb->seg_col = lo->seg_column;
+	lrb->status  = lo->status;
+	lrb->offset  = lo->offset;
+	lrb->length  = lo->length;
+
 	if (DATA_PARTIAL & lo->status) {
 		/* must doing it @ thread context */
 		unsigned long flags;
