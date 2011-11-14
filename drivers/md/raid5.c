@@ -3253,7 +3253,7 @@ proc_ss_read(struct seq_file *p, struct lsa_segment_status *ss, loff_t seq)
 	}
 	x = &cookie.ssbuf->e;
 	/*             01234567 01234567 02 */
-	seq_printf(p, "%08x %08x %08x %02x\n",
+	seq_printf(p, "%08x %08x.%04x %02x\n",
 			x->seg_id, x->timestamp, x->jiffies, x->status);
 	lsa_ss_put(ss, cookie.ssbuf);
 
@@ -3270,8 +3270,8 @@ proc_ss_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX SEG: %08x\n", ss->max_seg);
-		seq_printf(p, "SEGID    TIME     JIFFIES  status\n");
-		/*             01234567 01234567 01234567 02 */
+		seq_printf(p, "SEGID    TIME          status\n");
+		/*             01234567 01234567.0123 02 */
 	}
 
 	if (*pos < ss->max_seg)
@@ -3562,7 +3562,7 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 	}
 	sum += ondisk->meta_seg_id;
 	sum += ondisk->meta_column;
-	seq_printf(p, "[%d] magic %08x, total %04x, sum %08x/%08x, time %08x,%08x, meta %08x/%d\n",
+	seq_printf(p, "[%d] magic %08x, total %04x, sum %08x/%08x, time %08x.%04x, meta %08x/%d\n",
 			(int)seq, ondisk->magic, ondisk->total,
 			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies,
 			ondisk->meta_seg_id, ondisk->meta_column);

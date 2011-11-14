@@ -40,7 +40,8 @@ typedef struct {
 	uint32_t total;
 	uint32_t sum;
 	uint32_t timestamp;
-	uint32_t jiffies;
+	uint16_t jiffies;
+	uint8_t  reserved[2];
 	uint16_t meta_column; /* last segment dirtory col */
 	uint32_t meta_seg_id; /* last segment information id */
 	uint32_t seg[0];
