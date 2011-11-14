@@ -2199,7 +2199,6 @@ struct entry_buffer {
 	struct rb_node node;
 	struct list_head lru, cookie;
 	atomic_t count;
-	struct lsa_bio_list bio;
 	struct lsa_dirtory *dir;
 #define EH_TREE     0
 #define EH_DIRTY    1
@@ -2330,19 +2329,9 @@ typedef struct lsa_track_cookie {
 } lsa_track_cookie_t;
 
 static void 
-__lsa_entry_cookie_push(struct entry_buffer *eb, struct lsa_bio *bio,
-		lsa_track_cookie_t *cookie)
+__lsa_entry_cookie_push(struct entry_buffer *eb, lsa_track_cookie_t *cookie)
 {
-	if (bio)
-		lsa_bio_list_add(&eb->bio, bio);
-	else
-		list_add_tail(&cookie->entry, &eb->cookie);
-}
-
-static struct lsa_bio *
-__lsa_entry_bio_pop(struct entry_buffer *eb)
-{
-	return lsa_bio_list_pop(&eb->bio);
+	list_add_tail(&cookie->entry, &eb->cookie);
 }
 
 static void
@@ -2395,7 +2384,7 @@ lsa_entry_insert(struct lsa_dirtory *dir, lsa_entry_t *le)
  */
 static int
 lsa_entry_find_or_create(struct lsa_dirtory *dir, uint32_t log_track_id,
-		struct lsa_bio *bio, lsa_track_cookie_t *cookie)
+		lsa_track_cookie_t *cookie)
 {
 	int res = 0;
 	unsigned long flags;
@@ -2420,7 +2409,7 @@ lsa_entry_find_or_create(struct lsa_dirtory *dir, uint32_t log_track_id,
 			eh->e.log_track_id, atomic_read(&eh->count), 
 			eh->flags, dir->free_cnt);
 	if (!entry_uptodate(eh)) {
-		__lsa_entry_cookie_push(eh, bio, cookie);
+		__lsa_entry_cookie_push(eh, cookie);
 		res = -EINPROGRESS;
 	}
 	atomic_inc(&eh->count);
@@ -2538,8 +2527,6 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 	raid5_conf_t *conf = seg->conf;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	unsigned long flags;
-	struct lsa_bio_list bio_list;
-	struct lsa_bio *bio;
 	LIST_HEAD(head);
 
 	debug("ltid %x, rw %d\n", eh->e.log_track_id, se->rw);
@@ -2548,24 +2535,11 @@ lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 		return 0;
 	}
 
-	lsa_bio_list_init(&bio_list);
 	lsa_dirtory_copy(seg, segbuf, eh);
 
-	/* schedule retry */
 	spin_lock_irqsave(&dir->lock, flags);
-	if (!list_empty(&dir->retry)) {
-		tasklet_schedule(&dir->tasklet);
-	}
-	while ((bio = __lsa_entry_bio_pop(eh))) {
-		lsa_bio_list_add(&bio_list, bio);
-	}
 	list_splice_init(&eh->cookie, &head);
 	spin_unlock_irqrestore(&dir->lock, flags);
-
-	/* moving the bio into target list then doing retry */
-	while ((bio = lsa_bio_list_pop(&bio_list))) {
-		lsa_page_read(conf, bio, eh->e.log_track_id, eh);
-	}
 
 	while (!list_empty(&head)) {
 		lsa_track_cookie_t *cookie = list_entry(head.next, 
@@ -2704,7 +2678,7 @@ proc_dirtory_read(struct seq_file *p, struct lsa_dirtory *dir, loff_t seq)
 	cookie.eb   = NULL;
 	cookie.done = proc_dirtory_read_done;
 	cookie.comp = &done;
-	res = lsa_entry_find_or_create(dir, seq, NULL, &cookie);
+	res = lsa_entry_find_or_create(dir, seq, &cookie);
 	debug("ltid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
 	if (res == -EINPROGRESS) {
 		wait_for_completion(&done);
@@ -2825,7 +2799,6 @@ lsa_dirtory_init(struct lsa_dirtory *dir, sector_t size)
 		if (eh == NULL)
 			return -2;
 		eh->dir = dir;
-		lsa_bio_list_init(&eh->bio);
 		list_add_tail(&eh->lru, &dir->lru);
 		INIT_LIST_HEAD(&eh->cookie);
 		dir->free_cnt ++;
@@ -4150,7 +4123,7 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
 	cookie->done = __lsa_track_cookie_update;
-	res = lsa_entry_find_or_create(&conf->lsa_dirtory, log_track_id, NULL, cookie);
+	res = lsa_entry_find_or_create(&conf->lsa_dirtory, log_track_id, cookie);
 	debug("ltid %x, res %d\n", log_track_id, res);
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
@@ -4398,7 +4371,7 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 	}
 	debug("bio %llu, segid %x, offset %d, tlen %d/%d\n",
 			(unsigned long long)bio->bi_sector,
-			segbuf ? segbuf->seg_id : 0, offset, 
+			segbuf ? segbuf->seg_id : 0, offset,
 			bio->bi_size, res);
 	return 0;
 }
