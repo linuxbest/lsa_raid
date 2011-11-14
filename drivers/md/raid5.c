@@ -4323,15 +4323,83 @@ int lsa_raid_bio_queue(mddev_t *mddev, struct lsa_bio * bi)
 	return 0;
 }
 
-static int lsa_bio_copy_page(mddev_t *mddev, 
-		struct lsa_bio *bio, struct segment_buffer *segbuf, 
+static void
+lsa_page_copy(struct page *dst_page, struct page *src_page,
+		int dst_offset, int src_offset, int len)
+{
+	char *src = page_address(src_page) + src_offset;
+	char *dst = page_address(dst_page) + dst_offset;
+	memcpy(dst, src, len);
+}
+
+static int
+lsa_bio_copy_data(struct bio *bio, sector_t sector,
+		struct page *page, int frombio)
+{
+	struct bio_vec *bvl;
+	struct page *bio_page;
+	int page_offset, i, tlen = 0;
+
+	if (bio->bi_sector >= sector)
+		page_offset = (signed)(bio->bi_sector - sector) * 512;
+	else
+		page_offset = (signed)(sector - bio->bi_sector) * -512;
+
+	bio_for_each_segment(bvl, bio, i) {
+		int len = bvl->bv_len;
+		int clen;
+		int b_offset = 0;
+
+		if (page_offset < 0) {
+			b_offset = -page_offset;
+			page_offset += b_offset;
+			len -= b_offset;
+		}
+
+		if (len > 0 && page_offset + len > STRIPE_SIZE)
+			clen = STRIPE_SIZE - page_offset;
+		else
+			clen = len;
+
+		if (clen > 0) {
+			b_offset += bvl->bv_offset;
+			bio_page  = bvl->bv_page;
+			if (frombio)
+				lsa_page_copy(page, bio_page, page_offset,
+						b_offset, clen);
+			else
+				lsa_page_copy(bio_page, page, b_offset,
+						page_offset, clen);
+			tlen += clen;
+		}
+
+		if (clen < len) /* hit end of page */
+			break;
+		page_offset += len;
+	}
+	return tlen;
+}
+
+static int lsa_bio_copy_page(mddev_t *mddev,
+		struct lsa_bio *bio, struct segment_buffer *segbuf,
 		struct page *page, unsigned int offset)
 {
-	debug("bio %llu, segid %x, offset %d\n",
+	int res;
+	struct bio *bi = bio->bi_private;
+
+	debug("bio %llu, segid %x, offset %d, tlen %d\n",
 			(unsigned long long)bio->bi_sector,
-			segbuf ? segbuf->seg_id : 0, offset);
-	if (segbuf)
+			segbuf ? segbuf->seg_id : 0, offset, bio->bi_size);
+	if (segbuf) { /* WRITE */
+		res = lsa_bio_copy_data(bi, bio->bi_sector, page, 1);
 		lsa_raid_seg_put(mddev, segbuf, bio->bi_rw & WRITE);
+	} else { /* READ */
+		res = lsa_bio_copy_data(bi, bio->bi_sector, page, 0);
+	}
+	debug("bio %llu, segid %x, offset %d, tlen %d/%d\n",
+			(unsigned long long)bio->bi_sector,
+			segbuf ? segbuf->seg_id : 0, offset, 
+			bio->bi_size, res);
 	return 0;
 }
 
