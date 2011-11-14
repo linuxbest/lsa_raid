@@ -3483,9 +3483,7 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, segbuf_entry);
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
-#if 0
 	int i;
-#endif
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_del(&lb->lru);
@@ -3501,10 +3499,10 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	 * into disk
 	 */
 	/* not release the meta page, using for lcs read proc interface. */
-#if 0
-	for (i = 0; i < segbuf->seg->disks; i ++)
-		segbuf->column[i].meta_page = NULL;
-#endif
+	for (i = 0; i < segbuf->seg->disks; i ++) {
+		/*segbuf->column[i].meta_page = NULL;*/
+		segbuf->column[i].track     = NULL;
+	}
 	lsa_dirtory_commit(&conf->lsa_dirtory);
 	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
@@ -3538,8 +3536,10 @@ lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col, uint32_t seq)
 	lb->seg = i;
 	lb->segbuf_entry.done = lsa_lcs_write_done;
 
-	for (i = 0; i < segbuf->seg->disks; i ++)
+	for (i = 0; i < segbuf->seg->disks; i ++) {
 		segbuf->column[i].meta_page = lb->page;
+		segbuf->column[i].track = (struct lsa_track *)lb;
+	}
 
 	set_segbuf_uptodate(segbuf);
 	lsa_segment_buffer_chain(segbuf, &lb->segbuf_entry);
