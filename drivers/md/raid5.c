@@ -3739,8 +3739,10 @@ lsa_lcs_recover(struct lsa_closed_segment *lcs)
 
 	/* TODO checking the dirtory & ss information by redo the closed
 	 * segment */
-	lsa_segment_fill_update(&conf->segment_fill, ondisk->meta_column,
-			ondisk->meta_seg_id, ondisk->seq_id);
+	lsa_segment_fill_update(&conf->segment_fill, 
+			ondisk->meta_seg_id,
+			ondisk->meta_column,
+			ondisk->seq_id);
 	lsa_seg_update(&conf->lsa_dirtory, ondisk->meta_seg_id+1);
 
 	return 0;
@@ -4423,6 +4425,7 @@ static void
 lsa_segment_fill_update(struct lsa_segment_fill *segfill,
 		uint32_t meta_id, int col, uint32_t seq)
 {
+	debug("id %x, col %x, seq %x\n", meta_id, col, seq);
 	segfill->meta_id = meta_id;
 	segfill->meta_column = col;
 	segfill->seq = seq;
