@@ -2320,6 +2320,16 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	return eh;
 }
 
+/* TODO 
+ * packed data into cookie */
+typedef struct {
+	uint32_t seg_id;
+	uint8_t  seg_col;
+	uint8_t  status;
+	uint16_t offset;
+	uint16_t length;
+} __attribute__ ((packed)) lsa_read_buf_t;
+
 typedef struct lsa_track_cookie {
 	struct list_head       entry;
 	struct lsa_track       *track;
@@ -3228,11 +3238,50 @@ lsa_ss_commit(struct lsa_segment_status *ss)
 	lsa_ss_job(ss, &ss->checkpoint, WRITE);
 }
 
+struct lsa_ss_meta {
+	uint32_t data_id;
+	uint32_t meta_id;
+	int meta_col;
+};
+
 static void 
 proc_ss_read_done(struct lsa_ss_cookie *cookie)
 {
 	debug("cookie %p\n", cookie);
 	complete(cookie->comp);
+}
+
+static int
+lsa_ss_find_meta(struct lsa_segment_status *ss, struct lsa_ss_meta *meta)
+{
+	int res;
+	uint32_t seq = meta->data_id;
+
+	for (; seq < meta->data_id + 256; seq ++) {
+		struct completion done;
+		struct lsa_ss_cookie cookie;
+		segment_status_t *x;
+		init_completion(&done);
+		INIT_LIST_HEAD(&cookie.entry);
+		cookie.rw   = READ;
+		cookie.ssbuf= NULL;
+		cookie.done = proc_ss_read_done;
+		cookie.comp = &done;
+		res = lsa_ss_find_or_create(ss, seq, &cookie);
+		debug("segid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
+		if (res == -EINPROGRESS) {
+			wait_for_completion(&done);
+		}
+		x = &cookie.ssbuf->e;
+		if (x->status & SS_SEG_META) {
+			meta->meta_id = seq;
+			meta->meta_col= x->meta;
+			lsa_ss_put(ss, cookie.ssbuf);
+			return 0;
+		}
+		lsa_ss_put(ss, cookie.ssbuf);
+	}
+	return -1;
 }
 
 static void *
@@ -4535,20 +4584,6 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 	return 0;
 }
 
-typedef struct {
-	uint32_t seg_id;
-	uint8_t  seg_col;
-	uint8_t  status;
-	uint16_t offset;
-	uint16_t length;
-} __attribute__ ((packed)) lsa_read_buf_t;
-
-static void 
-lsa_read_handle_done(struct lsa_track_cookie *cookie)
-{
-	complete(cookie->comp);
-}
-
 static struct lsa_track_cookie *
 lsa_bio2track(struct lsa_bio *bi)
 {
@@ -4570,7 +4605,11 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
 	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
+	struct lsa_ss_meta meta = {.data_id = lrb->seg_id};
+	int res = lsa_ss_find_meta(&conf->lsa_segment_status, &meta);
 
+	debug("res %d, meta %x, %d\n",
+			res, meta.meta_id, meta.meta_col);
 	{
 		struct stripe_head *sh = conf->lsa_zero_sh;
 		struct page *page = sh->dev[0].page;
