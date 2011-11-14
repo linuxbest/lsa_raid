@@ -4208,7 +4208,7 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 			track_buffer->magic, track_buffer->sum, sum,
 			track_buffer->total,
 			track_buffer->prev_seg_id,
-			track_buffer->prev_column);
+			track_buffer->prev_column & 0xff);
 	seq_printf(p, " ID LBA      SEGID             COL   OFFSET  LENGTH\n");
 	/*              00 000000e0 00008202/00008204 00/01 000/078 08/08" */
 	segfill->seq_show.valid    = track_buffer->magic == TRACK_MAGIC &&
