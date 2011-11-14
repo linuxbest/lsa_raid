@@ -2240,6 +2240,11 @@ static uint32_t lsa_seg_alloc(struct lsa_dirtory *dir)
 	return dir->seg++;
 }
 
+static void lsa_seg_update(struct lsa_dirtory *dir, uint32_t seg_id)
+{
+	dir->seg = seg_id;
+}
+
 static struct entry_buffer *
 __lsa_entry_search(struct lsa_dirtory *dir, uint32_t log_track_id)
 {
@@ -3537,30 +3542,51 @@ lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col)
 	debug("lb %d write, %d\n", lb->seg, i);
 }
 
-static void *
-proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
+static lcs_ondisk_t *
+lsa_lcs_buf(struct lsa_closed_segment *lcs, int i,
+		int *valid, uint32_t *sum_o)
 {
-	int i = seq & lcs->max_mask;
 	struct segment_buffer *segbuf = lcs->segbuf[i];
 	struct page *page = segbuf->column[0].page;
 	lcs_ondisk_t *ondisk;
 	uint32_t sum;
+	int j;
 
+	/* TODO 
+	 * when first data is failed, we can try next data */
 	if (segbuf->column[0].meta_page)
 		page = segbuf->column[0].meta_page;
 	if (page == NULL)
 		return NULL;
+
 	ondisk = (lcs_ondisk_t *)page_address(page);
 
 	sum = ondisk->timestamp;
-	for (i = 0; i < ondisk->total; i ++) {
-		sum += ondisk->seg[i];
+	for (j = 0; j < ondisk->total; j ++) {
+		sum += ondisk->seg[j];
 	}
 	sum += ondisk->meta_seg_id;
 	sum += ondisk->meta_column;
+
+	*sum_o = sum;
+	*valid = sum == ondisk->sum && ondisk->magic == SEG_LCS_MAGIC;
+
+	return ondisk;
+}
+
+static void *
+proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
+{
+	int i = seq & lcs->max_mask, valid;
+	uint32_t sum_except;
+	lcs_ondisk_t *ondisk = lsa_lcs_buf(lcs, i, &valid, &sum_except);
+
+	if (ondisk == NULL)
+		return NULL;
+
 	seq_printf(p, "[%d] magic %08x, total %04x, sum %08x/%08x, time %08x.%04x, meta %08x/%d\n",
 			(int)seq, ondisk->magic, ondisk->total,
-			ondisk->sum, sum, ondisk->timestamp, ondisk->jiffies,
+			ondisk->sum, sum_except, ondisk->timestamp, ondisk->jiffies,
 			ondisk->meta_seg_id, ondisk->meta_column);
 	seq_printf(p, "    ");
 	for (i = 0; i < ondisk->total; i ++) {
@@ -3647,6 +3673,72 @@ static const struct file_operations proc_lcs_fops = {
 	.owner = THIS_MODULE,
 };
 
+static int 
+lsa_lcs_select(struct lsa_closed_segment *lcs)
+{
+	int i, sel = -1;
+	uint32_t time = 0;
+	uint16_t jif = 0;
+
+	for (i = 0; i < lcs->max_lcs; i ++) {
+		uint32_t sum_except;
+		int valid = 0;
+		lcs_ondisk_t *ondisk = lsa_lcs_buf(lcs, i, &valid, &sum_except);
+
+		if (ondisk == NULL)
+			continue;
+
+		printk("LCS:[%d], %08x, %08x/%08x, %08x.%04x, %s\n", i, 
+				ondisk->magic,
+				ondisk->sum, sum_except,
+				ondisk->timestamp, ondisk->jiffies,
+				valid ? "OK" : "FAILED");
+		if (!valid)
+			continue;
+
+		if (ondisk->timestamp > time) {
+			time = ondisk->timestamp;
+			sel = i;
+		} else if (ondisk->timestamp == time && ondisk->jiffies > jif) {
+			jif = ondisk->jiffies;
+			sel = i;
+		}
+	}
+	return sel;
+}
+ 
+static void
+lsa_segment_fill_update(struct lsa_segment_fill *segfill,
+		uint32_t meta_id, int col);
+
+static int 
+lsa_lcs_recover(struct lsa_closed_segment *lcs)
+{
+	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
+	int i;
+	struct segment_buffer *segbuf;
+	struct page *page;
+	lcs_ondisk_t *ondisk;
+
+	i = lsa_lcs_select(lcs);
+	if (i == -1) {
+		printk("LSA: CLOSED SEGMENT recovery failed\n");
+		return -1;
+	}
+
+	segbuf = lcs->segbuf[i];
+	page = segbuf->column[0].page;
+	ondisk = (lcs_ondisk_t *)page_address(page);
+
+	/* TODO checking the dirtory & ss information by redo the closed
+	 * segment */
+	lsa_segment_fill_update(&conf->segment_fill, ondisk->meta_column,
+			ondisk->meta_seg_id);
+	lsa_seg_update(&conf->lsa_dirtory, ondisk->meta_seg_id+1);
+
+	return 0;
+}
+
 struct lcs_segment_buffer {
 	struct segment_buffer_entry segbuf_entry;
 	struct completion done;
@@ -3718,7 +3810,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 		lcs->free_cnt ++;
 	}
 
-	return 0;
+	return lsa_lcs_recover(lcs);
 }
 
 static int
@@ -4308,6 +4400,14 @@ static const struct file_operations proc_segfill_fops = {
 	.owner = THIS_MODULE,
 };
 
+static void
+lsa_segment_fill_update(struct lsa_segment_fill *segfill,
+		uint32_t meta_id, int col)
+{
+	segfill->meta_id = meta_id;
+	segfill->meta_column = col;
+}
+
 static int
 lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 {
@@ -4674,26 +4774,32 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	if (conf->proc == NULL)
 		return -1;
 
+	tasklet_init(&conf->lsa_tasklet, lsa_bio_tasklet, (unsigned long)conf);
+	
 	res = kfifo_alloc(&conf->lsa_bio, STRIPE_SIZE, GFP_KERNEL);
 	debug("res %d\n", res);
-	tasklet_init(&conf->lsa_tasklet, lsa_bio_tasklet, (unsigned long)conf);
 
 	res = lsa_dirtory_init(&conf->lsa_dirtory, raid5_size(conf->mddev, 0, 0)>>9);
 	debug("res %d\n", res);
+
 	res = lsa_segment_init(&conf->meta_segment, conf->raid_disks,
 			ENTRY_HEAD_SIZE/conf->raid_disks/PAGE_SIZE,
 			PAGE_SHIFT, conf);
 	debug("res %d\n", res);
+
 	res = lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(128*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
 			STRIPE_SHIFT, conf);
 	debug("res %d\n", res);
-	res = lsa_cs_init(&conf->lsa_closed_status);
-	debug("res %d\n", res);
+
 	res = lsa_ss_init(&conf->lsa_segment_status, 
 			raid5_size(conf->mddev, 0, 0)/STRIPE_SECTORS);
 	debug("res %d\n", res);
+
 	res = lsa_segment_fill_init(&conf->segment_fill);
+	debug("res %d\n", res);
+	
+	res = lsa_cs_init(&conf->lsa_closed_status);
 	debug("res %d\n", res);
 
 	return 0;
