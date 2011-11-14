@@ -549,7 +549,6 @@ struct raid5_private_data {
 			uint32_t cur_meta;
 			short    cur_col;
 			short    valid;
-			struct segment_buffer *segbuf;
 			char *track_buffer;
 		} seq_show;
 	} segment_fill;

@@ -1807,6 +1807,8 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		set_segbuf_tree(segbuf);
 		BUG_ON(__segbuf_tree_insert(seg, segbuf) == 0);
 	}
+	if (segbuf) 
+		lsa_segment_ref(segbuf);
 	/* insert into the queue before enable IRQ */
 	if (segbuf && se) {
 		BUG_ON(!list_empty(&se->entry));
@@ -1816,8 +1818,6 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		else
 			list_add_tail(&se->entry, &segbuf->read);
 	}
-	if (segbuf)
-		lsa_segment_ref(segbuf);
 	/* when se is NULL, meaning we doing fill segment */
 	if (segbuf && se && !segbuf_uptodate(segbuf) && !segbuf_locked(segbuf) &&
 			list_empty(&segbuf->active_entry)) {
@@ -2419,7 +2419,7 @@ lsa_entry_put(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	unsigned long flags;
 
 	debug("ltid %x, ref %d, flags %lx, free %d\n",
-			eh->e.log_track_id, atomic_read(&eh->count), 
+			eh->e.log_track_id, atomic_read(&eh->count),
 			eh->flags, dir->free_cnt);
 	spin_lock_irqsave(&dir->lock, flags);
 	if (atomic_dec_and_test(&eh->count)) {
@@ -4215,9 +4215,9 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 		track_buffer->sum == sum;
 	segfill->seq_show.cur_meta = track_buffer->prev_seg_id;
 	segfill->seq_show.cur_col  = track_buffer->prev_column;
-
-	segfill->seq_show.segbuf = segbuf;
 	segfill->seq_show.track_buffer = (char *)track_buffer;
+		
+	lsa_segment_release(segbuf, 0);
 
 	return segfill;
 }
@@ -4242,10 +4242,6 @@ static void *
 proc_segfill_next(struct seq_file *p, void *v, loff_t *pos)
 {
 	struct lsa_segment_fill *segfill = p->private;
-	if (segfill->seq_show.segbuf) {
-		lsa_segment_release(segfill->seq_show.segbuf, 0);
-		segfill->seq_show.segbuf = NULL;
-	}
 	(*pos) ++; 
 	return proc_segfill_read(p, segfill, *pos);
 }
@@ -4253,11 +4249,6 @@ proc_segfill_next(struct seq_file *p, void *v, loff_t *pos)
 static void
 proc_segfill_stop(struct seq_file *p, void *v)
 {	
-	struct lsa_segment_fill *segfill = p->private;
-	if (segfill->seq_show.segbuf) {
-		lsa_segment_release(segfill->seq_show.segbuf, 0);
-		segfill->seq_show.segbuf = NULL;
-	}
 }
 
 static int
