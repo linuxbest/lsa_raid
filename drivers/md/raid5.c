@@ -1612,10 +1612,10 @@ __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
  * CLOSED: meaning all of data has been writen to disk.
  */
 typedef enum {
-	SEG_FREE    = 0,
-	SEG_OPEN    = 1,
-	SEG_CLOSING = 2,
-	SEG_CLOSED  = 3,
+	SEG_FREE    = SS_SEG_FREE,
+	SEG_OPEN    = SS_SEG_OPEN,
+	SEG_CLOSING = SS_SEG_CLOSING,
+	SEG_CLOSED  = SS_SEG_CLOSED,
 } segment_event_t;
 
 static const char *segment_event_str(segment_event_t type)
@@ -1627,7 +1627,7 @@ static const char *segment_event_str(segment_event_t type)
 		"closed",
 	};
 
-	return str[type];
+	return str[type & SS_SEG_MASK];
 };
 
 typedef enum {
@@ -1637,11 +1637,7 @@ typedef enum {
 } segbuf_event_t;
 
 static int
-lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type);
-static int
-lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type);
-static int
-lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status);
+lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf);
 static int
 lsa_segment_read_done(struct lsa_segment *seg, struct segment_buffer *segbuf);
 static int
@@ -1869,8 +1865,7 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 	/* TODO state change invalid */
 	BUG_ON(segbuf->status != type);
 
-	res = lsa_ss_update(&conf->lsa_segment_status, 
-			segbuf->seg_id, segbuf->status);
+	res = lsa_ss_update(&conf->lsa_segment_status, segbuf);
 
 	return res;
 }
@@ -3031,20 +3026,22 @@ lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id,
 }
 
 static int
-lsa_ss_update(struct lsa_segment_status *ss, uint32_t seg_id, int status)
+lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf)
 {
 	struct lsa_ss_cookie cookie = {.rw = WRITE,};
-	int res = lsa_ss_find_or_create(ss, seg_id, &cookie);
+	int res = lsa_ss_find_or_create(ss, segbuf->seg_id, &cookie);
 	struct ss_buffer *ssbuf;
+	uint8_t meta = segbuf_meta(segbuf) ? SS_SEG_META : 0;
 
 	ssbuf = cookie.ssbuf;
 	BUG_ON(res != 0);
 	if (ssbuf) {
 		unsigned long flags;
 
-		ssbuf->e.status    = status;
+		ssbuf->e.status    = segbuf->status | meta;
 		ssbuf->e.timestamp = get_seconds();
 		ssbuf->e.jiffies   = jiffies;
+		ssbuf->e.meta      = segbuf->meta;
 
 		spin_lock_irqsave(&ss->lock, flags);
 		__lsa_ss_dirty(ss, ssbuf);
@@ -3252,9 +3249,9 @@ proc_ss_read(struct seq_file *p, struct lsa_segment_status *ss, loff_t seq)
 		wait_for_completion(&done);
 	}
 	x = &cookie.ssbuf->e;
-	/*             01234567 01234567 02 */
-	seq_printf(p, "%08x %08x.%04x %02x\n",
-			x->seg_id, x->timestamp, x->jiffies, x->status);
+	seq_printf(p, "%08x %08x.%04x %02x/%02x\n",
+			x->seg_id, x->timestamp, x->jiffies,
+			x->status, x->meta);
 	lsa_ss_put(ss, cookie.ssbuf);
 
 	return ss;
@@ -3271,7 +3268,7 @@ proc_ss_start(struct seq_file *p, loff_t *pos)
 	if (*pos == 0) {
 		seq_printf(p, "MAX SEG: %08x\n", ss->max_seg);
 		seq_printf(p, "SEGID    TIME          status\n");
-		/*             01234567 01234567.0123 02 */
+		/*             01234567 01234567.0123 02/02 */
 	}
 
 	if (*pos < ss->max_seg)

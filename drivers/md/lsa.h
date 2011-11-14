@@ -18,7 +18,13 @@ typedef struct {
 	uint16_t jiffies;
 	uint32_t occupancy;
 	uint8_t  status;
-	uint8_t  reserved;
+#define SS_SEG_FREE     0
+#define SS_SEG_OPEN     1
+#define SS_SEG_CLOSING  2
+#define SS_SEG_CLOSED   3
+#define SS_SEG_MASK     3
+#define SS_SEG_META    (1<<7)
+	uint8_t  meta;
 } __attribute__ ((packed)) segment_status_t;
 
 typedef struct {
