@@ -3919,7 +3919,7 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	
 	track->segbuf = NULL;
 
-	track->lcs = lsa_lcs_freed(&conf->lsa_closed_status);
+	track->lcs = segfill->lcs = lsa_lcs_freed(&conf->lsa_closed_status);
 	BUG_ON(track->lcs == NULL);
 }
 
@@ -4009,8 +4009,8 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	int dir_dirty, dir_point, ss_dirty, ss_point;
 
 	BUG_ON(segfill->segbuf == NULL);
-	BUG_ON(segfill->track == NULL);
-	lsa_lcs_insert(segfill->track->lcs, segfill->segbuf->seg_id);
+	BUG_ON(segfill->lcs == NULL);
+	lsa_lcs_insert(segfill->lcs, segfill->segbuf->seg_id);
 
 	lsa_dirtory_checkpoint_sts(&conf->lsa_dirtory, &dir_dirty, &dir_point);
 	lsa_ss_checkpoint_sts(&conf->lsa_segment_status, &ss_dirty, &ss_point);
@@ -4069,6 +4069,8 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	BUG_ON(segfill->data_column > segfill->max_column);
 }
 
+static void 
+__lsa_segment_fill_timeout_update(struct lsa_segment_fill *segfill);
 /* first checking the data can put into this segment.
  * then adding the track information into.
  * then adding the data information into.
@@ -4077,8 +4079,14 @@ static int
 __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 		struct lsa_track_cookie **cookie, uint32_t log_track_id)
 {
-	int meta_full = segfill->track->buf->total == segfill->meta_max;
+	int meta_full;
 
+	if (segfill->track == NULL)
+		__lsa_track_open(segfill);
+	if (segfill->segbuf == NULL)
+		__lsa_segment_fill_open(segfill);
+
+	meta_full = segfill->track->buf->total == segfill->meta_max;
 	debug("bio %llu, column %d/%d, meta %d/%d\n",
 			(unsigned long long)bi->bi_sector,
 			segfill->data_column, segfill->max_column,
@@ -4097,6 +4105,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 	}
 	__lsa_track_add(segfill, bi, cookie, log_track_id);
 	__lsa_segment_fill_add(segfill, bi);
+	__lsa_segment_fill_timeout_update(segfill);
 
 	return 0;
 }
@@ -4124,6 +4133,32 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 	lsa_bio_endio(bi, 0);
 
 	return res;
+}
+
+static void
+__lsa_segment_fill_timeout_update(struct lsa_segment_fill *segfill)
+{
+	unsigned long deadline = jiffies + 10*HZ;
+	unsigned long expiry = round_jiffies_up(deadline);
+
+	if (!timer_pending(&segfill->timer) ||
+			time_before(deadline, segfill->timer.expires))
+		mod_timer(&segfill->timer, expiry);
+}
+
+static void
+lsa_segment_fill_timeout(unsigned long data)
+{
+	struct lsa_segment_fill *segfill = (struct lsa_segment_fill *)data;
+	unsigned long flags;
+
+	del_timer(&segfill->timer);
+
+	spin_lock_irqsave(&segfill->lock, flags);
+	debug("track %p, segbuf %p\n", segfill->track, segfill->segbuf);
+	__lsa_track_close(segfill);
+	__lsa_segment_fill_close(segfill);
+	spin_unlock_irqrestore(&segfill->lock, flags);
 }
 
 static int
@@ -4171,8 +4206,9 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 		segfill->free_cnt ++;
 	}
 
-	__lsa_segment_fill_open(segfill);
-	__lsa_track_open(segfill);
+	init_timer(&segfill->timer);
+	segfill->timer.data = (unsigned long)segfill;
+	segfill->timer.function = lsa_segment_fill_timeout;
 
 	return 0;
 }
