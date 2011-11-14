@@ -4204,7 +4204,7 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
 		sum += *dbuf;
 
-	seq_printf(p, "magic %08x, sum %08x/%08x, total %04x, %08x/%02x\n",
+	seq_printf(p, "magic %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
 			track_buffer->magic, track_buffer->sum, sum,
 			track_buffer->total,
 			track_buffer->prev_seg_id,
