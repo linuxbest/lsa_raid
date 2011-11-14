@@ -13,7 +13,7 @@ typedef struct {
 } __attribute__ ((packed)) lsa_entry_t;
 
 typedef struct {
-	uint32_t seg_id;
+	uint32_t seq;
 	uint32_t timestamp;
 	uint16_t jiffies;
 	uint32_t occupancy;
@@ -38,6 +38,8 @@ typedef struct {
 	uint16_t total;
 	uint16_t prev_column;
 	uint32_t prev_seg_id;
+	uint32_t seq_id;
+	uint32_t reserved;
 	lsa_track_entry_t entry[0];
 } __attribute__ ((packed)) lsa_track_buffer_t;
 
@@ -50,6 +52,7 @@ typedef struct {
 	uint8_t  reserved[2];
 	uint16_t meta_column; /* last segment dirtory col */
 	uint32_t meta_seg_id; /* last segment information id */
+	uint32_t seq_id;
 	uint32_t seg[0];
 } __attribute__ ((packed)) lcs_ondisk_t;
 

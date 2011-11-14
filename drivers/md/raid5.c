@@ -1450,8 +1450,8 @@ SEG2PSECTOR(struct lsa_segment *seg, uint32_t seg_id)
 enum {
 	COLUMN_NULL = 0xFFFF,
 	STRIPE_MASK = STRIPE_SIZE-1,
-	TRACK_MAGIC   = 0xABCD0, /* TODO */
-	SEG_LCS_MAGIC = 0xABCD1,
+	TRACK_MAGIC   = 0xABCD0000, /* TODO */
+	SEG_LCS_MAGIC = 0xABCD0001,
 
 	SUPER_ID   = 0x0,
 	DIR_SEG_ID = 0x1,     /* block size 4k */
@@ -1470,6 +1470,7 @@ struct segment_buffer {
 	atomic_t         count, bios, pins;
 	unsigned int     status, meta;
 	uint32_t         seg_id;
+	uint32_t         seq;
 	struct lsa_segment *seg;
 	sector_t         sector;
 	struct column {
@@ -2840,6 +2841,7 @@ struct ss_buffer {
 #define SEGSTAT_UPTODATE 2
 #define SEGSTAT_LRU      3
 	unsigned long flags;
+	uint32_t seg_id;
 	segment_status_t e;
 };
 
@@ -2878,7 +2880,7 @@ __ss_entry_search(struct lsa_segment_status *ss, uint32_t seg_id)
 	while (node) {
 		struct ss_buffer *data = container_of(node, 
 				struct ss_buffer, node);
-		int result = data->e.seg_id - seg_id;
+		int result = data->seg_id - seg_id;
 
 		if (result < 0)
 			node = node->rb_left;
@@ -2899,7 +2901,7 @@ __ss_entry_insert(struct lsa_segment_status *ss, struct ss_buffer *data)
 	while (*new) {
 		struct ss_buffer *this = container_of(*new,
 				struct ss_buffer, node);
-		int result = this->e.seg_id - data->e.seg_id;
+		int result = this->seg_id - data->seg_id;
 
 		parent = *new;
 		if (result < 0)
@@ -2958,7 +2960,7 @@ __lsa_ss_dirty(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 	BUG_ON(!list_empty(&ssbuf->entry));
 	list_add_tail(&ssbuf->entry, &ss->dirty);
 	atomic_inc(&ss->dirty_cnt);
-	debug("ssid %x\n", ssbuf->e.seg_id);
+	debug("ssid %x\n", ssbuf->seg_id);
 }
 
 static void 
@@ -2967,7 +2969,7 @@ lsa_ss_put(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 	unsigned long flags;
 	
 	debug("ssid %x, ref %d, free %d\n",
-			ssbuf->e.seg_id, atomic_read(&ssbuf->count),
+			ssbuf->seg_id, atomic_read(&ssbuf->count),
 			ss->free_cnt);
 
 	spin_lock_irqsave(&ss->lock, flags);
@@ -3008,7 +3010,7 @@ lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id,
 		cookie->ssbuf = ssbuf = __lsa_ss_freed(ss);
 		BUG_ON(ssbuf == NULL);
 		/* TODO handle when LRU is null */
-		ssbuf->e.seg_id    = seg_id;
+		ssbuf->seg_id    = seg_id;
 		BUG_ON(__ss_entry_insert(ss, ssbuf) == 0);
 		if (cookie && cookie->rw == READ) {
 			list_add_tail(&ssbuf->entry, &ss->queue);
@@ -3018,7 +3020,7 @@ lsa_ss_find_or_create(struct lsa_segment_status *ss, uint32_t seg_id,
 		}
 	}
 	debug("ssid %x, ref %d, flags %lx, free %d\n",
-			ssbuf->e.seg_id, atomic_read(&ssbuf->count),
+			ssbuf->seg_id, atomic_read(&ssbuf->count),
 			ssbuf->flags, ss->free_cnt);
 	if (!ss_uptodate(ssbuf)) {
 		list_add_tail(&cookie->entry, &ssbuf->cookie);
@@ -3043,6 +3045,7 @@ lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf)
 	if (ssbuf) {
 		unsigned long flags;
 
+		ssbuf->e.seq       = segbuf->seq;
 		ssbuf->e.status    = segbuf->status | meta;
 		ssbuf->e.timestamp = get_seconds();
 		ssbuf->e.jiffies   = jiffies;
@@ -3065,7 +3068,7 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 	struct lsa_segment_status *ss = ssbuf->ss;
 
 	debug("ssid %x, free %d\n",
-			ssbuf->e.seg_id, ss->free_cnt);
+			ssbuf->seg_id, ss->free_cnt);
 
 	clear_ss_dirty(ssbuf);
 
@@ -3078,8 +3081,8 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 
 #define lsa_ss_dump(s, x) \
 do { \
-	debug(s " segid %x, time %x, occup %x, sts %x\n", \
-		x->seg_id, x->timestamp, x->occupancy, x->status); \
+	debug(s " seq %x, time %x, occup %x, sts %x\n", \
+		x->seq, x->timestamp, x->occupancy, x->status); \
 } while (0)
 
 static int
@@ -3088,13 +3091,13 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 {
 	int fromseg = !ss_uptodate(ssbuf);
 	int len = 0;
-	int offset = SS2OFFSET(ssbuf->ss, ssbuf->e.seg_id);
+	int offset = SS2OFFSET(ssbuf->ss, ssbuf->seg_id);
 	const char *buf = lsa_segment_buf_addr(segbuf, offset, &len);
 	segment_status_t *n = &ssbuf->e;
 	segment_status_t *o = (segment_status_t *)buf;
 
 	debug("ssid %x, fromseg %d, off %d, len %d\n", 
-			ssbuf->e.seg_id, fromseg, offset, len);
+			ssbuf->seg_id, fromseg, offset, len);
 	lsa_ss_dump("new", n);
 	lsa_ss_dump("old", o);
 	BUG_ON(len < sizeof(*n));
@@ -3126,7 +3129,7 @@ lsa_ss_uptodate_done(struct segment_buffer *segbuf,
 	unsigned long flags;
 	LIST_HEAD(head);
 
-	debug("ssid %x, %d\n", ssbuf->e.seg_id, se->rw);
+	debug("ssid %x, %d\n", ssbuf->seg_id, se->rw);
 	if (se->rw == WRITE) {
 		lsa_ss_copy(segbuf->seg, segbuf, ssbuf);
 		return 0;
@@ -3156,12 +3159,12 @@ lsa_ss_rw(struct lsa_segment_status *ss, struct ss_buffer *ssbuf, int rw)
 	raid5_conf_t *conf = container_of(ss, raid5_conf_t, lsa_segment_status);
 	struct segment_buffer_entry *se = &ssbuf->segbuf_entry;
 
-	debug("ssid %x, rw %d\n", ssbuf->e.seg_id, rw);
+	debug("ssid %x, rw %d\n", ssbuf->seg_id, rw);
 	BUG_ON(!list_empty(&se->entry));
 	se->rw = rw;
 	se->done = lsa_ss_uptodate_done;
 	segbuf = lsa_segment_find_or_create(&conf->meta_segment,
-			SS2SEG(ss, ssbuf->e.seg_id), se);
+			SS2SEG(ss, ssbuf->seg_id), se);
 	BUG_ON(segbuf == NULL);
 
 	return res;
@@ -3253,8 +3256,9 @@ proc_ss_read(struct seq_file *p, struct lsa_segment_status *ss, loff_t seq)
 		wait_for_completion(&done);
 	}
 	x = &cookie.ssbuf->e;
-	seq_printf(p, "%08x %08x.%04x %02x/%02x\n",
-			x->seg_id, x->timestamp, x->jiffies,
+	seq_printf(p, "%08x %08x %08x.%04x %02x/%02x\n",
+			(uint32_t)seq, x->seq,
+			x->timestamp, x->jiffies,
 			x->status, x->meta);
 	lsa_ss_put(ss, cookie.ssbuf);
 
@@ -3271,8 +3275,8 @@ proc_ss_start(struct seq_file *p, loff_t *pos)
 
 	if (*pos == 0) {
 		seq_printf(p, "MAX SEG: %08x\n", ss->max_seg);
-		seq_printf(p, "SEGID    TIME          status\n");
-		/*             01234567 01234567.0123 02/02 */
+		seq_printf(p, "SEGID    SEQ      TIME          status\n");
+		/*             01234567 01234567 01234567.0123 02/02 */
 	}
 
 	if (*pos < ss->max_seg)
@@ -3507,7 +3511,7 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 }
 
 static void
-lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col)
+lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col, uint32_t seq)
 {
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
@@ -3518,9 +3522,11 @@ lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col)
 	/* saving the seg id and col for meta data */
 	lb->ondisk->meta_seg_id = seg_id;
 	lb->ondisk->meta_column = col;
+	lb->ondisk->seq_id = seq;
 	/* sum the seg id & col */
 	lb->ondisk->sum += seg_id;
 	lb->ondisk->sum += col;
+	lb->ondisk->sum += seq;
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_add_tail(&lb->lru, &lcs->dirty);
@@ -3567,6 +3573,7 @@ lsa_lcs_buf(struct lsa_closed_segment *lcs, int i,
 	}
 	sum += ondisk->meta_seg_id;
 	sum += ondisk->meta_column;
+	sum += ondisk->seq_id;
 
 	*sum_o = sum;
 	*valid = sum == ondisk->sum && ondisk->magic == SEG_LCS_MAGIC;
@@ -3584,8 +3591,8 @@ proc_lcs_read(struct seq_file *p, struct lsa_closed_segment *lcs, loff_t seq)
 	if (ondisk == NULL)
 		return NULL;
 
-	seq_printf(p, "[%d] magic %08x, total %04x, sum %08x/%08x, time %08x.%04x, meta %08x/%d\n",
-			(int)seq, ondisk->magic, ondisk->total,
+	seq_printf(p, "[%d] magic %08x, total %04x, seq %08x, sum %08x/%08x, time %08x.%04x, meta %08x/%d\n",
+			(int)seq, ondisk->magic, ondisk->total, ondisk->seq_id,
 			ondisk->sum, sum_except, ondisk->timestamp, ondisk->jiffies,
 			ondisk->meta_seg_id, ondisk->meta_column);
 	seq_printf(p, "    ");
@@ -3688,8 +3695,8 @@ lsa_lcs_select(struct lsa_closed_segment *lcs)
 		if (ondisk == NULL)
 			continue;
 
-		printk("LCS:[%d], %08x, %08x/%08x, %08x.%04x, %s\n", i, 
-				ondisk->magic,
+		printk("LCS:[%d], %08x, %08x, %08x/%08x, %08x.%04x, %s\n", i, 
+				ondisk->magic, ondisk->seq_id,
 				ondisk->sum, sum_except,
 				ondisk->timestamp, ondisk->jiffies,
 				valid ? "OK" : "FAILED");
@@ -3709,7 +3716,7 @@ lsa_lcs_select(struct lsa_closed_segment *lcs)
  
 static void
 lsa_segment_fill_update(struct lsa_segment_fill *segfill,
-		uint32_t meta_id, int col);
+		uint32_t meta_id, int col, uint32_t seq);
 
 static int 
 lsa_lcs_recover(struct lsa_closed_segment *lcs)
@@ -3733,7 +3740,7 @@ lsa_lcs_recover(struct lsa_closed_segment *lcs)
 	/* TODO checking the dirtory & ss information by redo the closed
 	 * segment */
 	lsa_segment_fill_update(&conf->segment_fill, ondisk->meta_column,
-			ondisk->meta_seg_id);
+			ondisk->meta_seg_id, ondisk->seq_id);
 	lsa_seg_update(&conf->lsa_dirtory, ondisk->meta_seg_id+1);
 
 	return 0;
@@ -4027,6 +4034,12 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	BUG_ON(track == NULL);
 	track_buffer = track->buf;
 
+	track->buf->seq_id  = segbuf->seq;
+	track->buf->sum += track->buf->total;
+	track->buf->sum += track->buf->prev_seg_id;
+	track->buf->sum += track->buf->prev_column;
+	track->buf->sum += track->buf->seq_id;
+
 	/* fill the information into segment buffer */
 	segbuf->column[data_column].track     = track;
 	segbuf->column[data_column].meta_page = track->page;
@@ -4076,7 +4089,7 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	track = segbuf->column[segbuf->meta].track;
 
 	BUG_ON(track->lcs == NULL);
-	lsa_lcs_commit(track->lcs, segbuf->seg_id, segbuf->meta);
+	lsa_lcs_commit(track->lcs, segbuf->seg_id, segbuf->meta, segbuf->seq);
 	track->lcs = NULL;
 
 	spin_lock_irqsave(&segfill->lock, flags);
@@ -4134,8 +4147,10 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 	BUG_ON(segbuf == NULL);
 	__lsa_segment_write_init(segbuf);
 
+	segbuf->seq          = segfill->seq;
 	segfill->segbuf      = segbuf;
 	segfill->data_column = 0;
+	segfill->seq ++;
 	lsa_segment_event(segbuf, SEG_OPEN);
 
 	return 0;
@@ -4292,12 +4307,16 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 		page = segbuf->column[col].page;
 	track_buffer = page_address(page);
 
+	sum += track_buffer->total;
+	sum += track_buffer->prev_seg_id;
+	sum += track_buffer->prev_column;
+	sum += track_buffer->seq_id;
 	dbuf = (uint32_t *)track_buffer->entry;
 	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
 		sum += *dbuf;
 
-	seq_printf(p, "magic %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
-			track_buffer->magic, track_buffer->sum, sum,
+	seq_printf(p, "magic %08x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
+			track_buffer->magic, track_buffer->seq_id, track_buffer->sum, sum,
 			track_buffer->total,
 			track_buffer->prev_seg_id,
 			track_buffer->prev_column & 0xff);
@@ -4402,10 +4421,11 @@ static const struct file_operations proc_segfill_fops = {
 
 static void
 lsa_segment_fill_update(struct lsa_segment_fill *segfill,
-		uint32_t meta_id, int col)
+		uint32_t meta_id, int col, uint32_t seq)
 {
 	segfill->meta_id = meta_id;
 	segfill->meta_column = col;
+	segfill->seq = seq;
 }
 
 static int
@@ -4428,6 +4448,7 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 	/* TODO loading from the super block */
 	segfill->meta_id     = 0;
 	segfill->meta_column = COLUMN_NULL;
+	segfill->seq         = 0;
 
 	segfill->free_cnt    = 0;
 
@@ -4481,6 +4502,7 @@ lsa_segment_fill_exit(struct lsa_segment_fill *segfill)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
+	del_timer(&segfill->timer);
 	while (!list_empty(&segfill->head)) {
 		/* TODO */
 		lsa_track_t *lt = container_of(segfill->head.next,

@@ -545,6 +545,7 @@ struct raid5_private_data {
 		int free_cnt;
 		struct proc_dir_entry *proc;
 		struct timer_list timer;
+		uint32_t seq;
 		struct {
 			uint32_t cur_meta;
 			short    cur_col;
