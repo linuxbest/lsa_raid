@@ -2513,10 +2513,6 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	return 0;
 }
 
-static int 
-lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bio, uint32_t sector, 
-		struct entry_buffer *eb);
-
 static int
 lsa_dirtory_uptodate_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
