@@ -4363,8 +4363,10 @@ lsa_segment_fill_timeout(unsigned long data)
 
 	spin_lock_irqsave(&segfill->lock, flags);
 	debug("track %p, segbuf %p\n", segfill->track, segfill->segbuf);
-	__lsa_track_close(segfill);
-	__lsa_segment_fill_close(segfill);
+	if (segfill->track)
+		__lsa_track_close(segfill);
+	if (segfill->segbuf)
+		__lsa_segment_fill_close(segfill);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 }
 
