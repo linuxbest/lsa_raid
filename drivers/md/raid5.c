@@ -4327,6 +4327,14 @@ lsa_segment_fill_timeout(unsigned long data)
 	spin_unlock_irqrestore(&segfill->lock, flags);
 }
 
+struct lsa_segfill_meta {
+	uint32_t meta;
+	int col;
+	uint32_t lba;
+	int (*callback)(struct lsa_segfill_meta *meta, lsa_track_entry_t *n);
+	void *data;
+};
+
 static int
 proc_segfill_read_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
@@ -4337,16 +4345,96 @@ proc_segfill_read_done(struct segment_buffer *segbuf,
 	return 0;
 }
 
+static lsa_track_buffer_t *
+lsa_segfill_segbuf2track(struct segment_buffer *segbuf, int col, 
+		int *valid, uint32_t *sum_o)
+{
+	lsa_track_buffer_t *track_buffer;
+	struct page *page;
+	uint32_t sum = 0, *dbuf;
+	int i;
+
+	if (segbuf->column[col].meta_page)
+		page = segbuf->column[col].meta_page;
+	else
+		page = segbuf->column[col].page;
+	track_buffer = page_address(page);
+
+	sum += track_buffer->total;
+	sum += track_buffer->prev_seg_id;
+	sum += track_buffer->prev_column;
+	sum += track_buffer->seq_id;
+	dbuf = (uint32_t *)track_buffer->entry;
+	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
+		sum += *dbuf;
+
+	*valid = track_buffer->magic == TRACK_MAGIC && 
+		track_buffer->sum == sum;
+	*sum_o = sum;
+
+	return track_buffer;
+}
+
+static int
+lsa_segfill_find_meta(struct lsa_segment_fill *segfill, 
+		struct lsa_segfill_meta *meta)
+{
+	struct segment_buffer *segbuf;
+	struct lcs_segment_buffer lcs_se;
+	raid5_conf_t *conf = container_of(segfill, raid5_conf_t, segment_fill);
+	lsa_track_buffer_t *track_buffer;
+	uint32_t sum;
+	int valid, i;
+
+	init_completion(&lcs_se.done);
+	segment_buffer_entry_init(&lcs_se.segbuf_entry);
+	lcs_se.segbuf_entry.rw = READ;
+	lcs_se.segbuf_entry.done = proc_segfill_read_done;
+
+	segbuf = lsa_segment_find_or_create(&conf->data_segment,
+			meta->meta, &lcs_se.segbuf_entry);
+	wait_for_completion(&lcs_se.done);
+
+	track_buffer = lsa_segfill_segbuf2track(segbuf, meta->col, 
+			&valid, &sum);
+	
+	debug("magic %08x, segid %08x/%02x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
+			track_buffer->magic, meta->meta, meta->col,
+			track_buffer->seq_id, track_buffer->sum, sum,
+			track_buffer->total, track_buffer->prev_seg_id,
+			track_buffer->prev_column & 0xff);
+	if (valid == 0) {
+		/* TODO 
+		 * howto handle data corruption.
+		 */
+		return -1;
+	}
+
+	valid = 0;
+	i = track_buffer->total-1;
+	do {
+		lsa_track_entry_t *n = &track_buffer->entry[i];
+		if (n->new.log_track_id != meta->lba) 
+			continue;
+		valid ++;
+		if (meta->callback(meta, n) != 0)
+			break;
+	} while (i--);
+
+	lsa_segment_release(segbuf, 0);
+
+	return valid;
+}
+
 static void *
 proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t seq)
 {
 	struct segment_buffer *segbuf;
 	struct lcs_segment_buffer lcs_se;
 	raid5_conf_t *conf = container_of(segfill, raid5_conf_t, segment_fill);
-	struct page *page;
 	lsa_track_buffer_t *track_buffer;
-	uint32_t sum = 0, *dbuf;
-	int i, col = segfill->seq_show.cur_col;
+	uint32_t sum;
+	int valid, col = segfill->seq_show.cur_col;
 
 	debug("meta %08x/%02x, valid %d\n", segfill->seq_show.cur_meta,
 			segfill->seq_show.cur_col, segfill->seq_show.valid);
@@ -4364,29 +4452,17 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 			&lcs_se.segbuf_entry);
 	wait_for_completion(&lcs_se.done);
 
-	if (segbuf->column[col].meta_page)
-		page = segbuf->column[col].meta_page;
-	else
-		page = segbuf->column[col].page;
-	track_buffer = page_address(page);
+	track_buffer = lsa_segfill_segbuf2track(segbuf, col, &valid, &sum);
 
-	sum += track_buffer->total;
-	sum += track_buffer->prev_seg_id;
-	sum += track_buffer->prev_column;
-	sum += track_buffer->seq_id;
-	dbuf = (uint32_t *)track_buffer->entry;
-	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
-		sum += *dbuf;
-
-	seq_printf(p, "magic %08x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
-			track_buffer->magic, track_buffer->seq_id, track_buffer->sum, sum,
+	seq_printf(p, "magic %08x, segid %08x/%02x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
+			track_buffer->magic, segfill->seq_show.cur_meta, col,
+			track_buffer->seq_id, track_buffer->sum, sum,
 			track_buffer->total,
 			track_buffer->prev_seg_id,
 			track_buffer->prev_column & 0xff);
 	seq_printf(p, " ID LBA      SEGID             COL   OFFSET  LENGTH\n");
 	/*              00 000000e0 00008202/00008204 00/01 000/078 08/08" */
-	segfill->seq_show.valid    = track_buffer->magic == TRACK_MAGIC &&
-		track_buffer->sum == sum;
+	segfill->seq_show.valid    = valid;
 	segfill->seq_show.cur_meta = track_buffer->prev_seg_id;
 	segfill->seq_show.cur_col  = track_buffer->prev_column;
 	segfill->seq_show.track_buffer = (char *)track_buffer;
@@ -4599,17 +4675,63 @@ lsa_track2lrb(struct lsa_track_cookie *cookie)
 	return (lsa_read_buf_t *)cookie->track;
 }
 
+struct lba_map_entry {
+	struct list_head list;
+	lsa_track_entry_t entry;
+};
+
+static int
+lsa_read_segfill_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
+{
+	struct lsa_bio *bi = meta->data;
+	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
+	struct lba_map_entry *map = kmalloc(sizeof(*map), GFP_KERNEL);
+	/*lsa_entry_t *lo = &n->old;
+	  lsa_entry_t *ln = &n->new;
+	  lsa_entry_dump("new", ln);
+	  lsa_entry_dump("old", lo);*/
+	if (map) {
+		memcpy(&map->entry, n, sizeof(*n));
+		list_add_tail(&map->list, &cookie->entry);
+		return 0;
+	}
+	return -ENOMEM;
+}
+
 static void 
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
-	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
 	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
-	struct lsa_ss_meta meta = {.data_id = lrb->seg_id};
-	int res = lsa_ss_find_meta(&conf->lsa_segment_status, &meta);
+	struct lsa_ss_meta ss_meta;
+	struct lsa_segfill_meta segfill_meta;
+	int res;
 
+	ss_meta.meta_id = 0;
+	ss_meta.meta_col = 0;
+	ss_meta.data_id = lrb->seg_id;
+	res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
 	debug("res %d, meta %x, %d\n",
-			res, meta.meta_id, meta.meta_col);
+			res, ss_meta.meta_id, ss_meta.meta_col);
+
+	INIT_LIST_HEAD(&cookie->entry);
+	segfill_meta.lba = bi->lt;
+	segfill_meta.meta = ss_meta.meta_id;
+	segfill_meta.col = ss_meta.meta_col;
+	segfill_meta.callback = lsa_read_segfill_cb;
+	segfill_meta.data = bi;
+	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
+	debug("res %d\n", res);
+
+	while (!list_empty(&cookie->entry)) {
+		struct lba_map_entry *map = list_entry(cookie->entry.next,
+				struct lba_map_entry, list);
+		lsa_entry_t *ln = &map->entry.new;
+		list_del_init(&map->list);
+		lsa_entry_dump("new", ln);
+		kfree(map);
+	}
+
 	{
 		struct stripe_head *sh = conf->lsa_zero_sh;
 		struct page *page = sh->dev[0].page;
