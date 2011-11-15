@@ -4811,13 +4811,13 @@ static void lsa_gc_thread(mddev_t *mddev)
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
 	debug("res %d\n", res);
 
-	node = rb_last(&tree);
+	node = rb_first(&tree);
 	while (node) {
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
 		lsa_entry_dump("new", ln);
-		node = rb_prev(&map->node);
+		node = rb_next(&map->node);
 		rb_erase(&map->node, &tree);
 		kfree(map);
 	};
