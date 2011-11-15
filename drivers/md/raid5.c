@@ -2491,8 +2491,9 @@ lsa_dirtory_write_done(struct segment_buffer *segbuf,
 
 #define lsa_entry_dump(s, x) \
 do { \
-	debug(s " lba %x, segid %x, col %d, off %03d, len %d\n", \
-		x->log_track_id, x->seg_id, x->seg_column, x->offset, x->length); \
+	debug(s " lba %x, segid %x, col %d, off %03d, len %d, sts %x\n", \
+		x->log_track_id, x->seg_id, x->seg_column, \
+			x->offset, x->length, x->status); \
 } while (0)
 
 static int
@@ -4374,6 +4375,7 @@ struct lsa_segfill_meta {
 	int (*callback)(struct lsa_segfill_meta *meta, lsa_track_entry_t *n);
 	void *data;
 	raid5_conf_t *conf;
+	unsigned long *bitmap;
 };
 
 static int
@@ -4712,6 +4714,7 @@ struct lba_map_entry {
 	struct rb_node node;
 	lsa_track_entry_t entry;
 	struct segment_buffer *segbuf;
+	int see;
 };
 
 static int
@@ -4782,10 +4785,16 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	struct rb_root *root = &cookie->tree;
 	struct lba_map_entry *map;
 	lsa_entry_t *ln = &n->new;
+	lsa_entry_t *lo = &n->old;
 
 	lsa_entry_dump("new", ln);
+	lsa_entry_dump("old", lo);
 	if (bi->lt != n->new.log_track_id)
 		return 0;
+	if (/*DATA_PARTIAL & ln->status*/1)
+		bitmap_set(meta->bitmap, ln->offset, ln->length);
+	else
+		bitmap_fill(meta->bitmap, 128);
 	map = kmalloc(sizeof(*map), GFP_KERNEL);
 	if (map) {
 		memcpy(&map->entry, n, sizeof(*n));
@@ -4861,6 +4870,35 @@ lsa_read_uptodate_done(struct segment_buffer *segbuf,
 	return 0;
 }
 
+static uint32_t
+lsa_map_next(struct lsa_track_cookie *cookie, unsigned long *bitmap,
+		uint32_t seg_id)
+{
+	struct rb_node *node = rb_last(&cookie->tree);
+	unsigned long bm[16];
+	bitmap_copy(bm, bitmap, 128);
+	
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node,
+				struct lba_map_entry, node);
+		lsa_entry_t *ln = &map->entry.new;
+		lsa_entry_t *lo = &map->entry.old;
+		lsa_entry_dump("old", lo);
+		if (/*DATA_PARTIAL & lo->status*/1)
+			bitmap_set(bm, ln->offset, ln->length);
+		else
+			bitmap_fill(bm, 128);
+		if (!bitmap_equal(bm, bitmap, 128)) {
+			return lo->seg_id;
+		}
+		if (lo->seg_id < seg_id) {
+			seg_id = lo->seg_id;
+		}
+		node = rb_prev(&map->node);
+	};
+	return seg_id;
+}
+
 static void 
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
@@ -4870,25 +4908,34 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	struct lsa_segfill_meta segfill_meta;
 	struct rb_node *node;
 	int res;
+	uint32_t seg_id = lrb->seg_id;
+	unsigned long bitmap[16];
 
 	/* phase 1:
 	 *  insert the map into tree
 	 */
-	ss_meta.meta_id = 0;
-	ss_meta.meta_col = 0;
-	ss_meta.data_id = lrb->seg_id;
-	res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
-	debug("res %d, meta %x, %d\n", 
-			res, ss_meta.meta_id, ss_meta.meta_col);
-
 	cookie->tree = RB_ROOT;
-	segfill_meta.meta = ss_meta.meta_id;
-	segfill_meta.col = ss_meta.meta_col;
-	segfill_meta.callback = lsa_read_segfill_cookie_cb;
-	segfill_meta.data = bi; 
-	segfill_meta.conf = conf;
-	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
-	debug("res %d\n", res);
+	bitmap_zero(bitmap, 128);
+
+	do {
+		ss_meta.meta_id = 0;
+		ss_meta.meta_col = 0;
+		ss_meta.data_id = seg_id;
+		res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
+		debug("res %d, meta %x, %d\n", 
+				res, ss_meta.meta_id, ss_meta.meta_col);
+
+		segfill_meta.meta = ss_meta.meta_id;
+		segfill_meta.col = ss_meta.meta_col;
+		segfill_meta.callback = lsa_read_segfill_cookie_cb;
+		segfill_meta.data = bi; 
+		segfill_meta.conf = conf;
+		segfill_meta.bitmap = bitmap;
+		res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
+		debug("res %d\n", res);
+
+		seg_id = lsa_map_next(cookie, bitmap, seg_id);
+	} while (bitmap_full(bitmap, 128) == 0);
 
 	/* phase 2:
 	 *  make sure the map is ok
