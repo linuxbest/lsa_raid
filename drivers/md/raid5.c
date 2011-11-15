@@ -4267,7 +4267,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	struct page *page = segbuf->column[data].page;
 
 	__lsa_segment_write_ref(segbuf, 1);
-	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset);
+	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset, STRIPE_SIZE);
 	segfill->data_column ++;
 	BUG_ON(segfill->data_column > segfill->max_column);
 }
@@ -4711,15 +4711,6 @@ lsa_track2lrb(struct lsa_track_cookie *cookie)
 	return (lsa_read_buf_t *)cookie->track;
 }
 
-static void
-lsa_read_handle_dummy(raid5_conf_t *conf, struct lsa_bio *bi)
-{
-	struct stripe_head *sh = conf->lsa_zero_sh;
-	struct page *page = sh->dev[0].page;
-	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
-	lsa_bio_endio(bi, 0);
-}
-
 struct lba_map_entry {
 	struct rb_node node;
 	lsa_track_entry_t entry;
@@ -4868,15 +4859,20 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
-	
-		lsa_segment_release(map->segbuf, 0);
+		struct segment_buffer *segbuf = map->segbuf;
+		struct page *page = segbuf->column[ln->seg_column].page;
+
+		bi->bi_add_page(conf->mddev, bi, segbuf, page,
+				0,/*unused*/
+				ln->length<<9);
 
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &cookie->tree);
 		kfree(map);
 	};
-
-	lsa_read_handle_dummy(conf, bi);
+	
+	/* phase 3: end bio */
+	lsa_bio_endio(bi, 0);
 }
 
 static void lsa_gc_thread(mddev_t *mddev)
@@ -5056,6 +5052,8 @@ lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 		debug("segid %x,\n", segbuf->seg_id);
 		/* TODO should seting the column uptodate & dirty */
 		return __lsa_segment_write_put(segbuf);
+	} else {/* read */
+		lsa_segment_release(segbuf, 0);
 	}
 
 	return 0;
@@ -5079,7 +5077,7 @@ lsa_page_copy(struct page *dst_page, struct page *src_page,
 
 static int
 lsa_bio_copy_data(struct bio *bio, sector_t sector,
-		struct page *page, int frombio)
+		struct page *page, int tl, int frombio)
 {
 	struct bio_vec *bvl;
 	struct page *bio_page;
@@ -5101,8 +5099,8 @@ lsa_bio_copy_data(struct bio *bio, sector_t sector,
 			len -= b_offset;
 		}
 
-		if (len > 0 && page_offset + len > STRIPE_SIZE)
-			clen = STRIPE_SIZE - page_offset;
+		if (len > 0 && page_offset + len > tl)
+			clen = tl - page_offset;
 		else
 			clen = len;
 
@@ -5127,7 +5125,7 @@ lsa_bio_copy_data(struct bio *bio, sector_t sector,
 
 static int lsa_bio_copy_page(mddev_t *mddev,
 		struct lsa_bio *bio, struct segment_buffer *segbuf,
-		struct page *page, unsigned int offset)
+		struct page *page, unsigned int offset, unsigned int len)
 {
 	int res;
 	struct bio *bi = bio->bi_private;
@@ -5136,10 +5134,10 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 			(unsigned long long)bio->bi_sector,
 			segbuf ? segbuf->seg_id : 0, offset, bio->bi_size);
 	if (segbuf) { /* WRITE */
-		res = lsa_bio_copy_data(bi, bio->bi_sector, page, 1);
+		res = lsa_bio_copy_data(bi, bio->bi_sector, page, len, 1);
 		lsa_raid_seg_put(mddev, segbuf, bio->bi_rw & WRITE);
 	} else { /* READ */
-		res = lsa_bio_copy_data(bi, bio->bi_sector, page, 0);
+		res = lsa_bio_copy_data(bi, bio->bi_sector, page, len, 0);
 	}
 	debug("bio %llu, segid %x, offset %d, tlen %d/%d\n",
 			(unsigned long long)bio->bi_sector,

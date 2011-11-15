@@ -212,7 +212,8 @@ struct lsa_bio {
 	void (*bi_end_io)(struct lsa_bio *bio, int error);
 	int  (*bi_add_page)(struct mddev_s *mddev,
 			    struct lsa_bio *, struct segment_buffer *segbuf,
-			    struct page *page, unsigned int offset);
+			    struct page *page, unsigned int offset,
+			    unsigned int tlen);
 };
 
 #define lsa_bio_list_for_each(bio, bl) \
