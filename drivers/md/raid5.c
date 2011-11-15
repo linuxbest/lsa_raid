@@ -5132,8 +5132,11 @@ lsa_bio_tasklet(unsigned long data)
 				bi->lt, bio_data_dir(bi) == WRITE ? "W" : "R", full);
 		if (bio_data_dir(bi) == WRITE)
 			lsa_segment_fill_write(&conf->segment_fill, bi, bi->lt);
-		else
+		else {
+			/* TODO adding cache search segment */
+			lsa_segment_fill_timeout(&conf->segment_fill);
 			lsa_page_read(conf, bi, bi->lt);
+		}
 		if (full)
 			break;
 	};
