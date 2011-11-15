@@ -2337,6 +2337,7 @@ typedef struct lsa_track_cookie {
 	struct entry_buffer    *eb;
 	void (*done)(struct lsa_track_cookie *);
 	struct completion      *comp;
+	struct rb_root          tree;
 } lsa_track_cookie_t;
 
 static void 
@@ -4705,8 +4706,8 @@ lsa_track2lrb(struct lsa_track_cookie *cookie)
 	return (lsa_read_buf_t *)cookie->track;
 }
 
-static void 
-lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
+static void
+lsa_read_handle_dummy(raid5_conf_t *conf, struct lsa_bio *bi)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
 	struct page *page = sh->dev[0].page;
@@ -4757,7 +4758,7 @@ lsa_map_insert(struct rb_root *root, struct lba_map_entry *data)
 }
 
 static int
-lsa_read_segfill_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
+lsa_read_segfill_live_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 {
 	raid5_conf_t *conf = meta->conf;
 	struct rb_root *root = meta->data;
@@ -4779,6 +4780,67 @@ lsa_read_segfill_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 		return 0;
 	}
 	return -ENOMEM;
+}
+
+static int
+lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
+{
+	struct lsa_bio *bi = meta->data;
+	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
+	struct rb_root *root = &cookie->tree;
+	struct lba_map_entry *map;
+	lsa_entry_t *ln = &n->new;
+
+	lsa_entry_dump("new", ln);
+	if (bi->lt != n->new.log_track_id)
+		return 0;
+	map = kmalloc(sizeof(*map), GFP_KERNEL);
+	if (map) {
+		memcpy(&map->entry, n, sizeof(*n));
+		lsa_map_insert(root, map);
+		return 0;
+	}
+	return -ENOMEM;
+}
+
+static void 
+lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
+{
+	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
+	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
+	struct lsa_ss_meta ss_meta;
+	struct lsa_segfill_meta segfill_meta;
+	struct rb_node *node;
+	int res;
+
+	ss_meta.meta_id = 0;
+	ss_meta.meta_col = 0;
+	ss_meta.data_id = lrb->seg_id;
+	res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
+	debug("res %d, meta %x, %d\n", 
+			res, ss_meta.meta_id, ss_meta.meta_col);
+
+	cookie->tree = RB_ROOT;
+	segfill_meta.meta = ss_meta.meta_id;
+	segfill_meta.col = ss_meta.meta_col;
+	segfill_meta.callback = lsa_read_segfill_cookie_cb;
+	segfill_meta.data = bi; 
+	segfill_meta.conf = conf;
+	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
+	debug("res %d\n", res);
+
+	node = rb_first(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		lsa_entry_t *ln = &map->entry.new;
+		lsa_entry_dump("new", ln);
+		node = rb_next(&map->node);
+		rb_erase(&map->node, &cookie->tree);
+		kfree(map);
+	};
+
+	lsa_read_handle_dummy(conf, bi);
 }
 
 static void lsa_gc_thread(mddev_t *mddev)
@@ -4805,7 +4867,7 @@ static void lsa_gc_thread(mddev_t *mddev)
 	tree = RB_ROOT;
 	segfill_meta.meta = ss_meta.meta_id;
 	segfill_meta.col = ss_meta.meta_col;
-	segfill_meta.callback = lsa_read_segfill_cb;
+	segfill_meta.callback = lsa_read_segfill_live_cb;
 	segfill_meta.data = &tree;
 	segfill_meta.conf = conf;
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
@@ -4867,7 +4929,7 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 		spin_lock_irqsave(&conf->device_lock, flags);
 		lsa_bio_list_add(&conf->read_queue, bi);
 		spin_unlock_irqrestore(&conf->device_lock, flags);
-		md_wakeup_thread(conf->gc_thread);
+		/*md_wakeup_thread(conf->gc_thread);*/
 		md_wakeup_thread(conf->read_thread);
 	} else {
 		lsa_read_handle(conf, bi);
