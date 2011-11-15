@@ -2329,7 +2329,7 @@ typedef struct {
 	uint8_t  status;
 	uint16_t offset;
 	uint16_t length;
-} __attribute__ ((packed)) lsa_read_buf_t;
+} lsa_read_buf_t;
 
 typedef struct lsa_track_cookie {
 	struct list_head       entry;
@@ -2339,6 +2339,9 @@ typedef struct lsa_track_cookie {
 	void (*done)(struct lsa_track_cookie *);
 	struct completion      *comp;
 	struct rb_root          tree;
+	raid5_conf_t           *conf;
+	struct lsa_bio         *lsa_bio;
+	lsa_read_buf_t          lrb;
 } lsa_track_cookie_t;
 
 static void 
@@ -2488,7 +2491,7 @@ lsa_dirtory_write_done(struct segment_buffer *segbuf,
 
 #define lsa_entry_dump(s, x) \
 do { \
-	debug(s " lba %x, segid %x, col %d, off %d, len %d\n", \
+	debug(s " lba %x, segid %x, col %d, off %03d, len %d\n", \
 		x->log_track_id, x->seg_id, x->seg_column, x->offset, x->length); \
 } while (0)
 
@@ -4705,12 +4708,6 @@ lsa_bio2track(struct lsa_bio *bi)
 	return cookie;
 }
 
-static lsa_read_buf_t *
-lsa_track2lrb(struct lsa_track_cookie *cookie)
-{
-	return (lsa_read_buf_t *)cookie->track;
-}
-
 struct lba_map_entry {
 	struct rb_node node;
 	lsa_track_entry_t entry;
@@ -4798,6 +4795,62 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	return -ENOMEM;
 }
 
+static void
+lsa_page_copy(struct page *dst_page, struct page *src_page,
+		int dst_offset, int src_offset, int len)
+{
+	char *src = page_address(src_page) + src_offset;
+	char *dst = page_address(dst_page) + dst_offset;
+	memcpy(dst, src, len);
+}
+
+static int
+lsa_read_bio_copy_data(struct lsa_bio *bi, struct page *page,
+		unsigned int offset, unsigned int length)
+{
+	struct bio *bio = bi->bi_private;
+	int page_offset, i;
+	struct bio_vec *bvl;
+	struct page *bio_page;
+
+	debug("bio %llu/%llu, offset %d, length %d\n", 
+			(unsigned long long)bio->bi_sector,
+			(unsigned long long)bi->bi_sector,
+			offset, length);
+	if (bio->bi_sector >= bi->bi_sector)
+		page_offset = (signed)(bio->bi_sector - bi->bi_sector)*512;
+	else
+		page_offset = (signed)(bi->bi_sector - bio->bi_sector)*-512;
+	page_offset += offset;
+
+	bio_for_each_segment(bvl, bio, i) {
+		int len = bvl->bv_len;
+		int clen;
+		int b_offset = 0;
+
+		debug("%d: offset %d, length %d, page_offset %d\n",
+				i, b_offset, len, page_offset);
+		if (page_offset < 0) {
+			b_offset = -page_offset;
+			page_offset += b_offset;
+			len -= b_offset;
+		}
+		if (len > 0 && page_offset + len > length)
+			clen = length - page_offset;
+		else
+			clen = len;
+		debug("%d: offset %d, length %d, page_offset %d, clen %d\n",
+				i, b_offset, len, page_offset, clen);
+		if (clen > 0) {
+			b_offset += bvl->bv_offset;
+			bio_page  = bvl->bv_page;
+			lsa_page_copy(bio_page, page, b_offset, page_offset, clen);
+		}
+	}
+
+	return 0;
+}
+
 static int 
 lsa_read_uptodate_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
@@ -4812,12 +4865,15 @@ static void
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
 	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
-	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
+	lsa_read_buf_t *lrb = &cookie->lrb;
 	struct lsa_ss_meta ss_meta;
 	struct lsa_segfill_meta segfill_meta;
 	struct rb_node *node;
 	int res;
 
+	/* phase 1:
+	 *  insert the map into tree
+	 */
 	ss_meta.meta_id = 0;
 	ss_meta.meta_col = 0;
 	ss_meta.data_id = lrb->seg_id;
@@ -4834,7 +4890,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
 	debug("res %d\n", res);
 
-	/* phase 1:
+	/* phase 2:
 	 *  make sure the map is ok
 	 *  tune the entry offset & length 
 	 */
@@ -4847,7 +4903,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		node = rb_next(&map->node);
 	};
 
-	/* phase 2: 
+	/* phase 3: 
 	 *  reading the segment data 
 	 */
 	node = rb_first(&cookie->tree);
@@ -4869,7 +4925,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		node = rb_next(&map->node);
 	};
 	
-	/* phase 3: copy data */
+	/* phase 4: copy data */
 	node = rb_first(&cookie->tree);
 	while (node) {
 		struct lba_map_entry *map = rb_entry(node, 
@@ -4878,15 +4934,15 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		struct segment_buffer *segbuf = map->segbuf;
 		struct page *page = segbuf->column[ln->seg_column].page;
 
-		bi->bi_add_page(conf->mddev, bi, segbuf, page,
-				ln->offset<<9, ln->length<<9);
+		lsa_read_bio_copy_data(bi, page, ln->offset<<9, ln->length<<9);
 
+		lsa_segment_release(segbuf, 0);
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &cookie->tree);
 		kfree(map);
 	};
 	
-	/* phase 3: end bio */
+	/* phase 5: end bio */
 	lsa_bio_endio(bi, 0);
 }
 
@@ -4941,7 +4997,8 @@ static void lsa_read_thread(mddev_t *mddev)
 	while ((bi = lsa_bio_list_pop(&conf->read_queue))) {
 		spin_unlock_irq(&conf->device_lock);
 
-		debug("bi %p\n", bi);
+		debug("bio %llu, %u, %s\n", (unsigned long long)bi->bi_sector,
+				bi->lt, bio_data_dir(bi) == WRITE ? "W" : "R");
 		lsa_read_handle(conf, bi);
 
 		spin_lock_irq(&conf->device_lock);
@@ -4952,11 +5009,11 @@ static void lsa_read_thread(mddev_t *mddev)
 static void
 lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 {
-	raid5_conf_t *conf = (raid5_conf_t *)cookie->comp;
-	struct lsa_bio *bi = (struct lsa_bio *)cookie->track;
+	raid5_conf_t *conf = cookie->conf;
+	struct lsa_bio *bi = cookie->lsa_bio;
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
 	lsa_entry_t *lo = &cookie->eb->e;
-	lsa_read_buf_t *lrb = (lsa_read_buf_t *)cookie->track;
+	lsa_read_buf_t *lrb = &cookie->lrb;
 
 	/* ok we have the lastest version of this block
 	 * if the size is ok, just reading data from disk.
@@ -4970,7 +5027,7 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 	lrb->offset  = lo->offset;
 	lrb->length  = lo->length;
 
-	if (DATA_PARTIAL & lo->status) {
+	if ((DATA_PARTIAL & lo->status) || 1) {
 		/* must doing it @ thread context */
 		unsigned long flags;
 		spin_lock_irqsave(&conf->device_lock, flags);
@@ -4988,17 +5045,16 @@ static int
 lsa_page_read(raid5_conf_t *conf, struct lsa_bio *bi, uint32_t sector)
 {
 	struct lsa_dirtory *dir = &conf->lsa_dirtory;
-	struct lsa_track_cookie *cookie;
+	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
 	int res = 0;
 
-	bi ++;
-	cookie = (struct lsa_track_cookie *)(bi);
-	bi --;
-	cookie->track = (struct lsa_track*)(bi);
+	cookie->track = NULL;
 	cookie->lt    = NULL;
 	cookie->eb    = NULL;
 	cookie->done  = lsa_dirtory_read_done;
-	cookie->comp  = (struct completion *)conf;
+	cookie->comp  = NULL;
+	cookie->lsa_bio = bi;
+	cookie->conf  = conf;
 	INIT_LIST_HEAD(&cookie->entry);
 	res = lsa_entry_find_or_create(dir, sector, cookie);
 	debug("ltid %x, res %d, cookie %p\n", sector, res, cookie);
@@ -5067,8 +5123,6 @@ lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 		debug("segid %x,\n", segbuf->seg_id);
 		/* TODO should seting the column uptodate & dirty */
 		return __lsa_segment_write_put(segbuf);
-	} else {/* read */
-		lsa_segment_release(segbuf, 0);
 	}
 
 	return 0;
@@ -5079,15 +5133,6 @@ int lsa_raid_bio_queue(mddev_t *mddev, struct lsa_bio * bi)
 	raid5_conf_t *conf = mddev->private;
 	lsa_bio_req(conf, bi);
 	return 0;
-}
-
-static void
-lsa_page_copy(struct page *dst_page, struct page *src_page,
-		int dst_offset, int src_offset, int len)
-{
-	char *src = page_address(src_page) + src_offset;
-	char *dst = page_address(dst_page) + dst_offset;
-	memcpy(dst, src, len);
 }
 
 static int
@@ -5123,11 +5168,9 @@ lsa_bio_copy_data(struct bio *bio, sector_t sector,
 			b_offset += bvl->bv_offset;
 			bio_page  = bvl->bv_page;
 			if (frombio)
-				lsa_page_copy(page, bio_page, page_offset,
-						b_offset, clen);
+				lsa_page_copy(page, bio_page, page_offset, b_offset, clen);
 			else
-				lsa_page_copy(bio_page, page, b_offset,
-						page_offset, clen);
+				lsa_page_copy(bio_page, page, b_offset, page_offset, clen);
 			tlen += clen;
 		}
 
