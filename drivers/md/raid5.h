@@ -446,6 +446,7 @@ struct raid5_private_data {
 	struct stripe_head  *lsa_zero_sh;
 	struct lsa_bio_list  read_queue;
 	struct mdk_thread_s *read_thread;
+	struct mdk_thread_s *gc_thread;
 
 	struct tasklet_struct lsa_tasklet;
 	struct kfifo lsa_bio;

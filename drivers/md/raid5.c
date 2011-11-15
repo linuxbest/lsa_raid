@@ -4678,6 +4678,9 @@ lsa_track2lrb(struct lsa_track_cookie *cookie)
 struct lba_map_entry {
 	struct list_head list;
 	lsa_track_entry_t entry;
+	struct page *page;
+	int offset;
+	struct lsa_bio *bi;
 };
 
 static int
@@ -8451,8 +8454,16 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 		goto abort;
 	}
 
-	conf->read_thread = md_register_thread(lsa_read_thread, mddev, NULL);
+	conf->read_thread = md_register_thread(lsa_read_thread, mddev, "RD");
 	if (!conf->read_thread) {
+		printk(KERN_ERR
+		       "md/raid:%s: couldn't allocate thread.\n",
+		       mdname(mddev));
+		goto abort;
+	}
+
+	conf->gc_thread = md_register_thread(lsa_read_thread, mddev, "GC");
+	if (!conf->gc_thread) {
 		printk(KERN_ERR
 		       "md/raid:%s: couldn't allocate thread.\n",
 		       mdname(mddev));
