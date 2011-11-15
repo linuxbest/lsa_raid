@@ -4884,6 +4884,8 @@ lsa_map_next(struct lsa_track_cookie *cookie, unsigned long *bitmap,
 		lsa_entry_t *ln = &map->entry.new;
 		lsa_entry_t *lo = &map->entry.old;
 		lsa_entry_dump("old", lo);
+		if (lo->log_track_id != ln->log_track_id) 
+			bitmap_fill(bitmap, 128);
 		if (/*DATA_PARTIAL & lo->status*/1)
 			bitmap_set(bm, ln->offset, ln->length);
 		else
