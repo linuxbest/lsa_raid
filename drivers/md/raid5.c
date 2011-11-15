@@ -4834,7 +4834,22 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
 	debug("res %d\n", res);
 
-	/* phase 1: reading the segment data */
+	/* phase 1:
+	 *  make sure the map is ok
+	 *  tune the entry offset & length 
+	 */
+	node = rb_first(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		lsa_entry_t *ln = &map->entry.new;
+		lsa_entry_dump("new", ln);
+		node = rb_next(&map->node);
+	};
+
+	/* phase 2: 
+	 *  reading the segment data 
+	 */
 	node = rb_first(&cookie->tree);
 	while (node) {
 		struct lba_map_entry *map = rb_entry(node, 
@@ -4850,10 +4865,11 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		map->segbuf = lsa_segment_find_or_create(&conf->data_segment,
 				ln->seg_id, &lcs_se.segbuf_entry);
 		wait_for_completion(&lcs_se.done);
+
 		node = rb_next(&map->node);
 	};
 	
-	/* phase 2: copy data */
+	/* phase 3: copy data */
 	node = rb_first(&cookie->tree);
 	while (node) {
 		struct lba_map_entry *map = rb_entry(node, 
@@ -4863,8 +4879,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		struct page *page = segbuf->column[ln->seg_column].page;
 
 		bi->bi_add_page(conf->mddev, bi, segbuf, page,
-				0,/*unused*/
-				ln->length<<9);
+				ln->offset<<9, ln->length<<9);
 
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &cookie->tree);
