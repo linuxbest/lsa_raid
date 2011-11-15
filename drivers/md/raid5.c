@@ -2037,6 +2037,7 @@ lsa_segment_release(struct segment_buffer *segbuf, segbuf_event_t type)
 	debug("segid %x, ref %d, event %d, flags %lx, free %d\n",
 			segbuf->seg_id, atomic_read(&segbuf->count), type,
 			segbuf->flags, seg->free_cnt);
+	BUG_ON(atomic_read(&segbuf->count) == 0);
 	if (!atomic_dec_and_test(&segbuf->count))
 		return 0;
 
@@ -2439,6 +2440,7 @@ lsa_entry_put(struct lsa_dirtory *dir, struct entry_buffer *eh)
 			eh->e.log_track_id, atomic_read(&eh->count),
 			eh->flags, dir->free_cnt);
 	spin_lock_irqsave(&dir->lock, flags);
+	BUG_ON(atomic_read(&eh->count) == 0);
 	if (atomic_dec_and_test(&eh->count)) {
 		BUG_ON(!list_empty(&eh->lru));
 		BUG_ON(entry_dirty(eh));
@@ -3015,6 +3017,7 @@ lsa_ss_put(struct lsa_segment_status *ss, struct ss_buffer *ssbuf)
 			ss->free_cnt);
 
 	spin_lock_irqsave(&ss->lock, flags);
+	BUG_ON(atomic_read(&ssbuf->count) == 0);
 	if (atomic_dec_and_test(&ssbuf->count)) {
 		BUG_ON(!list_empty(&ssbuf->entry));
 		BUG_ON(ss_dirty(ssbuf));
@@ -3966,6 +3969,7 @@ __lsa_track_put(lsa_track_t *track)
 	struct lsa_segment_fill *segfill = track->segfill;
 	debug("track %p, ref %d, free %d\n",
 			track, atomic_read(&track->count), segfill->free_cnt);
+	BUG_ON(atomic_read(&track->count) == 0);
 	if (atomic_dec_and_test(&track->count) == 0)
 		return;
 
@@ -4011,6 +4015,7 @@ __lsa_segment_write_put(struct segment_buffer *segbuf)
 {
 	debug("segid %x, pins %d\n", segbuf->seg_id,
 			atomic_read(&segbuf->pins));
+	BUG_ON(atomic_read(&segbuf->pins) == 0);
 	if (atomic_dec_and_test(&segbuf->pins) == 0)
 		return 0;
 
@@ -4718,8 +4723,7 @@ lsa_read_handle_dummy(raid5_conf_t *conf, struct lsa_bio *bi)
 struct lba_map_entry {
 	struct rb_node node;
 	lsa_track_entry_t entry;
-	struct page *page;
-	int offset;
+	struct segment_buffer *segbuf;
 };
 
 static int
@@ -4803,6 +4807,16 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	return -ENOMEM;
 }
 
+static int 
+lsa_read_uptodate_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	struct lcs_segment_buffer *lcs = container_of(se,
+			struct lcs_segment_buffer , segbuf_entry);
+	complete(&lcs->done);
+	return 0;
+}
+
 static void 
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
@@ -4829,12 +4843,34 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
 	debug("res %d\n", res);
 
+	/* phase 1: reading the segment data */
 	node = rb_first(&cookie->tree);
 	while (node) {
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
-		lsa_entry_dump("new", ln);
+		struct lcs_segment_buffer lcs_se;
+
+		init_completion(&lcs_se.done);
+		segment_buffer_entry_init(&lcs_se.segbuf_entry);
+		lcs_se.segbuf_entry.rw = READ;
+		lcs_se.segbuf_entry.done = lsa_read_uptodate_done;
+		
+		map->segbuf = lsa_segment_find_or_create(&conf->data_segment,
+				ln->seg_id, &lcs_se.segbuf_entry);
+		wait_for_completion(&lcs_se.done);
+		node = rb_next(&map->node);
+	};
+	
+	/* phase 2: copy data */
+	node = rb_first(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		lsa_entry_t *ln = &map->entry.new;
+	
+		lsa_segment_release(map->segbuf, 0);
+
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &cookie->tree);
 		kfree(map);
