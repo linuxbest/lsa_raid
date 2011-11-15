@@ -2670,6 +2670,37 @@ proc_dirtory_read_done(struct lsa_track_cookie *cookie)
 	complete(cookie->comp);
 }
 
+static int
+lsa_entry_live(struct lsa_dirtory *dir, lsa_entry_t *n, int *live)
+{
+	struct completion done;
+	struct lsa_track_cookie cookie;
+	int res = 0;
+	lsa_entry_t *x;
+
+	init_completion(&done);
+	INIT_LIST_HEAD(&cookie.entry);
+	cookie.track= NULL;
+	cookie.lt   = NULL;
+	cookie.eb   = NULL;
+	cookie.done = proc_dirtory_read_done;
+	cookie.comp = &done;
+	res = lsa_entry_find_or_create(dir, n->log_track_id, &cookie);
+	if (res == -EINPROGRESS) {
+		wait_for_completion(&done);
+	}
+	x = &cookie.eb->e;
+
+	*live = x->seg_id == n->seg_id && 
+		x->seg_column == n->seg_column &&
+		x->offset == n->offset &&
+		x->length == n->length;
+
+	lsa_entry_put(dir, cookie.eb);
+
+	return 0;
+}
+
 static void *
 proc_dirtory_read(struct seq_file *p, struct lsa_dirtory *dir, loff_t seq)
 {
@@ -4333,6 +4364,7 @@ struct lsa_segfill_meta {
 	uint32_t lba;
 	int (*callback)(struct lsa_segfill_meta *meta, lsa_track_entry_t *n);
 	void *data;
+	raid5_conf_t *conf;
 };
 
 static int
@@ -4414,8 +4446,6 @@ lsa_segfill_find_meta(struct lsa_segment_fill *segfill,
 	i = track_buffer->total-1;
 	do {
 		lsa_track_entry_t *n = &track_buffer->entry[i];
-		if (n->new.log_track_id != meta->lba) 
-			continue;
 		valid ++;
 		if (meta->callback(meta, n) != 0)
 			break;
@@ -4675,72 +4705,122 @@ lsa_track2lrb(struct lsa_track_cookie *cookie)
 	return (lsa_read_buf_t *)cookie->track;
 }
 
+static void 
+lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
+{
+	struct stripe_head *sh = conf->lsa_zero_sh;
+	struct page *page = sh->dev[0].page;
+	bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
+	lsa_bio_endio(bi, 0);
+}
+
 struct lba_map_entry {
-	struct list_head list;
+	struct rb_node node;
 	lsa_track_entry_t entry;
 	struct page *page;
 	int offset;
-	struct lsa_bio *bi;
 };
+
+static int
+lsa_entry_cmp(lsa_entry_t *n, lsa_entry_t *o)
+{
+	if (n->log_track_id != o->log_track_id)
+		return n->log_track_id - o->log_track_id;
+	if (n->seg_id != o->seg_id)
+		return n->seg_id - o->seg_id;
+	if (n->seg_column != o->seg_column)
+		return n->seg_column - o->seg_column;
+	return 0;
+}
+
+static int
+lsa_map_insert(struct rb_root *root, struct lba_map_entry *data)
+{
+	struct rb_node **new = &(root->rb_node), *parent = NULL;
+
+	while (*new) {
+		struct lba_map_entry *this = container_of(*new,
+				struct lba_map_entry, node);
+		int res = lsa_entry_cmp(&data->entry.new, 
+				&this->entry.new);
+		parent = *new;
+		if (res < 0)
+			new = &((*new))->rb_left;
+		else if (res > 0)
+			new = &((*new))->rb_right;
+		else
+			return -1;
+	}
+	rb_link_node(&data->node, parent, new);
+	rb_insert_color(&data->node, root);
+	return 0;
+}
 
 static int
 lsa_read_segfill_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 {
-	struct lsa_bio *bi = meta->data;
-	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
-	struct lba_map_entry *map = kmalloc(sizeof(*map), GFP_KERNEL);
-	/*lsa_entry_t *lo = &n->old;
-	  lsa_entry_t *ln = &n->new;
-	  lsa_entry_dump("new", ln);
-	  lsa_entry_dump("old", lo);*/
+	raid5_conf_t *conf = meta->conf;
+	struct rb_root *root = meta->data;
+	struct lba_map_entry *map;
+	int live, res;
+	lsa_entry_t *ln = &n->new;
+
+	lsa_entry_dump("new", ln);
+	res = lsa_entry_live(&conf->lsa_dirtory, ln, &live);
+	if (res) 
+		return res;
+	if (live)
+		return 0;
+
+	map = kmalloc(sizeof(*map), GFP_KERNEL);
 	if (map) {
 		memcpy(&map->entry, n, sizeof(*n));
-		list_add_tail(&map->list, &cookie->entry);
+		lsa_map_insert(root, map);
 		return 0;
 	}
 	return -ENOMEM;
 }
 
-static void 
-lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
+static void lsa_gc_thread(mddev_t *mddev)
 {
-	struct lsa_track_cookie *cookie = lsa_bio2track(bi);
-	lsa_read_buf_t *lrb = lsa_track2lrb(cookie);
+	raid5_conf_t *conf = mddev->private;
+	struct lsa_gc *gc = &conf->gc;
 	struct lsa_ss_meta ss_meta;
 	struct lsa_segfill_meta segfill_meta;
+	struct rb_root tree;
+	struct rb_node *node;
 	int res;
 
 	ss_meta.meta_id = 0;
 	ss_meta.meta_col = 0;
-	ss_meta.data_id = lrb->seg_id;
+	ss_meta.data_id = gc->seg;
 	res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
 	debug("res %d, meta %x, %d\n",
 			res, ss_meta.meta_id, ss_meta.meta_col);
+	if (res == 0)
+		gc->seg = ss_meta.meta_id;
+	else
+		return;
 
-	INIT_LIST_HEAD(&cookie->entry);
-	segfill_meta.lba = bi->lt;
+	tree = RB_ROOT;
 	segfill_meta.meta = ss_meta.meta_id;
 	segfill_meta.col = ss_meta.meta_col;
 	segfill_meta.callback = lsa_read_segfill_cb;
-	segfill_meta.data = bi;
+	segfill_meta.data = &tree;
+	segfill_meta.conf = conf;
 	res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
 	debug("res %d\n", res);
 
-	while (!list_empty(&cookie->entry)) {
-		struct lba_map_entry *map = list_entry(cookie->entry.next,
-				struct lba_map_entry, list);
+	node = rb_last(&tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
-		list_del_init(&map->list);
 		lsa_entry_dump("new", ln);
+		node = rb_prev(&map->node);
+		rb_erase(&map->node, &tree);
 		kfree(map);
-	}
-
-	{
-		struct stripe_head *sh = conf->lsa_zero_sh;
-		struct page *page = sh->dev[0].page;
-		bi->bi_add_page(conf->mddev, bi, NULL, page, 0);
-		lsa_bio_endio(bi, 0);
-	}
+	};
 }
 
 static void lsa_read_thread(mddev_t *mddev)
@@ -4787,6 +4867,7 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 		spin_lock_irqsave(&conf->device_lock, flags);
 		lsa_bio_list_add(&conf->read_queue, bi);
 		spin_unlock_irqrestore(&conf->device_lock, flags);
+		md_wakeup_thread(conf->gc_thread);
 		md_wakeup_thread(conf->read_thread);
 	} else {
 		lsa_read_handle(conf, bi);
@@ -5066,7 +5147,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 		return 0;
 
 	sh->raid_conf = conf;
-
+	
 	if (grow_buffers(sh)) {
 		shrink_buffers(sh);
 		kmem_cache_free(conf->slab_cache, sh);
@@ -5110,6 +5191,8 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	
 	res = lsa_cs_init(&conf->lsa_closed_status);
 	debug("res %d\n", res);
+
+	conf->gc.seg = DATA_SEG_ID;
 
 	return 0;
 }
@@ -8462,7 +8545,7 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 		goto abort;
 	}
 
-	conf->gc_thread = md_register_thread(lsa_read_thread, mddev, "GC");
+	conf->gc_thread = md_register_thread(lsa_gc_thread, mddev, "GC");
 	if (!conf->gc_thread) {
 		printk(KERN_ERR
 		       "md/raid:%s: couldn't allocate thread.\n",

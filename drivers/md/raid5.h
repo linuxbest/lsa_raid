@@ -556,6 +556,10 @@ struct raid5_private_data {
 			char *track_buffer;
 		} seq_show;
 	} segment_fill;
+
+	struct lsa_gc {
+		uint32_t seg;
+	} gc;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
