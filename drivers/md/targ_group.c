@@ -156,10 +156,10 @@ static struct block_device * open_bdev_safe(const char *pathname, int f, void *h
 		path_put(&path);
 		return ERR_PTR(-EINVAL);
         }
-
+#if 0
 	bdev = blkdev_get_by_dev(inode->i_rdev, FMODE_READ|FMODE_WRITE, holder);
 	path_put(&path);
-
+#endif
         return bdev;
 }
 

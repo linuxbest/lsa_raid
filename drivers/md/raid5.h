@@ -3,15 +3,14 @@
 
 #include <linux/raid/xor.h>
 #include <linux/dmaengine.h>
-#include <linux/kfifo.h>
 
 /*
  *
- * Each stripe contains one buffer per device.  Each buffer can be in
+ * Each stripe contains one buffer per disc.  Each buffer can be in
  * one of a number of states stored in "flags".  Changes between
- * these states happen *almost* exclusively under the protection of the
- * STRIPE_ACTIVE flag.  Some very specific changes can happen in bi_end_io, and
- * these are not protected by STRIPE_ACTIVE.
+ * these states happen *almost* exclusively under a per-stripe
+ * spinlock.  Some very specific changes can happen in bi_end_io, and
+ * these are not protected by the spin lock.
  *
  * The flag bits that are used to represent these states are:
  *   R5_UPTODATE and R5_LOCKED
@@ -77,10 +76,12 @@
  * block and the cached buffer are successfully written, any buffer on
  * a written list can be returned with b_end_io.
  *
- * The write list and read list both act as fifos.  The read list,
- * write list and written list are protected by the device_lock.
- * The device_lock is only for list manipulations and will only be
- * held for a very short time.  It can be claimed from interrupts.
+ * The write list and read list both act as fifos.  The read list is
+ * protected by the device_lock.  The write and written lists are
+ * protected by the stripe lock.  The device_lock, which can be
+ * claimed while the stipe lock is held, is only for list
+ * manipulations and will only be held for a very short time.  It can
+ * be claimed from interrupts.
  *
  *
  * Stripes in the stripe cache can be on one of two lists (or on
@@ -95,6 +96,7 @@
  *
  * The inactive_list, handle_list and hash bucket lists are all protected by the
  * device_lock.
+ *  - stripes on the inactive_list never have their stripe_lock held.
  *  - stripes have a reference counter. If count==0, they are on a list.
  *  - If a stripe might need handling, STRIPE_HANDLE is set.
  *  - When refcount reaches zero, then if STRIPE_HANDLE it is put on
@@ -114,10 +116,10 @@
  *  attach a request to an active stripe (add_stripe_bh())
  *     lockdev attach-buffer unlockdev
  *  handle a stripe (handle_stripe())
- *     setSTRIPE_ACTIVE,  clrSTRIPE_HANDLE ...
+ *     lockstripe clrSTRIPE_HANDLE ...
  *		(lockdev check-buffers unlockdev) ..
  *		change-state ..
- *		record io/ops needed clearSTRIPE_ACTIVE schedule io/ops
+ *		record io/ops needed unlockstripe schedule io/ops
  *  release an active stripe (release_stripe())
  *     lockdev if (!--cnt) { if  STRIPE_HANDLE, add to handle_list else add to inactive-list } unlockdev
  *
@@ -126,7 +128,8 @@
  * on a cached buffer, and plus one if the stripe is undergoing stripe
  * operations.
  *
- * The stripe operations are:
+ * Stripe operations are performed outside the stripe lock,
+ * the stripe operations are:
  * -copying data between the stripe cache and user application buffers
  * -computing blocks to save a disk access, or to recover a missing block
  * -updating the parity on a write operation (reconstruct write and
@@ -156,8 +159,7 @@
  */
 
 /*
- * Operations state - intermediate states that are visible outside of 
- *   STRIPE_ACTIVE.
+ * Operations state - intermediate states that are visible outside of sh->lock
  * In general _idle indicates nothing is running, _run indicates a data
  * processing operation is active, and _result means the data processing result
  * is stable and can be acted upon.  For simple operations like biofill and
@@ -207,6 +209,7 @@ struct stripe_head {
 	short			ddf_layout;/* use DDF ordering to calculate Q */
 	unsigned long		state;		/* state flags */
 	atomic_t		count;	      /* nr of active thread/requests */
+	spinlock_t		lock;
 	int			bm_seq;	/* sequence number for bitmap flushes */
 	int			disks;		/* disks in stripe */
 	enum check_states	check_state;
@@ -229,30 +232,27 @@ struct stripe_head {
 	struct r5dev {
 		struct bio	req;
 		struct bio_vec	vec;
-		struct page	*page, *meta_page;
+		struct page	*page;
 		struct bio	*toread, *read, *towrite, *written;
 		sector_t	sector;			/* sector of this page */
 		unsigned long	flags;
-		unsigned long   qc_allocated;
 	} dev[1]; /* allocated with extra space depending of RAID geometry */
-	unsigned int tag;
 };
 
 /* stripe_head_state - collects and tracks the dynamic state of a stripe_head
- *     for handle_stripe.
+ *     for handle_stripe.  It is only valid under spin_lock(sh->lock);
  */
 struct stripe_head_state {
-	int syncing, expanding, expanded;
+	int syncing, expanding, expanded, brcing;
 	int locked, uptodate, to_read, to_write, failed, written;
 	int to_fill, compute, req_compute, non_overwrite;
-	int failed_num[2];
-	int p_failed, q_failed;
-	int dec_preread_active;
+	int failed_num, ignore;
 	unsigned long ops_request;
+};
 
-	struct bio *return_bi;
-	mdk_rdev_t *blocked_rdev;
-	int handle_bad_blocks;
+/* r6_state - extra state data only relevant to r6 */
+struct r6_state {
+	int p_failed, q_failed, failed_num[2];
 };
 
 /* Flags */
@@ -268,16 +268,15 @@ struct stripe_head_state {
 #define	R5_ReWrite	9	/* have tried to over-write the readerror */
 
 #define	R5_Expanded	10	/* This block now has post-expand data */
-#define	R5_Wantcompute	11	/* compute_block in progress treat as
-				 * uptodate
-				 */
-#define	R5_Wantfill	12	/* dev->toread contains a bio that needs
-				 * filling
-				 */
-#define	R5_Wantdrain	13	/* dev->towrite needs to be drained */
-#define	R5_WantFUA	14	/* Write should be FUA */
-#define	R5_WriteError	15	/* got a write error - need to record it */
-#define	R5_MadeGood	16	/* A bad block has been fixed by writing to it*/
+#define	R5_Wantcompute	11 /* compute_block in progress treat as
+				    * uptodate
+				    */
+#define	R5_Wantfill	12 /* dev->toread contains a bio that needs
+				    * filling
+				    */
+#define R5_Wantdrain	13 /* dev->towrite needs to be drained */
+
+#define R5_ReadIGN 	14 /* ignore current read error */
 /*
  * Write method
  */
@@ -291,26 +290,25 @@ struct stripe_head_state {
 /*
  * Stripe state
  */
-enum {
-	STRIPE_ACTIVE,
-	STRIPE_HANDLE,
-	STRIPE_SYNC_REQUESTED,
-	STRIPE_SYNCING,
-	STRIPE_INSYNC,
-	STRIPE_PREREAD_ACTIVE,
-	STRIPE_DELAYED,
-	STRIPE_DEGRADED,
-	STRIPE_BIT_DELAY,
-	STRIPE_EXPANDING,
-	STRIPE_EXPAND_SOURCE,
-	STRIPE_EXPAND_READY,
-	STRIPE_IO_STARTED,	/* do not count towards 'bypass_count' */
-	STRIPE_FULL_WRITE,	/* all blocks are set to be overwritten */
-	STRIPE_BIOFILL_RUN,
-	STRIPE_COMPUTE_RUN,
-	STRIPE_OPS_REQ_PENDING,
-};
+#define STRIPE_HANDLE		2
+#define	STRIPE_SYNCING		3
+#define	STRIPE_INSYNC		4
+#define	STRIPE_PREREAD_ACTIVE	5
+#define	STRIPE_DELAYED		6
+#define	STRIPE_DEGRADED		7
+#define	STRIPE_BIT_DELAY	8
+#define	STRIPE_EXPANDING	9
+#define	STRIPE_EXPAND_SOURCE	10
+#define	STRIPE_EXPAND_READY	11
+#define	STRIPE_IO_STARTED	12 /* do not count towards 'bypass_count' */
+#define	STRIPE_FULL_WRITE	13 /* all blocks are set to be overwritten */
+#define	STRIPE_BIOFILL_RUN	14
+#define	STRIPE_COMPUTE_RUN	15
+#define	STRIPE_OPS_REQ_PENDING	16
+#define STRIPE_CRIT_DEGRADED 	17 /* bypass-read error make it be degraded */
+#define STRIPE_EMER_DEGRADED 	18
 
+#define STRIPE_OP_COPY_Done 	31
 /*
  * Operation request flags
  */
@@ -342,7 +340,7 @@ enum {
  * PREREAD_ACTIVE.
  * In stripe_handle, if we find pre-reading is necessary, we do it if
  * PREREAD_ACTIVE is set, else we set DELAYED which will send it to the delayed queue.
- * HANDLE gets cleared if stripe_handle leaves nothing locked.
+ * HANDLE gets cleared if stripe_handle leave nothing locked.
  */
 
 
@@ -383,8 +381,6 @@ struct raid5_private_data {
 	struct list_head	bitmap_list; /* stripes delaying awaiting bitmap update */
 	struct bio		*retry_read_aligned; /* currently retrying aligned bios   */
 	struct bio		*retry_read_aligned_list; /* aligned bios retry list  */
-	struct bio		*retry_target; /* aligned bios retry list  */
-	struct bio_list		rdev_list; /* aligned bios retry list  */
 	atomic_t		preread_active_stripes; /* stripes with scheduled io */
 	atomic_t		active_aligned_reads;
 	atomic_t		pending_full_writes; /* full write backlog */
@@ -397,7 +393,7 @@ struct raid5_private_data {
 	 * two caches.
 	 */
 	int			active_name;
-	char			cache_name[2][32];
+	char			cache_name[2][20];
 	struct kmem_cache		*slab_cache; /* for allocating stripes */
 
 	int			seq_flush, seq_write;
@@ -407,7 +403,6 @@ struct raid5_private_data {
 					    * (fresh device added).
 					    * Cleared when a sync completes.
 					    */
-	int			recovery_disabled;
 	/* per cpu variables */
 	struct raid5_percpu {
 		struct page	*spare_page; /* Used when checking P/Q in raid6 */
@@ -415,7 +410,7 @@ struct raid5_private_data {
 					      * lists and performing address
 					      * conversions
 					      */
-	} __percpu *percpu;
+	} *percpu;
 	size_t			scribble_len; /* size of scribble region must be
 					       * associated with conf to handle
 					       * cpu hotplug while reshaping
@@ -442,125 +437,6 @@ struct raid5_private_data {
 	 * the new thread here until we fully activate the array.
 	 */
 	struct mdk_thread_s	*thread;
-	struct tasklet_struct   tasklet;
-	struct stripe_head  *lsa_zero_sh;
-	struct lsa_bio_list  read_queue;
-	struct mdk_thread_s *read_thread;
-	struct mdk_thread_s *gc_thread;
-
-	struct tasklet_struct lsa_tasklet;
-	struct kfifo lsa_bio;
-
-	char *bitmap;
-	struct proc_dir_entry *proc;
-
-	/* TODO: data cache is holding buffer for read/write */
-	struct lsa_data_cache {
-	} lsa_data_cache;
-
-	/* TODO: sorting the data into stream */
-	struct lsa_stream_controller {
-	} lsa_stream_controller;
-
-	struct lsa_dirtory {
-		uint32_t seg; /* TODO */
-		spinlock_t lock;
-		struct rb_root tree;
-		struct list_head lru;
-		struct list_head dirty;
-		struct list_head checkpoint;
-		/* dirtory tasklet */
-		struct list_head queue;
-		struct list_head retry;
-		struct list_head wip;
-		struct tasklet_struct tasklet;
-		atomic_t dirty_cnt, checkpoint_cnt;
-		/* ondisk seg index */
-		int per_page;
-		uint32_t seg_id;
-		int free_cnt;
-		uint32_t max_lba;
-		struct proc_dir_entry *proc;
-	} lsa_dirtory;
-
-	struct lsa_segment_status {
-		spinlock_t lock;
-		struct rb_root tree;
-		struct list_head lru;
-		struct list_head dirty;
-		struct list_head checkpoint;
-		struct list_head queue;
-		atomic_t dirty_cnt, checkpoint_cnt;
-		struct tasklet_struct tasklet;
-		/* ondisk seg id */
-		int per_page;
-		uint32_t seg_id;
-		int free_cnt;
-		struct proc_dir_entry *proc;
-		uint32_t max_seg;
-	} lsa_segment_status;
-
-	struct lsa_closed_segment {
-		spinlock_t lock;
-		struct list_head lru;
-		struct list_head dirty;
-		struct list_head segbuf_head;
-		unsigned int max;
-
-		struct segment_buffer **segbuf;
-		unsigned int seg;
-		uint32_t seg_id;
-		int free_cnt;
-		
-		struct proc_dir_entry *proc;
-		int max_lcs;
-		int max_mask;
-	} lsa_closed_status;
-
-	/* memory segment buffer */
-	struct lsa_segment {
-		struct raid5_private_data *conf;
-		spinlock_t lock;
-		short shift, shift_sector, disks, pd, qd;
-		struct rb_root tree;
-		struct list_head lru;
-		struct list_head active;
-		struct list_head dirty;
-		struct list_head lcs_head;
-		struct tasklet_struct tasklet;
-		int free_cnt, total_cnt;
-		struct proc_dir_entry *proc;
-	} meta_segment, data_segment;
-
-	struct lsa_segment_fill {
-		spinlock_t lock;
-		unsigned int mask_offset;
-		struct lsa_track *track;
-		struct segment_buffer *segbuf;
-		struct lsa_segment *seg;
-		struct lcs_buffer *lcs;
-		unsigned int data_column;
-		unsigned int max_column;
-		unsigned int meta_max;
-		uint32_t     meta_id;
-		unsigned int meta_column;
-		struct list_head head;
-		struct list_head free;
-		int free_cnt;
-		struct proc_dir_entry *proc;
-		struct timer_list timer;
-		uint32_t seq;
-		struct {
-			uint32_t cur_meta;
-			short    cur_col;
-			short    valid;
-			char *track_buffer;
-		} seq_show;
-	} segment_fill;
-
-	struct lsa_gc {
-		uint32_t seg;
-	} gc;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
@@ -626,8 +502,4 @@ static inline int algorithm_is_DDF(int layout)
 {
 	return layout >= 8 && layout <= 10;
 }
-
-extern int md_raid5_congested(mddev_t *mddev, int bits);
-extern void md_raid5_kick_device(raid5_conf_t *conf);
-extern int raid5_set_cache_size(mddev_t *mddev, int size);
 #endif
