@@ -4946,6 +4946,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 
 static void lsa_gc_thread(mddev_t *mddev)
 {
+#if 0
 	raid5_conf_t *conf = mddev->private;
 	struct lsa_gc *gc = &conf->gc;
 	struct lsa_ss_meta ss_meta;
@@ -4984,6 +4985,7 @@ static void lsa_gc_thread(mddev_t *mddev)
 		rb_erase(&map->node, &tree);
 		kfree(map);
 	};
+#endif
 }
 
 static void lsa_read_thread(mddev_t *mddev)
