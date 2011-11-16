@@ -3,6 +3,7 @@
 
 #include <linux/raid/xor.h>
 #include <linux/dmaengine.h>
+#include <linux/kfifo.h>
 
 /*
  *
@@ -232,11 +233,13 @@ struct stripe_head {
 	struct r5dev {
 		struct bio	req;
 		struct bio_vec	vec;
-		struct page	*page;
+		struct page	*page, *meta_page;
 		struct bio	*toread, *read, *towrite, *written;
 		sector_t	sector;			/* sector of this page */
 		unsigned long	flags;
+		unsigned long   qc_allocated;
 	} dev[1]; /* allocated with extra space depending of RAID geometry */
+	unsigned int tag;
 };
 
 /* stripe_head_state - collects and tracks the dynamic state of a stripe_head
@@ -381,6 +384,8 @@ struct raid5_private_data {
 	struct list_head	bitmap_list; /* stripes delaying awaiting bitmap update */
 	struct bio		*retry_read_aligned; /* currently retrying aligned bios   */
 	struct bio		*retry_read_aligned_list; /* aligned bios retry list  */
+	struct bio		*retry_target; /* aligned bios retry list  */
+	struct bio_list		rdev_list; /* aligned bios retry list  */
 	atomic_t		preread_active_stripes; /* stripes with scheduled io */
 	atomic_t		active_aligned_reads;
 	atomic_t		pending_full_writes; /* full write backlog */
@@ -437,6 +442,125 @@ struct raid5_private_data {
 	 * the new thread here until we fully activate the array.
 	 */
 	struct mdk_thread_s	*thread;
+	struct tasklet_struct   tasklet;
+	struct stripe_head  *lsa_zero_sh;
+	struct lsa_bio_list  read_queue;
+	struct mdk_thread_s *read_thread;
+	struct mdk_thread_s *gc_thread;
+
+	struct tasklet_struct lsa_tasklet;
+	struct kfifo lsa_bio;
+
+	char *bitmap;
+	struct proc_dir_entry *proc;
+
+	/* TODO: data cache is holding buffer for read/write */
+	struct lsa_data_cache {
+	} lsa_data_cache;
+
+	/* TODO: sorting the data into stream */
+	struct lsa_stream_controller {
+	} lsa_stream_controller;
+
+	struct lsa_dirtory {
+		uint32_t seg; /* TODO */
+		spinlock_t lock;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head dirty;
+		struct list_head checkpoint;
+		/* dirtory tasklet */
+		struct list_head queue;
+		struct list_head retry;
+		struct list_head wip;
+		struct tasklet_struct tasklet;
+		atomic_t dirty_cnt, checkpoint_cnt;
+		/* ondisk seg index */
+		int per_page;
+		uint32_t seg_id;
+		int free_cnt;
+		uint32_t max_lba;
+		struct proc_dir_entry *proc;
+	} lsa_dirtory;
+
+	struct lsa_segment_status {
+		spinlock_t lock;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head dirty;
+		struct list_head checkpoint;
+		struct list_head queue;
+		atomic_t dirty_cnt, checkpoint_cnt;
+		struct tasklet_struct tasklet;
+		/* ondisk seg id */
+		int per_page;
+		uint32_t seg_id;
+		int free_cnt;
+		struct proc_dir_entry *proc;
+		uint32_t max_seg;
+	} lsa_segment_status;
+
+	struct lsa_closed_segment {
+		spinlock_t lock;
+		struct list_head lru;
+		struct list_head dirty;
+		struct list_head segbuf_head;
+		unsigned int max;
+
+		struct segment_buffer **segbuf;
+		unsigned int seg;
+		uint32_t seg_id;
+		int free_cnt;
+		
+		struct proc_dir_entry *proc;
+		int max_lcs;
+		int max_mask;
+	} lsa_closed_status;
+
+	/* memory segment buffer */
+	struct lsa_segment {
+		struct raid5_private_data *conf;
+		spinlock_t lock;
+		short shift, shift_sector, disks, pd, qd;
+		struct rb_root tree;
+		struct list_head lru;
+		struct list_head active;
+		struct list_head dirty;
+		struct list_head lcs_head;
+		struct tasklet_struct tasklet;
+		int free_cnt, total_cnt;
+		struct proc_dir_entry *proc;
+	} meta_segment, data_segment;
+
+	struct lsa_segment_fill {
+		spinlock_t lock;
+		unsigned int mask_offset;
+		struct lsa_track *track;
+		struct segment_buffer *segbuf;
+		struct lsa_segment *seg;
+		struct lcs_buffer *lcs;
+		unsigned int data_column;
+		unsigned int max_column;
+		unsigned int meta_max;
+		uint32_t     meta_id;
+		unsigned int meta_column;
+		struct list_head head;
+		struct list_head free;
+		int free_cnt;
+		struct proc_dir_entry *proc;
+		struct timer_list timer;
+		uint32_t seq;
+		struct {
+			uint32_t cur_meta;
+			short    cur_col;
+			short    valid;
+			char *track_buffer;
+		} seq_show;
+	} segment_fill;
+
+	struct lsa_gc {
+		uint32_t seg;
+	} gc;
 };
 
 typedef struct raid5_private_data raid5_conf_t;
