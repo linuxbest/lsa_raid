@@ -1925,7 +1925,7 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 					(unsigned long long)bi->bi_sector,
 					(unsigned long long)rdev->data_offset,
 					bi->bi_rw, i,
-					bi->bi_rw & WRITE ? "W" : "R");
+					bi->bi_rw & WRITE ? "WRT" : "RDT");
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
 			bi->bi_max_vecs = 1;
@@ -2452,6 +2452,10 @@ lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	spin_unlock_irqrestore(&dir->lock, flags);
 }
 
+/* TODO:
+ *  may need put commit page into a list, let commit process check it 
+ *  before doing checkpoing
+ */
 static int
 lsa_dirtory_write_done(struct segment_buffer *segbuf,
 		struct segment_buffer_entry *se, int error)
@@ -3804,7 +3808,7 @@ lsa_lcs_recover(struct lsa_closed_segment *lcs)
 	lcs_ondisk_t *ondisk;
 
 	i = lsa_lcs_select(lcs);
-	if (i != 0) {
+	if (i == -1) {
 		printk("LSA: skip LCS recovery.\n");
 		return 0;
 	}
@@ -4442,12 +4446,11 @@ lsa_segfill_find_meta(struct lsa_segment_fill *segfill,
 
 	track_buffer = lsa_segfill_segbuf2track(segbuf, meta->col, 
 			&valid, &sum);
-	
-	debug("magic %08x, segid %08x/%02x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
-			track_buffer->magic, meta->meta, meta->col,
-			track_buffer->seq_id, track_buffer->sum, sum,
+
+	debug("segid %08x/%02x, %08x, total %03x, %08x/%02x, %sVALID\n",
+			meta->meta, meta->col, track_buffer->seq_id,
 			track_buffer->total, track_buffer->prev_seg_id,
-			track_buffer->prev_column & 0xff);
+			track_buffer->prev_column & 0xff, valid ? "" : "IN");
 	if (valid == 0) {
 		/* TODO 
 		 * howto handle data corruption.
@@ -4815,50 +4818,60 @@ lsa_page_copy(struct page *dst_page, struct page *src_page,
 	memcpy(dst, src, len);
 }
 
+static void
+lsa_page_copy_bitmap(struct page *dst_page, struct page *src_page,
+		int dst_offset, int src_offset, int len, 
+		unsigned long *bitmap)
+{
+	int i;
+	for (i = 0; i < len; i ++) {
+		if (test_bit(src_offset, bitmap))
+			lsa_page_copy(dst_page,
+				      src_page,
+				      dst_offset<<9,
+				      src_offset<<9,
+				      512);
+		bitmap_clear(bitmap, src_offset, 1);
+		dst_offset ++;
+		src_offset ++;
+	}
+}
+
 static int
-lsa_read_bio_copy_data(struct lsa_bio *bi, struct page *page,
-		unsigned int offset, unsigned int length)
+lsa_map_offset(struct lsa_bio *bi, int offset)
 {
 	struct bio *bio = bi->bi_private;
-	int page_offset, i;
+	return bio->bi_sector - (bi->lt<<(STRIPE_SHIFT-9)) - offset;
+}
+
+static int
+lsa_read_bio_copy_data(struct lsa_bio *bi, struct page *page,
+		unsigned int offset, unsigned int length, 
+		unsigned long *bitmap)
+{
+	struct bio *bio = bi->bi_private;
+	int map_offset, bio_offset = 0, i;
 	struct bio_vec *bvl;
-	struct page *bio_page;
 
-	debug("bio %llu/%llu, offset %d, length %d\n", 
-			(unsigned long long)bio->bi_sector,
-			(unsigned long long)bi->bi_sector,
-			offset, length);
-	if (bio->bi_sector >= bi->bi_sector)
-		page_offset = (signed)(bio->bi_sector - bi->bi_sector)*512;
-	else
-		page_offset = (signed)(bi->bi_sector - bio->bi_sector)*-512;
-	page_offset += offset;
-
+	map_offset = lsa_map_offset(bi, offset);
 	bio_for_each_segment(bvl, bio, i) {
-		int len = bvl->bv_len;
-		int clen;
-		int b_offset = 0;
-
-		debug("%d: offset %d, length %d, page_offset %d\n",
-				i, b_offset, len, page_offset);
-		if (page_offset < 0) {
-			b_offset = -page_offset;
-			page_offset += b_offset;
-			len -= b_offset;
-		}
-		if (len > 0 && page_offset + len > length)
-			clen = length - page_offset;
-		else
-			clen = len;
-		debug("%d: offset %d, length %d, page_offset %d, clen %d\n",
-				i, b_offset, len, page_offset, clen);
-		if (clen > 0) {
-			b_offset += bvl->bv_offset;
-			bio_page  = bvl->bv_page;
-			lsa_page_copy(bio_page, page, b_offset, page_offset, clen);
-		}
+		int clen = 0;
+		int bv_len = bvl->bv_len>>9;
+		if (map_offset < bio_offset + bv_len)
+			clen = min_t(int, length, bio_offset + bv_len - map_offset);
+		debug("map_offset %d, bio_offset %d, bv_len %d, clen %d\n",
+				map_offset, bio_offset, bv_len, clen);
+		bio_offset += bv_len;
+		if (clen <= 0) 
+			continue;
+		lsa_page_copy_bitmap(bvl->bv_page, page,
+				bvl->bv_offset, offset,
+				clen, bitmap);
+		if (clen <= bv_len)
+			return 0;
+		offset     += clen;
+		map_offset += clen;
 	}
-
 	return 0;
 }
 
@@ -4923,12 +4936,19 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	int res, loop = 10;
 	uint32_t seg_id = lrb->seg_id;
 	unsigned long bitmap[16];
+	unsigned long except[16];
 
 	/* phase 1:
 	 *  insert the map into tree
 	 */
 	cookie->tree = RB_ROOT;
 	bitmap_zero(bitmap, 128);
+	bitmap_zero(except, 128);
+
+	bitmap_set(except, bi->lt_offset, bi->bi_size>>9);
+	bitmap_scnprintf(conf->bitmap, PAGE_SIZE, except, 128);
+	debug("off/len %x,%x bm %s\n", bi->lt_offset,
+			bi->bi_size>>9, conf->bitmap);
 
 	do {
 		ss_meta.meta_id = 0;
@@ -4948,22 +4968,9 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		debug("res %d\n", res);
 
 		seg_id = lsa_map_next(cookie, bitmap, seg_id);
-	} while (bitmap_full(bitmap, 128) == 0 && loop--);
+	} while (bitmap_equal(except, bitmap, 128) == 0 && loop--);
 
-	/* phase 2:
-	 *  make sure the map is ok
-	 *  tune the entry offset & length 
-	 */
-	node = rb_first(&cookie->tree);
-	while (node) {
-		struct lba_map_entry *map = rb_entry(node, 
-				struct lba_map_entry, node);
-		lsa_entry_t *ln = &map->entry.new;
-		lsa_entry_dump("new", ln);
-		node = rb_next(&map->node);
-	};
-
-	/* phase 3: 
+	/* phase 2: 
 	 *  reading the segment data 
 	 */
 	node = rb_first(&cookie->tree);
@@ -4986,23 +4993,47 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	};
 	
 	/* phase 4: copy data */
-	node = rb_first(&cookie->tree);
-	while (node) {
+	bitmap_copy(bitmap, except, 128);
+	bitmap_scnprintf(conf->bitmap, PAGE_SIZE, except, 128);
+	debug("off/len %x,%x bm %s\n", bi->lt_offset,
+			bi->bi_size>>9, conf->bitmap);
+
+	node = rb_last(&cookie->tree);
+	while (node && !bitmap_empty(bitmap, 128)) {
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
 		struct segment_buffer *segbuf = map->segbuf;
 		struct page *page = segbuf->column[ln->seg_column].page;
 
-		lsa_read_bio_copy_data(bi, page, ln->offset<<9, ln->length<<9);
+		node = rb_prev(&map->node);
+		if (lsa_map_offset(bi, ln->offset) < 0)
+			continue;
 
+		lsa_read_bio_copy_data(bi,
+				page,
+				ln->offset,
+				ln->length,
+				bitmap);
+		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, bitmap, 128);
+		debug("off/len %x,%x bm %s, segid %x, col %x\n", 
+				ln->offset, ln->length, conf->bitmap,
+				ln->seg_id, ln->seg_column);
+	}
+
+	/* phase 5: free the segbuf */
+	node = rb_last(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		struct segment_buffer *segbuf = map->segbuf;
 		lsa_segment_release(segbuf, 0);
-		node = rb_next(&map->node);
+		node = rb_prev(&map->node);
 		rb_erase(&map->node, &cookie->tree);
 		kfree(map);
 	};
 	
-	/* phase 5: end bio */
+	/* phase 6: end bio */
 	lsa_bio_endio(bi, 0);
 }
 
@@ -5058,7 +5089,7 @@ static void lsa_read_thread(mddev_t *mddev)
 		spin_unlock_irq(&conf->device_lock);
 
 		debug("bio %llu, %u, %s\n", (unsigned long long)bi->bi_sector,
-				bi->lt, bio_data_dir(bi) == WRITE ? "W" : "R");
+				bi->lt, bio_data_dir(bi) == WRITE ? "WRT" : "RDT");
 		lsa_read_handle(conf, bi);
 
 		spin_lock_irq(&conf->device_lock);
@@ -5142,7 +5173,7 @@ lsa_bio_tasklet(unsigned long data)
 				&conf->device_lock);
 		BUG_ON(res != sizeof(bi));
 		debug("bio %llu, %u, %s, full %d\n", (unsigned long long)bi->bi_sector,
-				bi->lt, bio_data_dir(bi) == WRITE ? "W" : "R", full);
+				bi->lt, bio_data_dir(bi) == WRITE ? "WRT" : "RDT", full);
 		if (bio_data_dir(bi) == WRITE)
 			lsa_segment_fill_write(&conf->segment_fill, bi, bi->lt);
 		else {
@@ -5166,8 +5197,9 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
 
 	debug("bio %llu, %u, %s, full %d\n", (unsigned long long)bi->bi_sector,
-			(uint32_t)logical_sector, rw == WRITE ? "W" : "R", full);
+			(uint32_t)logical_sector, rw == WRITE ? "WRT" : "RDT", full);
 	bi->lt = (uint32_t)logical_sector;
+	bi->lt_offset = (uint32_t)bi->bi_sector & ((sector_t)STRIPE_SECTORS-1);
 
 	res = kfifo_in_locked(&conf->lsa_bio, 
 			(unsigned char *)&bi,
@@ -5345,6 +5377,7 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	lsa_segment_exit(&conf->meta_segment, conf->raid_disks);
 	lsa_segment_exit(&conf->data_segment, conf->raid_disks);
 
+	free_page((unsigned long)conf->bitmap);
 	remove_proc_entry(mdname(conf->mddev), NULL);
 
 	return 0;
@@ -5378,6 +5411,10 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	atomic_inc(&conf->active_stripes);
 	conf->lsa_zero_sh = sh;
 	lsa_bio_list_init(&conf->read_queue);
+
+	conf->bitmap = (char *)get_zeroed_page(GFP_KERNEL);
+	if (conf->bitmap == NULL)
+		return -1;
 
 	conf->proc = proc_mkdir(mdname(conf->mddev), NULL);
 	if (conf->proc == NULL)

@@ -451,6 +451,7 @@ struct raid5_private_data {
 	struct tasklet_struct lsa_tasklet;
 	struct kfifo lsa_bio;
 
+	char *bitmap;
 	struct proc_dir_entry *proc;
 
 	/* TODO: data cache is holding buffer for read/write */
