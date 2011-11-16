@@ -2364,33 +2364,6 @@ __lsa_entry_dirty(struct lsa_dirtory *dir, struct entry_buffer *eh)
 	atomic_inc(&eh->count);
 }
 
-static int
-lsa_entry_insert(struct lsa_dirtory *dir, lsa_entry_t *le)
-{
-	unsigned long flags;
-	struct entry_buffer *eh = NULL;
-	int res = -ENOMEM;
-
-	spin_lock_irqsave(&dir->lock, flags);
-	eh = __lsa_entry_freed(dir);
-	BUG_ON(!eh);
-	/* TODO handling when lru is empty */
-	if (eh) {
-		memcpy(&eh->e, le, sizeof(*le));
-		debug("ltid %x, ref %d, %lx\n", eh->e.log_track_id, 
-				atomic_read(&eh->count), eh->flags);
-		__lsa_entry_dirty(dir, eh);
-		if (!test_set_entry_tree(eh))
-			res = __lsa_entry_insert(dir, eh);
-		else 
-			res = -1;
-		BUG_ON(res != 1);
-	}
-	spin_unlock_irqrestore(&dir->lock, flags);
-
-	return res;
-}
-
 /*
  * LSA entry get 
  *
@@ -2529,6 +2502,10 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	} else {
 		memcpy(&eh->e, lo, sizeof(*lo));
 		set_entry_uptodate(eh);
+		if ((lo->status & DATA_VALID) && lo->log_track_id != eh->e.log_track_id) {
+			printk("LSA:DIR WARN-0002, %08x,%08x, %x\n",
+					lo->log_track_id, eh->e.log_track_id, lo->status);
+		}
 	}
 
 	return 0;
@@ -4041,10 +4018,12 @@ __lsa_segment_write_put(struct segment_buffer *segbuf)
 static uint8_t
 __lsa_entry_flag(lsa_entry_t *o, lsa_entry_t *n)
 {
-	uint32_t flags = 0;
-	if ((n->length < o->length) ||
-	    (n->offset > o->offset) ||
-	    (n->offset + n->length < o->offset + o->length))
+	uint8_t flags = DATA_VALID;
+	if ((o->status & DATA_VALID) &&
+	    ((o->status & DATA_PARTIAL) ||
+	     (n->length < o->length) ||
+	     (n->offset > o->offset) ||
+	     (n->offset + n->length < o->offset + o->length)))
 		flags |= DATA_PARTIAL;
 	return flags;
 }
@@ -4060,19 +4039,20 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 
 	lsa_entry_dump("old", lo);
 	lsa_entry_dump("new", ln);
-	if (lo->log_track_id == ln->log_track_id) {
-		uint8_t flags = __lsa_entry_flag(lo, ln);
-		lt->new.status = flags;
-		memcpy((void *)&lt->old, (void *)&eb->e, sizeof(lsa_entry_t));
-		memcpy((void *)&eb->e, (void *)&lt->new, sizeof(lsa_entry_t));
-		set_entry_uptodate(eb);
-		lsa_entry_dirty(track->dir, eb);
-		lsa_entry_put(track->dir, eb);
-	} else {
-		memset((void *)&lt->old, 0, sizeof(lsa_entry_t));
-		lsa_entry_insert(track->dir, &lt->new);
+	if ((lo->status & DATA_VALID) && lo->log_track_id != ln->log_track_id) {
+		printk("LSA:DIR WARN-0001, %08x,%08x, %x\n",
+				lo->log_track_id, ln->log_track_id,
+				lo->status);
 	}
+
+	memcpy((void *)&lt->old, lo, sizeof(lsa_entry_t));
+	ln->status = __lsa_entry_flag(lo, ln);
+	
+	set_entry_uptodate(eb);
+	lsa_entry_dirty(track->dir, eb);
+	lsa_entry_put(track->dir, eb);
 	__lsa_track_update_sum(track, lt);
+
 	if (track->segbuf)
 		__lsa_segment_write_put(track->segbuf);
 	else
@@ -4802,7 +4782,7 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	lsa_entry_dump("old", lo);
 	if (bi->lt != n->new.log_track_id)
 		return 0;
-	if (/*DATA_PARTIAL & ln->status*/1)
+	if (DATA_PARTIAL & ln->status)
 		bitmap_set(meta->bitmap, ln->offset, ln->length);
 	else
 		bitmap_fill(meta->bitmap, 128);
@@ -4897,7 +4877,7 @@ lsa_map_next(struct lsa_track_cookie *cookie, unsigned long *bitmap,
 		lsa_entry_dump("old", lo);
 		if (lo->log_track_id != ln->log_track_id) 
 			bitmap_fill(bitmap, 128);
-		if (/*DATA_PARTIAL & lo->status*/1)
+		if (DATA_PARTIAL & lo->status)
 			bitmap_set(bm, ln->offset, ln->length);
 		else
 			bitmap_fill(bm, 128);
