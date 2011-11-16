@@ -4273,7 +4273,7 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	struct page *page = segbuf->column[data].page;
 
 	__lsa_segment_write_ref(segbuf, 1);
-	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset, STRIPE_SIZE);
+	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset, (STRIPE_SIZE-offset)>>9);
 	segfill->data_column ++;
 	BUG_ON(segfill->data_column > segfill->max_column);
 }
@@ -4857,16 +4857,16 @@ lsa_read_bio_copy_data(struct lsa_bio *bi, struct page *page,
 	bio_for_each_segment(bvl, bio, i) {
 		int clen = 0;
 		int bv_len = bvl->bv_len>>9;
+		int bv_off = bvl->bv_offset>>9;
 		if (map_offset < bio_offset + bv_len)
 			clen = min_t(int, length, bio_offset + bv_len - map_offset);
-		debug("map_offset %d, bio_offset %d, bv_len %d, clen %d\n",
-				map_offset, bio_offset, bv_len, clen);
+		debug("map_offset %d/%d, bio_offset %d, bv_len %d/%d, clen %d\n",
+				map_offset, offset, bio_offset, bv_len, bv_off, clen);
 		bio_offset += bv_len;
 		if (clen <= 0) 
 			continue;
 		lsa_page_copy_bitmap(bvl->bv_page, page,
-				bvl->bv_offset, offset,
-				clen, bitmap);
+				bv_off, offset, clen, bitmap);
 		if (clen <= bv_len)
 			return 0;
 		offset     += clen;
@@ -5236,72 +5236,34 @@ int lsa_raid_bio_queue(mddev_t *mddev, struct lsa_bio * bi)
 	return 0;
 }
 
-static int
-lsa_bio_copy_data(struct bio *bio, sector_t sector,
-		struct page *page, int tl, int frombio)
-{
-	struct bio_vec *bvl;
-	struct page *bio_page;
-	int page_offset, i, tlen = 0;
-
-	if (bio->bi_sector >= sector)
-		page_offset = (signed)(bio->bi_sector - sector) * 512;
-	else
-		page_offset = (signed)(sector - bio->bi_sector) * -512;
-
-	bio_for_each_segment(bvl, bio, i) {
-		int len = bvl->bv_len;
-		int clen;
-		int b_offset = 0;
-
-		if (page_offset < 0) {
-			b_offset = -page_offset;
-			page_offset += b_offset;
-			len -= b_offset;
-		}
-
-		if (len > 0 && page_offset + len > tl)
-			clen = tl - page_offset;
-		else
-			clen = len;
-
-		if (clen > 0) {
-			b_offset += bvl->bv_offset;
-			bio_page  = bvl->bv_page;
-			if (frombio)
-				lsa_page_copy(page, bio_page, page_offset, b_offset, clen);
-			else
-				lsa_page_copy(bio_page, page, b_offset, page_offset, clen);
-			tlen += clen;
-		}
-
-		if (clen < len) /* hit end of page */
-			break;
-		page_offset += len;
-	}
-	return tlen;
-}
-
 static int lsa_bio_copy_page(mddev_t *mddev,
-		struct lsa_bio *bio, struct segment_buffer *segbuf,
-		struct page *page, unsigned int offset, unsigned int len)
+		struct lsa_bio *bi, struct segment_buffer *segbuf,
+		struct page *page, unsigned int offset, unsigned int length)
 {
-	int res;
-	struct bio *bi = bio->bi_private;
+	struct bio *bio = bi->bi_private;
+	int map_offset, bio_offset = 0, i;
+	struct bio_vec *bvl;
 
-	debug("bio %llu, segid %x, offset %d, tlen %d\n",
-			(unsigned long long)bio->bi_sector,
-			segbuf ? segbuf->seg_id : 0, offset, bio->bi_size);
-	if (segbuf) { /* WRITE */
-		res = lsa_bio_copy_data(bi, bio->bi_sector, page, len, 1);
-		lsa_raid_seg_put(mddev, segbuf, bio->bi_rw & WRITE);
-	} else { /* READ */
-		res = lsa_bio_copy_data(bi, bio->bi_sector, page, len, 0);
+	offset = offset;
+	length = length;
+
+	map_offset = lsa_map_offset(bi, offset);
+	bio_for_each_segment(bvl, bio, i) {
+		int clen = 0;
+		int bv_len = bvl->bv_len>>9;
+		int bv_off = bvl->bv_offset>>9;
+		if (map_offset < bio_offset + bv_len)
+			clen = min_t(int, length, bio_offset + bv_len - map_offset);
+		debug("map_offset %d/%d, bio_offset %d, bv_len %d/%d, clen %d\n",
+				map_offset, offset, bio_offset, bv_len, bv_off, clen);
+		bio_offset += bv_len;
+		if (clen > 0)
+			lsa_page_copy(page, bvl->bv_page, offset<<9, bv_off<<9, clen<<9);
+		offset     += clen;
+		map_offset += clen;
+		length     -= clen;
 	}
-	debug("bio %llu, segid %x, offset %d, tlen %d/%d\n",
-			(unsigned long long)bio->bi_sector,
-			segbuf ? segbuf->seg_id : 0, offset,
-			bio->bi_size, res);
+	lsa_raid_seg_put(mddev, segbuf, bio->bi_rw & WRITE);
 	return 0;
 }
 
