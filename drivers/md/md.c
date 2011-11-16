@@ -7207,7 +7207,7 @@ static void md_geninit(void)
 	proc_create("mdstat", S_IRUGO, NULL, &md_seq_fops);
 }
 
-static int __init md_init(void)
+int md_init(void)
 {
 	if (register_blkdev(MD_MAJOR, "md"))
 		return -1;
@@ -7296,7 +7296,7 @@ static void autostart_arrays(int part)
 
 #endif /* !MODULE */
 
-static __exit void md_exit(void)
+void md_exit(void)
 {
 	mddev_t *mddev;
 	struct list_head *tmp;
@@ -7314,10 +7314,10 @@ static __exit void md_exit(void)
 		mddev->hold_active = 0;
 	}
 }
-
+#if 0
 subsys_initcall(md_init);
 module_exit(md_exit)
-
+#endif
 static int get_ro(char *buffer, struct kernel_param *kp)
 {
 	return sprintf(buffer, "%d", start_readonly);
@@ -7348,7 +7348,16 @@ EXPORT_SYMBOL(md_register_thread);
 EXPORT_SYMBOL(md_unregister_thread);
 EXPORT_SYMBOL(md_wakeup_thread);
 EXPORT_SYMBOL(md_check_recovery);
+#if 0
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MD RAID framework");
 MODULE_ALIAS("md");
 MODULE_ALIAS_BLOCKDEV_MAJOR(MD_MAJOR);
+#endif
+mddev_t *mddev_from_bdev(struct block_device *bdev)
+{
+	mddev_t *mddev = bdev->bd_disk->private_data;
+	if (bdev->bd_disk->fops != &md_fops)
+		return NULL;
+	return mddev;
+}

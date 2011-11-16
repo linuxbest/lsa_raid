@@ -278,6 +278,8 @@ static void local_exit(void)
 }
 
 static int (*_inits[])(void) __initdata = {
+	md_init,
+	raid5_init,
 	local_init,
 	dm_target_init,
 	dm_linear_init,
@@ -285,9 +287,12 @@ static int (*_inits[])(void) __initdata = {
 	dm_io_init,
 	dm_kcopyd_init,
 	dm_interface_init,
+	dm_targ_init,
 };
 
 static void (*_exits[])(void) = {
+	md_exit,
+	raid5_exit,
 	local_exit,
 	dm_target_exit,
 	dm_linear_exit,
@@ -295,6 +300,7 @@ static void (*_exits[])(void) = {
 	dm_io_exit,
 	dm_kcopyd_exit,
 	dm_interface_exit,
+	dm_targ_exit,
 };
 
 static int __init dm_init(void)
@@ -2784,6 +2790,14 @@ static const struct block_device_operations dm_blk_dops = {
 };
 
 EXPORT_SYMBOL(dm_get_mapinfo);
+
+struct dm_table *dm_table_from_bdev(struct block_device *bdev)
+{
+	struct mapped_device *md = bdev->bd_disk->private_data;
+	if (bdev->bd_disk->fops != &dm_blk_dops)
+		return NULL;
+	return md->map;
+}
 
 /*
  * module hooks

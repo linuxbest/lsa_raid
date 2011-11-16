@@ -1495,7 +1495,6 @@ __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 	for (i = 0; i < conf->raid_disks; i ++, column ++) {
 		column->flags  = 0;
-		column->req.bi_xor_disk = i;
 	}
 
 	return 0;
@@ -1573,9 +1572,13 @@ lsa_column_end_write(struct bio *bi, int error)
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 	struct segment_buffer *segbuf = bi->bi_private;
 	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
-	int disks = bi->bi_xor_disk;
-	/*struct column *column = &segbuf->column[disks];*/
+	int disks = segbuf->seg->disks, i;
+	struct column *column;
+	for (i = 0; i < disks; i ++)
+		if (bi == &segbuf->column[i].req)
+			break;
 
+	column = &segbuf->column[i];
 	debug("segid %x, col %d, bios %d, uptodate %d.\n", segbuf->seg_id, disks,
 			atomic_read(&segbuf->bios), uptodate);
 
@@ -1592,9 +1595,13 @@ lsa_column_end_read(struct bio *bi, int error)
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 	struct segment_buffer *segbuf = bi->bi_private;
 	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
-	int disks = bi->bi_xor_disk;
-	struct column *column = &segbuf->column[disks];
+	int disks = segbuf->seg->disks, i;
+	struct column *column;
+	for (i = 0; i < disks; i ++)
+		if (bi == &segbuf->column[i].req)
+			break;
 
+	column = &segbuf->column[i];
 	debug("segid %x, col %d, bios %d, uptodate %d.\n", segbuf->seg_id, disks,
 			atomic_read(&segbuf->bios), uptodate);
 
@@ -5177,8 +5184,9 @@ static void lsa_bio_end_io(struct lsa_bio *bio, int error)
 	lsa_bio_put(bio);
 }
 
-static int lsa_make_request(mddev_t *mddev, struct bio * bi)
+static int lsa_make_request(struct request_queue *q, struct bio * bi)
 {
+	mddev_t *mddev = q->queuedata;
 	raid5_conf_t *conf = mddev->private;
 	sector_t remainning = bi->bi_size >> SECTOR_SHIFT;
 	sector_t len = 0;
@@ -5575,7 +5583,7 @@ static void raid5_end_read_request(struct bio * bi, int error)
 {
 	struct stripe_head *sh = bi->bi_private;
 	raid5_conf_t *conf = sh->raid_conf;
-	int i = bi->bi_xor_disk;
+	int i = /*bi->bi_xor_disk*/0;
 	int uptodate = test_bit(BIO_UPTODATE, &bi->bi_flags);
 	char b[BDEVNAME_SIZE];
 	mdk_rdev_t *rdev;
