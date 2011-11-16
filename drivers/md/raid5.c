@@ -2500,7 +2500,15 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 		set_segbuf_uptodate(segbuf);
 		lsa_segment_dirty(seg, segbuf);
 	} else {
-		memcpy(&eh->e, lo, sizeof(*lo));
+		/* TODO checksum */
+		/* only copy when ondisk contain valid data */
+		if (lo->status & DATA_VALID) {
+			memcpy(&eh->e, lo, sizeof(*lo));
+		} else {
+			uint32_t lt = eh->e.log_track_id;
+			memset(&eh->e, 0, sizeof(*lo));
+			eh->e.log_track_id = lt;
+		}
 		set_entry_uptodate(eh);
 		if ((lo->status & DATA_VALID) && lo->log_track_id != eh->e.log_track_id) {
 			printk("LSA:DIR WARN-0002, %08x,%08x, %x\n",
@@ -4045,9 +4053,10 @@ __lsa_track_cookie_update(struct lsa_track_cookie *cookie)
 				lo->status);
 	}
 
+	lt->new.status = __lsa_entry_flag(lo, ln);
 	memcpy((void *)&lt->old, lo, sizeof(lsa_entry_t));
-	ln->status = __lsa_entry_flag(lo, ln);
-	
+	memcpy((void *)&eb->e,   ln, sizeof(lsa_entry_t));
+
 	set_entry_uptodate(eb);
 	lsa_entry_dirty(track->dir, eb);
 	lsa_entry_put(track->dir, eb);
@@ -4892,6 +4901,15 @@ lsa_map_next(struct lsa_track_cookie *cookie, unsigned long *bitmap,
 	return seg_id;
 }
 
+static void
+lsa_read_handle_dummy(raid5_conf_t *conf, struct lsa_bio *bi)
+{
+	struct stripe_head *sh = conf->lsa_zero_sh;
+	struct page *page = sh->dev[0].page;
+	bi->bi_add_page(conf->mddev, bi, NULL, page, 0, STRIPE_SIZE);
+	lsa_bio_endio(bi, 0);
+}
+
 static void 
 lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 {
@@ -5067,7 +5085,9 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 	lrb->offset  = lo->offset;
 	lrb->length  = lo->length;
 
-	if ((DATA_PARTIAL & lo->status) || 1) {
+	if ((lo->status & DATA_VALID) == 0) {
+		lsa_read_handle_dummy(conf, bi);
+	} else if ((DATA_PARTIAL & lo->status) || 1) {
 		/* must doing it @ thread context */
 		unsigned long flags;
 		spin_lock_irqsave(&conf->device_lock, flags);
