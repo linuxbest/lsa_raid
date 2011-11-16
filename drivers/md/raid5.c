@@ -9392,6 +9392,8 @@ static int stop(mddev_t *mddev)
 
 	lsa_stripe_exit(conf);
 	md_unregister_thread(mddev->thread);
+	md_unregister_thread(conf->read_thread);
+	md_unregister_thread(conf->gc_thread);
 	mddev->thread = NULL;
 	mddev->queue->backing_dev_info.congested_fn = NULL;
 	blk_sync_queue(mddev->queue); /* the unplug fn references 'conf'*/
