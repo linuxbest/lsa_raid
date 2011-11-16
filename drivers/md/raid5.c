@@ -4937,6 +4937,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	uint32_t seg_id = lrb->seg_id;
 	unsigned long bitmap[16];
 	unsigned long except[16];
+	unsigned long result[16];
 
 	/* phase 1:
 	 *  insert the map into tree
@@ -4965,10 +4966,13 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		segfill_meta.conf = conf;
 		segfill_meta.bitmap = bitmap;
 		res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
-		debug("res %d\n", res);
 
+		bitmap_and(result, except, bitmap, 128);
+		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, result, 128);
+		debug("off/len %x,%x bm %s\n", bi->lt_offset,
+				bi->bi_size>>9, conf->bitmap);
 		seg_id = lsa_map_next(cookie, bitmap, seg_id);
-	} while (bitmap_equal(except, bitmap, 128) == 0 && loop--);
+	} while (bitmap_equal(result, except, 128) == 0 && loop--);
 
 	/* phase 2: 
 	 *  reading the segment data 
