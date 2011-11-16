@@ -7,7 +7,8 @@ typedef struct {
 	uint8_t  seg_column;   /* 0 - N+M */
 	uint8_t  age;
 	uint8_t  status;       /* IDLE, GC */
-#define DATA_PARTIAL (1<<0)
+#define DATA_VALID   (1<<0)
+#define DATA_PARTIAL (1<<1)
 	uint8_t  activity;
 	uint16_t offset;       /* 0 - number of sector per segment column */
 	uint16_t length;       /* 0 - number of sector per segment column */
@@ -44,6 +45,7 @@ typedef struct {
 	lsa_track_entry_t entry[0];
 } __attribute__ ((packed)) lsa_track_buffer_t;
 
+#define NR_LCS (1<<4)
 typedef struct {
 	uint32_t magic;
 	uint32_t total;

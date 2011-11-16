@@ -506,7 +506,7 @@ struct raid5_private_data {
 		struct list_head segbuf_head;
 		unsigned int max;
 
-		struct segment_buffer *segbuf[4];
+		struct segment_buffer **segbuf;
 		unsigned int seg;
 		uint32_t seg_id;
 		int free_cnt;

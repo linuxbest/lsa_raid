@@ -1919,10 +1919,13 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 		if (rdev) {
 			bi->bi_bdev = rdev->bdev;
-			debug("segid %x, op %ld on disc %d, %s\n",
-					segbuf->seg_id, bi->bi_rw, i,
-					bi->bi_rw & WRITE ? "W" : "R");
 			bi->bi_sector = segbuf->sector + rdev->data_offset;
+			debug("segid %x/%llu/%llu, op %ld on disc %d, %s\n",
+					segbuf->seg_id, 
+					(unsigned long long)bi->bi_sector,
+					(unsigned long long)rdev->data_offset,
+					bi->bi_rw, i,
+					bi->bi_rw & WRITE ? "W" : "R");
 			bi->bi_flags = 1 << BIO_UPTODATE;
 			bi->bi_vcnt = 1;
 			bi->bi_max_vecs = 1;
@@ -3775,6 +3778,7 @@ lsa_lcs_select(struct lsa_closed_segment *lcs)
 	uint32_t time = 0;
 	uint16_t jif = 0;
 
+	printk("  index magic    seq      sum/except        time.jiffies  status\n");
 	for (i = 0; i < lcs->max_lcs; i ++) {
 		uint32_t sum_except;
 		int valid = 0;
@@ -3782,12 +3786,11 @@ lsa_lcs_select(struct lsa_closed_segment *lcs)
 
 		if (ondisk == NULL)
 			continue;
-
-		printk("LCS:[%d], %08x, %08x, %08x/%08x, %08x.%04x, %s\n", i, 
+		printk(" LCS:%02d %08x %08x %08x/%08x %08x.%04x %sVALID\n", i, 
 				ondisk->magic, ondisk->seq_id,
 				ondisk->sum, sum_except,
 				ondisk->timestamp, ondisk->jiffies,
-				valid ? "OK" : "FAILED");
+				valid ? "" : "IN");
 		if (!valid)
 			continue;
 
@@ -3816,10 +3819,11 @@ lsa_lcs_recover(struct lsa_closed_segment *lcs)
 	lcs_ondisk_t *ondisk;
 
 	i = lsa_lcs_select(lcs);
-	if (i == -1) {
-		printk("LSA: CLOSED SEGMENT recovery failed\n");
-		return -1;
+	if (i != 0) {
+		printk("LSA: skip LCS recovery.\n");
+		return 0;
 	}
+	printk("LCS: select %d doing recovery\n", i);
 
 	segbuf = lcs->segbuf[i];
 	page = segbuf->column[0].page;
@@ -3869,13 +3873,17 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	INIT_LIST_HEAD(&lcs->segbuf_head);
 	lcs->seg_id = LCS_SEG_ID;
 
-	lcs->max_lcs = 1<<2;
+	lcs->max_lcs = NR_LCS;
 	lcs->max_mask= lcs->max_lcs-1;
 
 	lcs->proc = proc_create(LSA_LCS_STS, 0, conf->proc, &proc_lcs_fops);
 	if (lcs->proc == NULL)
 		return -1;
 	lcs->proc->data = (void *)lcs;
+
+	lcs->segbuf = kmalloc(sizeof(struct segment_buffer *)*NR_LCS, GFP_KERNEL);
+	if (lcs->segbuf == NULL)
+		return -1;
 
 	for (i = 0; i < lcs->max_lcs; i ++) {
 		struct segment_buffer *segbuf;
@@ -3932,6 +3940,7 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 				struct lcs_buffer, lru);
 		__lcs_buffer_free(lcs, lcs_buf);
 	}
+	kfree(lcs->segbuf);
 	remove_proc_entry(LSA_LCS_STS, conf->proc);
 	debug("free_cnt %d\n", lcs->free_cnt);
 	return 0;
@@ -4911,7 +4920,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	struct lsa_ss_meta ss_meta;
 	struct lsa_segfill_meta segfill_meta;
 	struct rb_node *node;
-	int res;
+	int res, loop = 10;
 	uint32_t seg_id = lrb->seg_id;
 	unsigned long bitmap[16];
 
@@ -4939,7 +4948,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		debug("res %d\n", res);
 
 		seg_id = lsa_map_next(cookie, bitmap, seg_id);
-	} while (bitmap_full(bitmap, 128) == 0);
+	} while (bitmap_full(bitmap, 128) == 0 && loop--);
 
 	/* phase 2:
 	 *  make sure the map is ok
