@@ -10203,7 +10203,11 @@ void raid5_exit(void)
 	lsa_bio_exit();
 }
 
-#if 0
+EXPORT_SYMBOL(lsa_raid_seg_put);
+EXPORT_SYMBOL(lsa_bio_put);
+EXPORT_SYMBOL(lsa_raid_bio_queue);
+EXPORT_SYMBOL(lsa_bio_alloc);
+
 module_init(raid5_init);
 module_exit(raid5_exit);
 MODULE_LICENSE("GPL");
@@ -10220,4 +10224,3 @@ MODULE_ALIAS("md-level-6");
 /* This used to be two separate modules, they were: */
 MODULE_ALIAS("raid5");
 MODULE_ALIAS("raid6");
-#endif
