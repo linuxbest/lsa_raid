@@ -4360,11 +4360,13 @@ lsa_segment_fill_timeout(unsigned long data)
 	del_timer(&segfill->timer);
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	debug("track %p, segbuf %p\n", segfill->track, segfill->segbuf);
-	if (segfill->track)
-		__lsa_track_close(segfill);
-	if (segfill->segbuf)
-		__lsa_segment_fill_close(segfill);
+	if (segfill->track || segfill->segbuf) {
+		debug("track %p, segbuf %p\n", segfill->track, segfill->segbuf);
+		if (segfill->track)
+			__lsa_track_close(segfill);
+		if (segfill->segbuf)
+			__lsa_segment_fill_close(segfill);
+	}
 	spin_unlock_irqrestore(&segfill->lock, flags);
 }
 
