@@ -4989,11 +4989,14 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		struct page *page = segbuf->column[ln->seg_column].page;
 
 		node = rb_prev(&map->node);
-		lsa_read_bio_copy_data(bi,
-				page,
-				ln->offset,
-				ln->length,
-				bitmap);
+		if (DATA_PARTIAL & ln->status)
+			lsa_read_bio_copy_data(bi,
+					page,
+					ln->offset,
+					ln->length,
+					bitmap);
+		else
+			bitmap_zero(bitmap, 128);
 		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, bitmap, 128);
 		debug("fill bm %s, segid %x/%x, off/len %x/%x\n", conf->bitmap,
 				ln->seg_id, ln->seg_column,
