@@ -446,7 +446,6 @@ struct raid5_private_data {
 	struct stripe_head  *lsa_zero_sh;
 	struct lsa_bio_list  read_queue;
 	struct mdk_thread_s *read_thread;
-	struct mdk_thread_s *gc_thread;
 
 	struct tasklet_struct lsa_tasklet;
 	struct kfifo lsa_bio;
@@ -562,8 +561,12 @@ struct raid5_private_data {
 	} segment_fill;
 
 	struct lsa_gc {
+		struct proc_dir_entry *proc;
+		struct mdk_thread_s *gc_thread;
+		wait_queue_head_t wait;
 		uint32_t seg;
-	} gc;
+		int run;
+	} lsa_gc;
 };
 
 typedef struct raid5_private_data raid5_conf_t;

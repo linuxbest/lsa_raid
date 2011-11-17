@@ -4704,7 +4704,7 @@ lsa_read_segfill_live_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	int live, res;
 	lsa_entry_t *ln = &n->new;
 
-	lsa_entry_dump("new", ln);
+	lsa_entry_dump("ondisk", ln);
 	res = lsa_entry_live(&conf->lsa_dirtory, ln, &live);
 	if (res) 
 		return res;
@@ -5020,28 +5020,36 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	lsa_bio_endio(bi, 0);
 }
 
-static void lsa_gc_thread(mddev_t *mddev)
+static void
+lsa_gc_thread(mddev_t *mddev)
 {
-#if 0
 	raid5_conf_t *conf = mddev->private;
-	struct lsa_gc *gc = &conf->gc;
+	struct lsa_gc *gc = &conf->lsa_gc;
 	struct lsa_ss_meta ss_meta;
 	struct lsa_segfill_meta segfill_meta;
 	struct rb_root tree;
 	struct rb_node *node;
 	int res;
 
+	if (gc->run == 0)
+		return;
+	gc->run = 0;
+
+	/* find the segment status id */
 	ss_meta.meta_id = 0;
 	ss_meta.meta_col = 0;
 	ss_meta.data_id = gc->seg;
 	res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
 	debug("res %d, meta %x, %d\n",
 			res, ss_meta.meta_id, ss_meta.meta_col);
-	if (res == 0)
-		gc->seg = ss_meta.meta_id;
-	else
+	if (res == 0) {
+		gc->seg = ss_meta.meta_id+1;
+	} else {
+		gc->seg = DATA_SEG_ID;
 		return;
+	}
 
+	/* reading the segment status */
 	tree = RB_ROOT;
 	segfill_meta.meta = ss_meta.meta_id;
 	segfill_meta.col = ss_meta.meta_col;
@@ -5056,12 +5064,42 @@ static void lsa_gc_thread(mddev_t *mddev)
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
-		lsa_entry_dump("new", ln);
+		lsa_entry_dump("live", ln);
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &tree);
 		kfree(map);
 	};
-#endif
+}
+
+static int
+lsa_gc_proc_read(char *buffer, char **start, off_t offset, 
+		int length, int *eof, void *data)
+{
+	struct lsa_gc *gc = data;
+	gc->run = 1;
+	md_wakeup_thread(gc->gc_thread);
+	return 0;
+}
+
+static int
+lsa_gc_exit(struct lsa_gc *gc, struct raid5_private_data *conf)
+{
+	md_unregister_thread(gc->gc_thread);
+	remove_proc_entry("gc", conf->proc);
+	return 0;
+}
+
+static int 
+lsa_gc_init(struct lsa_gc *gc, struct raid5_private_data *conf)
+{
+	gc->seg = DATA_SEG_ID;
+	gc->gc_thread = md_register_thread(lsa_gc_thread, conf->mddev, "GC");
+	gc->proc = create_proc_read_entry("gc",
+			S_IFREG | S_IRUGO | S_IWUSR,
+			conf->proc, 
+			lsa_gc_proc_read,
+			gc);
+	return 0;
 }
 
 static void lsa_read_thread(mddev_t *mddev)
@@ -5111,7 +5149,6 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 		spin_lock_irqsave(&conf->device_lock, flags);
 		lsa_bio_list_add(&conf->read_queue, bi);
 		spin_unlock_irqrestore(&conf->device_lock, flags);
-		/*md_wakeup_thread(conf->gc_thread);*/
 		md_wakeup_thread(conf->read_thread);
 	} else {
 		lsa_read_handle(conf, bi);
@@ -5372,6 +5409,7 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	kmem_cache_free(conf->slab_cache, sh);
 
 	del_timer(&conf->timer);
+	lsa_gc_exit(&conf->lsa_gc, conf);
 	lsa_segment_fill_exit(&conf->segment_fill);
 	lsa_cs_exit(&conf->lsa_closed_status);
 	lsa_ss_exit(&conf->lsa_segment_status);
@@ -5451,7 +5489,8 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	res = lsa_cs_init(&conf->lsa_closed_status);
 	debug("res %d\n", res);
 
-	conf->gc.seg = DATA_SEG_ID;
+	res = lsa_gc_init(&conf->lsa_gc, conf);
+	debug("res %d\n", res);
 
 	conf->fly = 0;
 	INIT_LIST_HEAD(&conf->lsa_bio_head);
@@ -9222,14 +9261,6 @@ static raid5_conf_t *setup_conf(mddev_t *mddev)
 		goto abort;
 	}
 
-	conf->gc_thread = md_register_thread(lsa_gc_thread, mddev, "GC");
-	if (!conf->gc_thread) {
-		printk(KERN_ERR
-		       "md/raid:%s: couldn't allocate thread.\n",
-		       mdname(mddev));
-		goto abort;
-	}
-
 	return conf;
 
  abort:
@@ -9524,7 +9555,6 @@ static int stop(mddev_t *mddev)
 	lsa_stripe_exit(conf);
 	md_unregister_thread(mddev->thread);
 	md_unregister_thread(conf->read_thread);
-	md_unregister_thread(conf->gc_thread);
 	mddev->thread = NULL;
 	mddev->queue->backing_dev_info.congested_fn = NULL;
 	blk_sync_queue(mddev->queue); /* the unplug fn references 'conf'*/
