@@ -3183,6 +3183,8 @@ struct lsa_ss_meta {
 	uint32_t data_id;
 	uint32_t meta_id;
 	int meta_col;
+	uint32_t log_track_id;
+	struct lsa_track_cookie *cookie;
 };
 
 static void 
@@ -5020,6 +5022,102 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	lsa_bio_endio(bi, 0);
 }
 
+static int
+lsa_gc_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
+{
+	struct lsa_ss_meta *ss_meta = meta->data;
+	struct lsa_track_cookie *cookie = ss_meta->cookie;
+	struct rb_root *root = &cookie->tree;
+	struct lba_map_entry *map;
+	lsa_entry_t *ln = &n->new;
+	lsa_entry_t *lo = &n->old;
+
+	if (ss_meta->log_track_id != n->new.log_track_id)
+		return 0;
+	lsa_entry_dump("new", ln);
+	/*lsa_entry_dump("old", lo);*/
+	if (DATA_PARTIAL & ln->status)
+		bitmap_set(meta->bitmap, ln->offset, ln->length);
+	else
+		bitmap_fill(meta->bitmap, 128);
+	map = kmalloc(sizeof(*map), GFP_ATOMIC);
+	if (map) {
+		memcpy(&map->entry, n, sizeof(*n));
+		lsa_map_insert(root, map);
+		return 0;
+	}
+	return -ENOMEM;
+}
+
+static int
+lsa_gc_live_read(struct lsa_gc *gc, raid5_conf_t *conf, lsa_entry_t *n)
+{
+	unsigned long bitmap[16];
+	uint32_t seg_id = n->seg_id;
+	struct lsa_ss_meta ss_meta;
+	struct lsa_segfill_meta segfill_meta;
+	struct lsa_track_cookie _cookie, *cookie = &_cookie;
+	struct rb_node *node;
+	int res, loop = 32;
+
+	/* phase 1: 
+	 *  insert the map into tree 
+	 */
+	cookie->tree = RB_ROOT;
+	bitmap_zero(bitmap, 128);
+	
+	do {
+		ss_meta.meta_id = 0;
+		ss_meta.meta_col = 0;
+		ss_meta.data_id = seg_id;
+		ss_meta.cookie = cookie;
+		ss_meta.log_track_id = n->log_track_id;
+		res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
+		debug("res %d, meta %x, %d\n",
+				res, ss_meta.meta_id, ss_meta.meta_col);
+		if (res != 0) {
+			/* TODO */
+			break;
+		}
+
+		segfill_meta.meta = ss_meta.meta_id;
+		segfill_meta.col = ss_meta.meta_col;
+		segfill_meta.callback = lsa_gc_segfill_cookie_cb;
+		segfill_meta.data = &ss_meta; 
+		segfill_meta.conf = conf;
+		segfill_meta.bitmap = bitmap;
+		res = lsa_segfill_find_meta(&conf->segment_fill, &segfill_meta);
+
+		seg_id = lsa_map_next(cookie, bitmap, seg_id);
+		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, bitmap, 128);
+		debug("current bm %s, seg_id %x, loop %d\n", 
+				conf->bitmap, seg_id, loop);
+	} while (loop-- && bitmap_full(bitmap, 128) == 0);
+
+	node = rb_last(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		lsa_entry_t *ln = &map->entry.new;
+		lsa_entry_dump(" cur", ln);
+		node = rb_prev(&map->node);
+	};
+
+	/* phase 5: free the segbuf */
+	node = rb_last(&cookie->tree);
+	while (node) {
+		struct lba_map_entry *map = rb_entry(node, 
+				struct lba_map_entry, node);
+		struct segment_buffer *segbuf = map->segbuf;
+		/*lsa_segment_release(segbuf, 0);*/
+		node = rb_prev(&map->node);
+		rb_erase(&map->node, &cookie->tree);
+		kfree(map);
+	};
+	
+	return 0;
+}
+
 static void
 lsa_gc_thread(mddev_t *mddev)
 {
@@ -5064,7 +5162,7 @@ lsa_gc_thread(mddev_t *mddev)
 		struct lba_map_entry *map = rb_entry(node, 
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
-		lsa_entry_dump("live", ln);
+		lsa_gc_live_read(gc, conf, ln);
 		node = rb_next(&map->node);
 		rb_erase(&map->node, &tree);
 		kfree(map);
