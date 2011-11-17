@@ -1649,6 +1649,7 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
 	clear_segbuf_uptodate(segbuf);
+	clear_segbuf_lru(segbuf);
 
 	/* ok, reused it */
 	segbuf->status = SEG_FREE;
@@ -1729,6 +1730,9 @@ lsa_segment_find_or_create(struct lsa_segment *seg, uint32_t seg_id,
 		list_add_tail(&segbuf->active_entry, &seg->active);
 		tasklet_schedule(&seg->tasklet);
 	}
+	debug("segid %x, ref %d, event %d, flags %lx, free %d\n",
+			segbuf->seg_id, atomic_read(&segbuf->count), 0,
+			segbuf->flags, seg->free_cnt);
 	spin_unlock_irqrestore(&seg->lock, flags);
 
 	return segbuf;
@@ -2222,6 +2226,7 @@ __lsa_entry_freed(struct lsa_dirtory *dir)
 	if (test_clear_entry_tree(eh))
 		__lsa_entry_delete(dir, eh);
 	clear_entry_uptodate(eh);
+	clear_entry_lru(eh);
 	segment_buffer_entry_init(&eh->segbuf_entry);
 	dir->free_cnt --;
 
@@ -2890,6 +2895,7 @@ __lsa_ss_freed(struct lsa_segment_status *ss)
 	list_del_init(&ssbuf->entry);
 	segment_buffer_entry_init(&ssbuf->segbuf_entry);
 	clear_ss_uptodate(ssbuf);
+	clear_ss_lru(ssbuf);
 	ss->free_cnt --;
 
 	return ssbuf;
@@ -3226,8 +3232,9 @@ lsa_ss_find_meta(struct lsa_segment_status *ss, struct lsa_ss_meta *meta)
 		buf = lsa_segment_buf_addr(segbuf, offset, &len);
 		o = (segment_status_t *)buf;
 		do {
-			lsa_ss_dump(seg_id, "old", o);
+			lsa_ss_dump(seg_id, "ondisk", o);
 			if ((o->status & SS_SEG_MASK) == SS_SEG_FREE) {
+				lsa_segment_release(segbuf, 0);
 				return -1;
 			}
 			if (o->status & SS_SEG_META) {
@@ -4382,6 +4389,7 @@ lsa_segfill_find_meta(struct lsa_segment_fill *segfill,
 			track_buffer->total, track_buffer->prev_seg_id,
 			track_buffer->prev_column & 0xff, valid ? "" : "IN");
 	if (valid == 0) {
+		lsa_segment_release(segbuf, 0);
 		/* TODO 
 		 * howto handle data corruption.
 		 */
