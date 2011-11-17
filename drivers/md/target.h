@@ -209,6 +209,7 @@ struct lsa_bio {
 	uint32_t lt, lt_offset;
 	struct lsa_bio *bi_next;
 	void *bi_private;
+	struct raid5_private_data *conf;
 	void (*bi_end_io)(struct lsa_bio *bio, int error);
 	int  (*bi_add_page)(struct mddev_s *mddev,
 			    struct lsa_bio *, struct segment_buffer *segbuf,

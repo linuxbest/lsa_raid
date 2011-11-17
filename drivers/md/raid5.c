@@ -5174,14 +5174,18 @@ static int lsa_bio_copy_page(mddev_t *mddev,
 
 static void lsa_bio_end_io(struct lsa_bio *bio, int error)
 {
+	unsigned long flags;
+	raid5_conf_t *conf = bio->conf;
 	struct bio *bi = bio->bi_private;
 
-	debug("sector %llu/%llu, %d\n",
+	debug("sector %llu/%llu, nrseg %d\n",
 			(unsigned long long)bi->bi_sector,
 			(unsigned long long)bio->bi_sector,
 			bi->bi_phys_segments);
+	spin_lock_irq(&conf->device_lock);
 	if (!raid5_dec_bi_phys_segments(bi))
 		bio_endio(bi, 0);
+	spin_unlock_irq(&conf->device_lock);
 
 	lsa_bio_put(bio);
 }
@@ -5222,12 +5226,13 @@ static int lsa_make_request(struct request_queue *q, struct bio * bi)
 		bio->bi_add_page= lsa_bio_copy_page;
 		bio->bi_private = bi;
 		bio->bi_end_io  = lsa_bio_end_io;
+		bio->conf       = conf;
 
 		bi->bi_phys_segments ++;
-		debug("sector %llu/%llu, %d\n",
+		debug("sector %llu/%llu, %d/%d\n",
 				(unsigned long long)bi->bi_sector,
 				(unsigned long long)bio->bi_sector,
-				(int)remainning);
+				(int)remainning, (int)len);
 		lsa_bio_req(conf, bio);
 
 		blknr += len;
@@ -5235,8 +5240,12 @@ static int lsa_make_request(struct request_queue *q, struct bio * bi)
 	} while (remainning -= len);
 
 	spin_lock_irq(&conf->device_lock);
-	if (!raid5_dec_bi_phys_segments(bi))
+	debug("sector %llu, nrseg %d\n",
+			(unsigned long long)bi->bi_sector,
+			bi->bi_phys_segments);
+	if (!raid5_dec_bi_phys_segments(bi)) {
 		bio_endio(bi, 0);
+	}
 	spin_unlock_irq(&conf->device_lock);
 
 	return 0;
