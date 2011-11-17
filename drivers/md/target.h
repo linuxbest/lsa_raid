@@ -215,6 +215,9 @@ struct lsa_bio {
 			    struct lsa_bio *, struct segment_buffer *segbuf,
 			    struct page *page, unsigned int offset,
 			    unsigned int len);
+	/* timeout handle */
+	struct list_head entry;
+	unsigned long deadline;
 };
 
 #define lsa_bio_list_for_each(bio, bl) \

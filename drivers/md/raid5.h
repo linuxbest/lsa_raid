@@ -450,6 +450,9 @@ struct raid5_private_data {
 
 	struct tasklet_struct lsa_tasklet;
 	struct kfifo lsa_bio;
+	struct timer_list timer;
+	struct list_head lsa_bio_head;
+	int fly;
 
 	char *bitmap;
 	struct proc_dir_entry *proc;

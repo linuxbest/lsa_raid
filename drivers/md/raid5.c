@@ -5101,6 +5101,17 @@ static int lsa_bio_req(raid5_conf_t *conf, struct lsa_bio *bi)
 	unsigned int chunk_offset;
 	sector_t logical_sector;
 	int full = lsa_segment_almost_full(&conf->data_segment), res;
+	unsigned long flags, expiry;
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+	list_add_tail(&bi->entry, &conf->lsa_bio_head);
+	bi->deadline = jiffies + 10*HZ;
+	expiry = round_jiffies_up(bi->deadline);
+	if (!timer_pending(&conf->timer) ||
+	     time_before(expiry, conf->timer.expires))
+		mod_timer(&conf->timer, expiry);
+	conf->fly ++;
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	logical_sector = bi->bi_sector & ~((sector_t)STRIPE_SECTORS-1);
 	chunk_offset = sector_div(logical_sector, conf->chunk_sectors);
@@ -5178,14 +5189,26 @@ static void lsa_bio_end_io(struct lsa_bio *bio, int error)
 	raid5_conf_t *conf = bio->conf;
 	struct bio *bi = bio->bi_private;
 
-	debug("sector %llu/%llu, nrseg %d\n",
+	spin_lock_irqsave(&conf->device_lock, flags);
+	conf->fly --;
+	debug("sector %llu/%llu, nrseg %d, pending %d\n",
 			(unsigned long long)bi->bi_sector,
 			(unsigned long long)bio->bi_sector,
-			bi->bi_phys_segments);
-	spin_lock_irq(&conf->device_lock);
+			bi->bi_phys_segments, conf->fly);
+	list_del_init(&bio->entry);
+	if (!list_empty(&conf->lsa_bio_head)) {
+		unsigned long expiry;
+		struct lsa_bio *this = container_of(conf->lsa_bio_head.next,
+				struct lsa_bio, entry);
+		expiry = round_jiffies_up(this->deadline);
+		if (time_before(conf->timer.expires, expiry)) 
+			mod_timer(&conf->timer, expiry);
+	} else {
+		del_timer(&conf->timer);
+	}
 	if (!raid5_dec_bi_phys_segments(bi))
 		bio_endio(bi, 0);
-	spin_unlock_irq(&conf->device_lock);
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 
 	lsa_bio_put(bio);
 }
@@ -5251,6 +5274,26 @@ static int lsa_make_request(struct request_queue *q, struct bio * bi)
 	return 0;
 }
 
+static void 
+lsa_bio_timeout(unsigned long data)
+{
+	raid5_conf_t *conf = (raid5_conf_t *)data;
+	unsigned long flags;
+	struct lsa_bio *bio;
+
+	del_timer(&conf->timer);
+
+	spin_lock_irqsave(&conf->device_lock, flags);
+	list_for_each_entry(bio, &conf->lsa_bio_head, entry) {
+		struct bio *bi = bio->bi_private;
+		printk(" TIMEOUT: sector %llu/%llu, nrseg %d, %lx,%lx\n",
+				(unsigned long long)bi->bi_sector,
+				(unsigned long long)bio->bi_sector,
+				bi->bi_phys_segments, bio->deadline, jiffies);
+	}
+	spin_unlock_irqrestore(&conf->device_lock, flags);
+}
+
 static int lsa_stripe_exit(raid5_conf_t *conf)
 {
 	struct stripe_head *sh = conf->lsa_zero_sh;
@@ -5258,6 +5301,7 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	shrink_buffers(sh, disks);
 	kmem_cache_free(conf->slab_cache, sh);
 
+	del_timer(&conf->timer);
 	lsa_segment_fill_exit(&conf->segment_fill);
 	lsa_cs_exit(&conf->lsa_closed_status);
 	lsa_ss_exit(&conf->lsa_segment_status);
@@ -5338,6 +5382,12 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	debug("res %d\n", res);
 
 	conf->gc.seg = DATA_SEG_ID;
+
+	conf->fly = 0;
+	INIT_LIST_HEAD(&conf->lsa_bio_head);
+	init_timer(&conf->timer);
+	conf->timer.data = (unsigned long)conf;
+	conf->timer.function = lsa_bio_timeout;
 
 	return 0;
 }
