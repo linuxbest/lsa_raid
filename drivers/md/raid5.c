@@ -5223,13 +5223,7 @@ static int lsa_make_request(struct request_queue *q, struct bio * bi)
 	int nr = 0;
 
 	if (unlikely(bio_rw_flagged(bi, BIO_RW_BARRIER))) {
-		/* Drain all pending writes.  We only really need
-		 * to ensure they have been submitted, but this is
-		 * easier.
-		 */
-		mddev->pers->quiesce(mddev, 1);
-		mddev->pers->quiesce(mddev, 0);
-		md_barrier_request(mddev, bi);
+		bio_endio(bi, -EOPNOTSUPP);
 		return 0;
 	}
 
