@@ -2399,8 +2399,8 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	debug("ltid %x, fromseg %d, off %d, len %d\n",
 			eh->e.log_track_id, fromseg, offset, len);
 
-	lsa_entry_dump("new", ln);
-	lsa_entry_dump("old", lo);
+	lsa_entry_dump(" mem", ln);
+	lsa_entry_dump("disk", lo);
 	BUG_ON(len < sizeof(*lo));
 
 	/* when copy to segment, mark the segment is dirty */
@@ -4732,8 +4732,8 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 
 	if (bi->lt != n->new.log_track_id)
 		return 0;
-	lsa_entry_dump("new", ln); 
-	lsa_entry_dump("old", lo);
+	lsa_entry_dump("new", ln);
+	/*lsa_entry_dump("old", lo);*/
 	if (DATA_PARTIAL & ln->status)
 		bitmap_set(meta->bitmap, ln->offset, ln->length);
 	else
@@ -4871,7 +4871,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 	struct lsa_ss_meta ss_meta;
 	struct lsa_segfill_meta segfill_meta;
 	struct rb_node *node;
-	int res, loop = 10;
+	int res, loop = 128;
 	uint32_t seg_id = lrb->seg_id;
 	unsigned long bitmap[16];
 	unsigned long except[16];
@@ -4886,7 +4886,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 
 	bitmap_set(except, bi->lt_offset, bi->bi_size>>9);
 	bitmap_scnprintf(conf->bitmap, PAGE_SIZE, except, 128);
-	debug("off/len %x,%x bm %s\n", bi->lt_offset,
+	debug("off/len %x,%x except bm %s\n", bi->lt_offset,
 			bi->bi_size>>9, conf->bitmap);
 
 	do {
@@ -4911,10 +4911,11 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 
 		bitmap_and(result, except, bitmap, 128);
 		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, result, 128);
-		debug("off/len %x,%x bm %s\n", bi->lt_offset,
-				bi->bi_size>>9, conf->bitmap);
 		seg_id = lsa_map_next(cookie, bitmap, seg_id);
-	} while (bitmap_equal(result, except, 128) == 0 && loop--);
+		debug("off/len %x,%x current bm %s, seg_id %x\n", bi->lt_offset,
+				bi->bi_size>>9, conf->bitmap, seg_id);
+	} while (bitmap_equal(result, except, 128) == 0 && loop --);
+	BUG_ON(loop == 0);
 
 	/* phase 2: 
 	 *  reading the segment data 
@@ -4966,11 +4967,7 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 				ln->offset, ln->length, conf->bitmap,
 				ln->seg_id, ln->seg_column);
 	}
-	if (!bitmap_empty(bitmap, 128)) {
-		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, bitmap, 128);
-		debug("off/len %x,%x bm %s, ERROR\n", bi->lt_offset,
-				bi->bi_size>>9, conf->bitmap);
-	}
+	BUG_ON(!bitmap_empty(bitmap, 128));
 
 	/* phase 5: free the segbuf */
 	node = rb_last(&cookie->tree);
