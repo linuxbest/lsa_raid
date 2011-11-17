@@ -1664,6 +1664,7 @@ struct segment_buffer_entry {
 	int (*done)(struct segment_buffer *segbuf,
 			struct segment_buffer_entry *se, int error);
 	struct list_head entry;
+	struct completion *comp;
 };
 
 static void 
@@ -3023,10 +3024,10 @@ lsa_ss_write_done(struct segment_buffer *segbuf,
 	return 0;
 }
 
-#define lsa_ss_dump(s, x) \
+#define lsa_ss_dump(segid, s, x) \
 do { \
-	debug(s " seq %x, time %x, occup %x, sts %x\n", \
-		x->seq, x->timestamp, x->occupancy, x->status); \
+	debug(s " segid %x, seq %x, time %x, occup %x, sts %x\n", \
+		segid, x->seq, x->timestamp, x->occupancy, x->status); \
 } while (0)
 
 static int
@@ -3042,8 +3043,8 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 
 	debug("ssid %x, fromseg %d, off %d, len %d\n", 
 			ssbuf->seg_id, fromseg, offset, len);
-	lsa_ss_dump("new", n);
-	lsa_ss_dump("old", o);
+	lsa_ss_dump(ssbuf->seg_id, "new", n);
+	lsa_ss_dump(ssbuf->seg_id, "old", o);
 	BUG_ON(len < sizeof(*n));
 
 	/* when copy to segment, mark the segment is dirty */
@@ -3185,37 +3186,63 @@ proc_ss_read_done(struct lsa_ss_cookie *cookie)
 	complete(cookie->comp);
 }
 
+/*
+ * find the segment directory by data of segment id
+ */
+static int
+lsa_ss_find_meta_uptodate_done(struct segment_buffer *segbuf,
+		struct segment_buffer_entry *se, int error)
+{
+	complete(se->comp);
+	return 0;
+}
+
 static int
 lsa_ss_find_meta(struct lsa_segment_status *ss, struct lsa_ss_meta *meta)
 {
-	int res;
-	uint32_t seq = meta->data_id;
+	raid5_conf_t *conf = container_of(ss, raid5_conf_t, lsa_segment_status);
+	struct segment_buffer *segbuf;
+	struct segment_buffer_entry segbuf_entry;
+	struct segment_buffer_entry *se = &segbuf_entry;
+	struct completion done;
+	uint32_t seg_id = meta->data_id;
 
-	for (; seq < meta->data_id + 256; seq ++) {
-		struct completion done;
-		struct lsa_ss_cookie cookie;
-		segment_status_t *x;
+	int offset, len;
+	const char *buf;
+	segment_status_t *o;
+
+	for (;;) {
+		/* TODO FIXME deadloop */
 		init_completion(&done);
-		INIT_LIST_HEAD(&cookie.entry);
-		cookie.rw   = READ;
-		cookie.ssbuf= NULL;
-		cookie.done = proc_ss_read_done;
-		cookie.comp = &done;
-		res = lsa_ss_find_or_create(ss, seq, &cookie);
-		debug("segid %x, res %d, cookie %p\n", (uint32_t)seq, res, &cookie);
-		if (res == -EINPROGRESS) {
-			wait_for_completion(&done);
-		}
-		x = &cookie.ssbuf->e;
-		if (x->status & SS_SEG_META) {
-			meta->meta_id = seq;
-			meta->meta_col= x->meta;
-			lsa_ss_put(ss, cookie.ssbuf);
-			return 0;
-		}
-		lsa_ss_put(ss, cookie.ssbuf);
+		segment_buffer_entry_init(se);
+		se->rw = READ;
+		se->done = lsa_ss_find_meta_uptodate_done;
+		se->comp = &done;
+		segbuf = lsa_segment_find_or_create(&conf->meta_segment,
+				SS2SEG(ss, seg_id), se);
+		wait_for_completion(&done);
+
+		offset = SS2OFFSET(ss, seg_id);
+		buf = lsa_segment_buf_addr(segbuf, offset, &len);
+		o = (segment_status_t *)buf;
+		do {
+			lsa_ss_dump(seg_id, "old", o);
+			if ((o->status & SS_SEG_MASK) == SS_SEG_FREE) {
+				return -1;
+			}
+			if (o->status & SS_SEG_META) {
+				meta->meta_id = seg_id;
+				meta->meta_col = o->meta;
+				lsa_segment_release(segbuf, 0);
+				return 0;
+			}
+			len -= sizeof(segment_status_t);
+			o ++; seg_id ++;
+		} while (len > 0);
+		lsa_segment_release(segbuf, 0);
 	}
-	return -1;
+
+	return 0;
 }
 
 static void *
@@ -4695,15 +4722,15 @@ lsa_read_segfill_cookie_cb(struct lsa_segfill_meta *meta, lsa_track_entry_t *n)
 	lsa_entry_t *ln = &n->new;
 	lsa_entry_t *lo = &n->old;
 
-	lsa_entry_dump("new", ln);
-	lsa_entry_dump("old", lo);
 	if (bi->lt != n->new.log_track_id)
 		return 0;
+	lsa_entry_dump("new", ln); 
+	lsa_entry_dump("old", lo);
 	if (DATA_PARTIAL & ln->status)
 		bitmap_set(meta->bitmap, ln->offset, ln->length);
 	else
 		bitmap_fill(meta->bitmap, 128);
-	map = kmalloc(sizeof(*map), GFP_KERNEL);
+	map = kmalloc(sizeof(*map), GFP_ATOMIC);
 	if (map) {
 		memcpy(&map->entry, n, sizeof(*n));
 		lsa_map_insert(root, map);
@@ -4861,6 +4888,10 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 		res = lsa_ss_find_meta(&conf->lsa_segment_status, &ss_meta);
 		debug("res %d, meta %x, %d\n", 
 				res, ss_meta.meta_id, ss_meta.meta_col);
+		if (res != 0) {
+			/* TODO */
+			break;
+		}
 
 		segfill_meta.meta = ss_meta.meta_id;
 		segfill_meta.col = ss_meta.meta_col;
