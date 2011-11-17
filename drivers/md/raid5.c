@@ -4966,6 +4966,11 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 				ln->offset, ln->length, conf->bitmap,
 				ln->seg_id, ln->seg_column);
 	}
+	if (!bitmap_empty(bitmap, 128)) {
+		bitmap_scnprintf(conf->bitmap, PAGE_SIZE, bitmap, 128);
+		debug("off/len %x,%x bm %s, ERROR\n", bi->lt_offset,
+				bi->bi_size>>9, conf->bitmap);
+	}
 
 	/* phase 5: free the segbuf */
 	node = rb_last(&cookie->tree);
