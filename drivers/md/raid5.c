@@ -5359,7 +5359,10 @@ lsa_raid_seg_put(mddev_t *mddev, struct segment_buffer *segbuf, int dirty)
 int lsa_raid_bio_queue(mddev_t *mddev, struct lsa_bio * bi)
 {
 	raid5_conf_t *conf = mddev->private;
-	lsa_bio_req(conf, bi);
+	if (bio_data_dir(bi) == READ)
+		lsa_read_handle_dummy(conf, bi);
+	else
+		lsa_bio_req(conf, bi);
 	return 0;
 }
 
