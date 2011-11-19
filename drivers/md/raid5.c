@@ -1245,6 +1245,14 @@ static void raid_run_ops(struct stripe_head *sh, unsigned long ops_request)
 static sector_t raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks);
 
 /***
+ * meta (DDF)
+ *  block=64k, extent=4, depth=4 (16-1)*32=480, (16-1)*128*32=61440
+ *  block=64k, extent=16,depth=4 (64-1)*32=2016,(64-1)*128*32=258048
+ *  block=32k, extent=4, depth=4 (16-1)*32=480, (16-1)*64*32=30720
+ *  block=32k, extent=16,depth=4 (16-1)*32=2016,(64-1)*64*32=129024
+ *
+ */
+/***
  * meta write/recover 
  *  6,052,799
  * meta rebuild
