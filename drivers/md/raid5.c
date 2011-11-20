@@ -3952,7 +3952,6 @@ lsa_cs_exit(struct lsa_closed_segment *lcs)
 typedef struct lsa_track {
 	struct list_head entry;
 	atomic_t count;
-	struct page *page;
 	struct lsa_dirtory *dir;
 	struct segment_buffer *segbuf;
 	lsa_track_buffer_t *buf;
@@ -3975,6 +3974,7 @@ __lsa_track_get(struct lsa_segment_fill *segfill)
 	atomic_set(&lt->count, 1);
 	debug("track %p, ref %d, free %d\n", 
 			lt, atomic_read(&lt->count), segfill->free_cnt);
+	lt->buf = segfill->segbuf->track;
 
 	return lt;
 }
@@ -4156,16 +4156,6 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 	track->buf->sum += track->buf->total;
 	track->buf->sum += track->buf->seq_id;
 
-	/* fill the information into segment buffer */
-#if 0
-	segbuf->column[data_column].track     = track;
-	segbuf->column[data_column].meta_page = track->page;
-	segbuf->meta                          = data_column;
-#endif
-	set_segbuf_meta(segbuf);
-	/* saving the meta_id & data column for next track */
-	segfill->meta_id     = segbuf->seg_id;
-	segfill->meta_column = data_column;
 	segfill->data_column ++;
 	segfill->track       = NULL;
 
@@ -4199,24 +4189,15 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 			segbuf->seg_id, segbuf->meta, segbuf->seg);
 	lsa_segment_event(segbuf, SEG_CLOSED);
 	lsa_segment_release(segbuf, 0);
-	if (!test_clear_segbuf_meta(segbuf)) {
-		/* without meta data */
-		return 0;
-	}
 #if 0
-	track = segbuf->column[segbuf->meta].track;
-#endif
-	BUG_ON(track->lcs == NULL);
-	lsa_lcs_commit(track->lcs, segbuf->seg_id, segbuf->meta, segbuf->seq);
+	BUG_ON(segfill->lcs == NULL);
+	lsa_lcs_commit(segfill->lcs, segbuf->seg_id, segbuf->meta, segbuf->seq);
 	track->lcs = NULL;
-
+#endif
 	spin_lock_irqsave(&segfill->lock, flags);
 	__lsa_track_put(track);
 	spin_unlock_irqrestore(&segfill->lock, flags);
-#if 0
-	segbuf->column[segbuf->meta].track     = NULL;
-	segbuf->meta                           = 0;
-#endif
+
 	return 0;
 }
 
@@ -4226,6 +4207,8 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
 	int dir_dirty, dir_point, ss_dirty, ss_point;
+
+	__lsa_track_close(segfill);
 
 	BUG_ON(segfill->segbuf == NULL);
 	BUG_ON(segfill->lcs == NULL);
@@ -4271,6 +4254,8 @@ __lsa_segment_fill_open(struct lsa_segment_fill *segfill)
 	segfill->seq ++;
 	lsa_segment_event(segbuf, SEG_OPEN);
 
+	__lsa_track_open(segfill);
+
 	return 0;
 }
 
@@ -4304,25 +4289,14 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 {
 	int meta_full;
 
-	if (segfill->track == NULL)
-		__lsa_track_open(segfill);
 	if (segfill->segbuf == NULL)
 		__lsa_segment_fill_open(segfill);
-
 	meta_full = segfill->track->buf->total == segfill->meta_max;
 	debug("bio %llu, column %d/%d, meta %d/%d\n",
 			(unsigned long long)bi->bi_sector,
 			segfill->data_column, segfill->max_column,
 			segfill->track->buf->total, segfill->meta_max);
-	if (segfill->data_column == segfill->max_column) {
-		__lsa_segment_fill_close(segfill);
-		__lsa_segment_fill_open(segfill);
-	}
-	if (meta_full) {
-		__lsa_track_close(segfill);
-		__lsa_track_open(segfill);
-	}
-	if (segfill->data_column == segfill->max_column) {
+	if (segfill->data_column == segfill->max_column || meta_full) {
 		__lsa_segment_fill_close(segfill);
 		__lsa_segment_fill_open(segfill);
 	}
@@ -4379,9 +4353,7 @@ lsa_segment_fill_timeout(unsigned long data)
 
 	spin_lock_irqsave(&segfill->lock, flags);
 	if (segfill->track || segfill->segbuf) {
-		debug("track %p, segbuf %p\n", segfill->track, segfill->segbuf);
-		if (segfill->track)
-			__lsa_track_close(segfill);
+		debug("segbuf %p\n", segfill->segbuf);
 		if (segfill->segbuf)
 			__lsa_segment_fill_close(segfill);
 	}
@@ -4654,13 +4626,6 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 		if (track == NULL)
 			return -1;
 
-		/* 64kpage, 16 disks, with 32byte per.
-		 * ((65536/512)*16)*32 = 65536 
-		 */
-		track->page = alloc_pages(GFP_KERNEL, STRIPE_ORDER);
-		if (track->page == NULL)
-			return -1;
-		track->buf = (lsa_track_buffer_t *)page_address(track->page);
 		track->dir = &conf->lsa_dirtory;
 		track->lcs = NULL;
 		track->segfill = segfill;
@@ -4685,7 +4650,6 @@ static void
 __lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 {
 	list_del_init(&lt->entry);
-	__free_pages(lt->page, STRIPE_ORDER);
 	BUG_ON(lt->lcs);
 	kfree(lt);
 	segfill->free_cnt --;
