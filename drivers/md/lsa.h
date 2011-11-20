@@ -1,6 +1,9 @@
 #ifndef _LOG_STRUCTED_ARRAY_
 #define _LOG_STRUCTED_ARRAY_
 
+#define LSA_BLOCKSIZE  (1<<16)
+#define LSA_BLOCKDEPTH (4)
+
 typedef struct {
 	uint32_t log_track_id; /* logic track address */
 	uint32_t seg_id;       /* segment number */
@@ -37,11 +40,9 @@ typedef struct {
 typedef struct {
 	uint32_t magic;
 	uint32_t sum;
-	uint16_t total;
-	uint16_t prev_column;
-	uint32_t prev_seg_id;
 	uint32_t seq_id;
-	uint32_t reserved;
+	uint16_t total;
+	uint16_t reserved;
 	lsa_track_entry_t entry[0];
 } __attribute__ ((packed)) lsa_track_buffer_t;
 

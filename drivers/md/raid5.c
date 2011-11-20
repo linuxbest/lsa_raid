@@ -1367,6 +1367,22 @@ enum {
  * LSA segment operations
  *
  */
+typedef enum {
+	COLUMN_META = 0,
+	COLUMN_DATA = 1,
+} column_type_t;
+struct column_meta {
+	unsigned long  flags;
+	struct bio     req;
+	struct bio_vec vec;
+	struct page   *page, *meta_page;
+};
+struct column_data {
+	unsigned long  flags;
+	struct bio     req;
+	struct bio_vec vec[LSA_BLOCKDEPTH];
+	struct page   *page[LSA_BLOCKDEPTH];
+};
 struct segment_buffer {
 	struct rb_node   node;
 	struct list_head lru_entry, active_entry, dirty_entry, write, read;
@@ -1377,15 +1393,16 @@ struct segment_buffer {
 	uint32_t         seq;
 	struct lsa_segment *seg;
 	sector_t         sector;
-	struct column {
-		struct bio     req;
-		struct bio_vec vec;
-		struct page   *page, *meta_page;
-		unsigned long  flags;
-		struct lsa_track *track;
+
+	lsa_track_buffer_t *track;
+	column_type_t    type;
+	/*unsigned int     depth;*/
+	unsigned int     extent;
+	union column {
+		struct column_data data;
+		struct column_meta meta;
 	} column[1];
 };
-
 enum {
 	SEGBUF_TREE     = 0,
 	SEGBUF_UPTODATE = 1,
@@ -1479,31 +1496,67 @@ __segbuf_tree_insert(struct lsa_segment *seg, struct segment_buffer *data)
 	return 1;
 }
 
-static void
-__lsa_colume_bio_init(struct column *dev, struct segment_buffer *segbuf)
+static void 
+__lsa_column_meta_bio_init(struct column_meta *meta,
+		struct segment_buffer *segbuf)
 {
-	bio_init(&dev->req);
-	dev->req.bi_io_vec   = &dev->vec;
-	dev->req.bi_vcnt     = 1;
-	dev->req.bi_max_vecs = 1;
-	dev->req.bi_size     = 1<<segbuf->seg->shift;
-	dev->vec.bv_page     = dev->page;
-	dev->vec.bv_len      = 1<<segbuf->seg->shift;
-	dev->vec.bv_offset   = 0;
+	bio_init(&meta->req);
+	meta->req.bi_flags    = 1 << BIO_UPTODATE;
+	meta->req.bi_idx      = 0;
+	meta->req.bi_next     = NULL;
+	meta->req.bi_io_vec   = &meta->vec;
+	meta->req.bi_vcnt     = 1;
+	meta->req.bi_max_vecs = 1;
+	meta->req.bi_size     = 1<<segbuf->seg->shift;
+	meta->vec.bv_page     = meta->page;
+	meta->vec.bv_len      = 1<<segbuf->seg->shift;
+	meta->vec.bv_offset   = 0;
+	meta->req.bi_private = segbuf;
+}
 
-	dev->req.bi_private = segbuf;
+static void 
+__lsa_column_data_bio_init(struct column_data *data,
+		struct segment_buffer *segbuf)
+{
+	int i;
+	bio_init(&data->req);
+	data->req.bi_flags    = 1 << BIO_UPTODATE;
+	data->req.bi_idx      = 0;
+	data->req.bi_next     = NULL;
+	data->req.bi_io_vec   = &data->vec[i];
+	data->req.bi_vcnt     = LSA_BLOCKDEPTH;
+	data->req.bi_max_vecs = LSA_BLOCKDEPTH;
+	data->req.bi_size     = (1<<segbuf->seg->shift) * LSA_BLOCKDEPTH;
+	for (i = 0; i < LSA_BLOCKDEPTH; i ++) {
+		data->vec[i].bv_page     = data->page[i];
+		data->vec[i].bv_len      = 1<<segbuf->seg->shift;
+		data->vec[i].bv_offset   = 0;
+	}
+	data->req.bi_private = segbuf;
+}
+
+static void
+__lsa_column_bio_init(union column *dev, struct segment_buffer *segbuf)
+{
+	if (segbuf->type == COLUMN_META) {
+		__lsa_column_meta_bio_init(&dev->meta, segbuf);
+	} 
+	if (segbuf->type == COLUMN_DATA) {
+		__lsa_column_data_bio_init(&dev->data, segbuf);
+	}
 }
 
 static int 
 __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 {
 	raid5_conf_t *conf = seg->conf;
-	struct column *column = segbuf->column;
+	union column *column = segbuf->column;
 	int i;
 
 	for (i = 0; i < conf->raid_disks; i ++, column ++) {
-		column->flags  = 0;
+		column->meta.flags  = 0;
 	}
+	segbuf->track = page_address(segbuf->column[0].data.page[0]);
 
 	return 0;
 }
@@ -1581,9 +1634,9 @@ lsa_column_end_write(struct bio *bi, int error)
 	struct segment_buffer *segbuf = bi->bi_private;
 	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
 	int disks = segbuf->seg->disks, i;
-	struct column *column;
+	union column *column;
 	for (i = 0; i < disks; i ++)
-		if (bi == &segbuf->column[i].req)
+		if (bi == &segbuf->column[i].meta.req)
 			break;
 
 	column = &segbuf->column[i];
@@ -1604,9 +1657,9 @@ lsa_column_end_read(struct bio *bi, int error)
 	struct segment_buffer *segbuf = bi->bi_private;
 	/*raid5_conf_t *conf = container_of(segbuf->seg, raid5_conf_t, lsa_segment);*/
 	int disks = segbuf->seg->disks, i;
-	struct column *column;
+	union column *column;
 	for (i = 0; i < disks; i ++)
-		if (bi == &segbuf->column[i].req)
+		if (bi == &segbuf->column[i].meta.req)
 			break;
 
 	column = &segbuf->column[i];
@@ -1614,9 +1667,9 @@ lsa_column_end_read(struct bio *bi, int error)
 			atomic_read(&segbuf->bios), uptodate);
 
 	if (uptodate) {
-		set_bit(R5_UPTODATE, &column->flags);
+		set_bit(R5_UPTODATE, &column->meta.flags);
 	} else {
-		clear_bit(R5_UPTODATE, &column->flags);
+		clear_bit(R5_UPTODATE, &column->meta.flags);
 	}
 
 	lsa_segment_bio_put(segbuf, READ);
@@ -1788,11 +1841,11 @@ lsa_segment_event(struct segment_buffer *segbuf, segment_event_t type)
 }
 
 static char *
-lsa_segment_buf_addr(struct segment_buffer *segbuf, int offset, int *len)
+lsa_segment_meta_buf_addr(struct segment_buffer *segbuf, int offset, int *len)
 {
 	struct lsa_segment *seg = segbuf->seg;
 	int data = offset > seg->shift;
-	struct page *page = segbuf->column[data].page;
+	struct page *page = segbuf->column[data].meta.page;
 	char *addr = page_address(page);
 	
 	offset &= ((1<<seg->shift)-1);
@@ -1813,14 +1866,15 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	raid5_conf_t *conf = seg->conf;
 	int disks = seg->disks, i;
 	int rw = segbuf_dirty(segbuf) ? WRITE : READ;
-	struct column *column = segbuf->column;
+	union column *column = segbuf->column;
 
 	lsa_segment_bio_init(segbuf);
 
 	for (i = 0; i < disks; i ++, column ++) {
 		mdk_rdev_t *rdev;
-		struct bio *bi = &column->req;
+		struct bio *bi = &column->meta.req;
 
+		__lsa_column_bio_init(column, segbuf);
 		bi->bi_rw = rw;
 		if (rw & WRITE)
 			bi->bi_end_io = lsa_column_end_write;
@@ -1842,17 +1896,6 @@ lsa_segment_handle(struct lsa_segment *seg, struct segment_buffer *segbuf)
 					(unsigned long long)rdev->data_offset,
 					bi->bi_rw, i,
 					bi->bi_rw & WRITE ? "WRT" : "RDT");
-			bi->bi_flags = 1 << BIO_UPTODATE;
-			bi->bi_vcnt = 1;
-			bi->bi_max_vecs = 1;
-			bi->bi_idx = 0;
-			bi->bi_io_vec = &column->vec;
-			bi->bi_io_vec[0].bv_len = 1<<segbuf->seg->shift;
-			bi->bi_io_vec[0].bv_offset = 0;
-			bi->bi_size = bi->bi_io_vec[0].bv_len;
-			bi->bi_next = NULL;
-			column->vec.bv_page = column->track ?
-				column->meta_page : column->page;
 			lsa_segment_bio_ref(segbuf);
 			generic_make_request(bi);
 		} else {
@@ -2009,23 +2052,46 @@ lsa_segment_tasklet(unsigned long data)
 	spin_unlock_irqrestore(&seg->lock, flags);
 }
 
+static int 
+__lsa_column_meta_alloc(struct segment_buffer *segbuf,
+		struct column_meta *meta, int shift)
+{
+	meta->page = alloc_pages(GFP_KERNEL, shift - PAGE_SHIFT);
+	if (meta->page == NULL)
+		return -1;
+	return 0;
+}
+
 static int
-lsa_column_alloc(struct segment_buffer *segbuf, struct column *column,
-		int disks, int shift)
+__lsa_column_data_alloc(struct segment_buffer *segbuf,
+		struct column_data *data, int shift)
 {
 	int i;
-	for (i = 0; i < disks; i ++, column ++) {
-		column->page = alloc_pages(GFP_KERNEL, shift - PAGE_SHIFT);
-		if (column->page == NULL)
+	for (i = 0; i < LSA_BLOCKDEPTH; i ++) {
+		data->page[i] = alloc_pages(GFP_KERNEL, shift - PAGE_SHIFT);
+		if (data->page[i] == NULL)
 			return -1;
-		__lsa_colume_bio_init(column, segbuf);
+	}
+	return 0;
+}
+static int
+lsa_column_alloc(struct segment_buffer *segbuf, union column *column,
+		int shift)
+{
+	int i;
+	for (i = 0; i < segbuf->extent; i ++, column ++) {
+		if ((segbuf->type == COLUMN_META &&
+		     __lsa_column_meta_alloc(segbuf, &column->meta, shift) != 0) ||
+		    (segbuf->type == COLUMN_DATA &&
+		     __lsa_column_data_alloc(segbuf, &column->data, shift) != 0))
+			    return -1;
 	}
 	return 0;
 }
 
 static int 
 lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
-		struct raid5_private_data *conf)
+		struct raid5_private_data *conf, int meta)
 {
 	int i;
 
@@ -2042,19 +2108,21 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 	seg->conf  = conf;
 	seg->tree = RB_ROOT;
 	seg->free_cnt = 0;
+
 	
 	tasklet_init(&seg->tasklet, lsa_segment_tasklet, (unsigned long)seg);
 
 	for (i = 0; i < nr; i ++) {
 		struct segment_buffer *segbuf;
 		int blen = sizeof(*segbuf);
-		blen += sizeof(struct column)*disks;
+		blen += sizeof(union column)*disks;
 		segbuf = kzalloc(blen, GFP_KERNEL);
 		if (segbuf == NULL)
 			return -1;
+		segbuf->type = meta ? COLUMN_META : COLUMN_DATA;
 		segbuf->seg = seg;
-		if (lsa_column_alloc(segbuf, segbuf->column, disks,
-					shift) != 0)
+		segbuf->extent = disks;
+		if (lsa_column_alloc(segbuf, segbuf->column, shift) != 0)
 			return -2;
 		list_add_tail(&segbuf->lru_entry, &seg->lru);
 		INIT_LIST_HEAD(&segbuf->active_entry);
@@ -2069,11 +2137,31 @@ lsa_segment_init(struct lsa_segment *seg, int disks, int nr, int shift,
 }
 
 static void
-lsa_column_free(struct column *column, int disks, int shift)
+__lsa_column_meta_free(struct segment_buffer *segbuf,
+		struct column_meta *meta, int shift)
+{
+	__free_pages(meta->page, shift - PAGE_SHIFT);
+}
+
+static void
+__lsa_column_data_free(struct segment_buffer *segbuf,
+		struct column_data *data, int shift)
 {
 	int i;
-	for (i = 0; i < disks; i ++, column ++)
-		__free_pages(column->page, shift - PAGE_SHIFT);
+	for (i = 0; i < LSA_BLOCKDEPTH; i ++) {
+		__free_pages(data->page[i], shift - PAGE_SHIFT);
+	}
+}
+static void
+lsa_column_free(struct segment_buffer *segbuf, union column *column, int shift)
+{
+	int i;
+	for (i = 0; i < segbuf->extent; i ++, column ++) {
+		if (segbuf->type == COLUMN_META)
+			__lsa_column_meta_free(segbuf, &column->meta, shift);
+		if (segbuf->type == COLUMN_DATA)
+			__lsa_column_data_free(segbuf, &column->data, shift);
+	}
 }
 
 static void 
@@ -2083,7 +2171,7 @@ __segment_buffer_free(struct lsa_segment *seg,
 	if (test_clear_segbuf_tree(segbuf))
 		__segbuf_tree_delete(seg, segbuf);
 	list_del_init(&segbuf->lru_entry);
-	lsa_column_free(segbuf->column, disks, seg->shift);
+	lsa_column_free(segbuf, segbuf->column, seg->shift);
 	kfree(segbuf);
 }
 
@@ -2400,7 +2488,7 @@ lsa_dirtory_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	int fromseg = !entry_uptodate(eh);
 	int len = 0;
 	int offset = DIR2OFFSET(eh->dir, eh->e.log_track_id);
-	const char *buf = lsa_segment_buf_addr(segbuf, offset, &len);
+	const char *buf = lsa_segment_meta_buf_addr(segbuf, offset, &len);
 	lsa_entry_t *lo = (lsa_entry_t *)buf;
 	lsa_entry_t *ln = &eh->e;
 
@@ -3051,7 +3139,7 @@ lsa_ss_copy(struct lsa_segment *seg, struct segment_buffer *segbuf,
 	int fromseg = !ss_uptodate(ssbuf);
 	int len = 0;
 	int offset = SS2OFFSET(ssbuf->ss, ssbuf->seg_id);
-	const char *buf = lsa_segment_buf_addr(segbuf, offset, &len);
+	const char *buf = lsa_segment_meta_buf_addr(segbuf, offset, &len);
 	segment_status_t *n = &ssbuf->e;
 	segment_status_t *o = (segment_status_t *)buf;
 
@@ -3239,7 +3327,7 @@ lsa_ss_find_meta(struct lsa_segment_status *ss, struct lsa_ss_meta *meta)
 		wait_for_completion(&done);
 
 		offset = SS2OFFSET(ss, seg_id);
-		buf = lsa_segment_buf_addr(segbuf, offset, &len);
+		buf = lsa_segment_meta_buf_addr(segbuf, offset, &len);
 		o = (segment_status_t *)buf;
 		do {
 			lsa_ss_dump(seg_id, "ondisk", o);
@@ -3510,7 +3598,6 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	lcs_buffer_t *lb = container_of(se, lcs_buffer_t, segbuf_entry);
 	struct lsa_closed_segment *lcs = lb->lcs;
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
-	int i;
 
 	spin_lock_irqsave(&lcs->lock, flags);
 	list_del(&lb->lru);
@@ -3525,11 +3612,6 @@ lsa_lcs_write_done(struct segment_buffer *segbuf,
 	 *  2) LSA segment status 
 	 * into disk
 	 */
-	/* not release the meta page, using for lcs read proc interface. */
-	for (i = 0; i < segbuf->seg->disks; i ++) {
-		/*segbuf->column[i].meta_page = NULL;*/
-		segbuf->column[i].track     = NULL;
-	}
 	lsa_dirtory_commit(&conf->lsa_dirtory);
 	lsa_ss_commit(&conf->lsa_segment_status);
 	return 0;
@@ -3563,11 +3645,6 @@ lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col, uint32_t seq)
 	lb->seg = i;
 	lb->segbuf_entry.done = lsa_lcs_write_done;
 
-	for (i = 0; i < segbuf->seg->disks; i ++) {
-		segbuf->column[i].meta_page = lb->page;
-		segbuf->column[i].track = (struct lsa_track *)lb;
-	}
-
 	set_segbuf_uptodate(segbuf);
 	lsa_segment_buffer_chain(segbuf, &lb->segbuf_entry);
 	i = lsa_segment_dirty(&conf->meta_segment, segbuf);
@@ -3580,17 +3657,10 @@ lsa_lcs_buf(struct lsa_closed_segment *lcs, int i,
 		int *valid, uint32_t *sum_o)
 {
 	struct segment_buffer *segbuf = lcs->segbuf[i];
-	struct page *page = segbuf->column[0].page;
+	struct page *page = segbuf->column[0].meta.page;
 	lcs_ondisk_t *ondisk;
 	uint32_t sum;
 	int j;
-
-	/* TODO 
-	 * when first data is failed, we can try next data */
-	if (segbuf->column[0].meta_page)
-		page = segbuf->column[0].meta_page;
-	if (page == NULL)
-		return NULL;
 
 	ondisk = (lcs_ondisk_t *)page_address(page);
 
@@ -3762,7 +3832,7 @@ lsa_lcs_recover(struct lsa_closed_segment *lcs)
 	printk("LCS: select %d doing recovery\n", i);
 
 	segbuf = lcs->segbuf[i];
-	page = segbuf->column[0].page;
+	page = segbuf->column[0].meta.page;
 	ondisk = (lcs_ondisk_t *)page_address(page);
 
 	/* TODO checking the dirtory & ss information by redo the closed
@@ -3824,7 +3894,8 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 	for (i = 0; i < lcs->max_lcs; i ++) {
 		struct segment_buffer *segbuf;
 		struct lcs_segment_buffer lcs_se;
-
+		struct lcs_buffer *lcs_buf;
+		
 		init_completion(&lcs_se.done);
 		segment_buffer_entry_init(&lcs_se.segbuf_entry);
 		lcs_se.segbuf_entry.rw = READ;
@@ -3837,15 +3908,11 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 
 		BUG_ON(segbuf == NULL);
 		lcs->segbuf[i] = segbuf;
-	}
-
-	for (i = 0; i < 128; i ++) {
-		struct lcs_buffer *lcs_buf = kzalloc(sizeof(*lcs_buf), GFP_KERNEL);
+		
+		lcs_buf = kzalloc(sizeof(*lcs_buf), GFP_KERNEL);
 		if (lcs_buf == NULL)
 			return -1;
-		lcs_buf->page = alloc_pages(GFP_KERNEL, 2);
-		if (lcs_buf->page == NULL)
-			return -1;
+		lcs_buf->page = segbuf->column[0].meta.page;
 		lcs_buf->lcs = lcs;
 		list_add_tail(&lcs_buf->lru, &lcs->lru);
 		lcs->free_cnt ++;
@@ -4063,8 +4130,6 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	track->buf->magic       = TRACK_MAGIC;
 	track->buf->sum         = 0;
 	track->buf->total       = 0;
-	track->buf->prev_seg_id = segfill->meta_id;
-	track->buf->prev_column = segfill->meta_column;
 	
 	track->segbuf = NULL;
 
@@ -4089,14 +4154,14 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 
 	track->buf->seq_id  = segbuf->seq;
 	track->buf->sum += track->buf->total;
-	track->buf->sum += track->buf->prev_seg_id;
-	track->buf->sum += track->buf->prev_column;
 	track->buf->sum += track->buf->seq_id;
 
 	/* fill the information into segment buffer */
+#if 0
 	segbuf->column[data_column].track     = track;
 	segbuf->column[data_column].meta_page = track->page;
 	segbuf->meta                          = data_column;
+#endif
 	set_segbuf_meta(segbuf);
 	/* saving the meta_id & data column for next track */
 	segfill->meta_id     = segbuf->seg_id;
@@ -4138,9 +4203,9 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 		/* without meta data */
 		return 0;
 	}
-
+#if 0
 	track = segbuf->column[segbuf->meta].track;
-
+#endif
 	BUG_ON(track->lcs == NULL);
 	lsa_lcs_commit(track->lcs, segbuf->seg_id, segbuf->meta, segbuf->seq);
 	track->lcs = NULL;
@@ -4148,10 +4213,10 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	spin_lock_irqsave(&segfill->lock, flags);
 	__lsa_track_put(track);
 	spin_unlock_irqrestore(&segfill->lock, flags);
-
+#if 0
 	segbuf->column[segbuf->meta].track     = NULL;
 	segbuf->meta                           = 0;
-
+#endif
 	return 0;
 }
 
@@ -4217,8 +4282,10 @@ __lsa_segment_fill_add(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 	int offset = bi->bi_sector & segfill->mask_offset;
 	int data = segfill->data_column;
 	struct segment_buffer *segbuf = segfill->segbuf;
-	struct page *page = segbuf->column[data].page;
-
+	struct page *page;
+#if 0	
+	page = segbuf->column[data].page;
+#endif
 	__lsa_segment_write_ref(segbuf, 1);
 	bi->bi_add_page(conf->mddev, bi, segbuf, page, offset, (STRIPE_SIZE-offset)>>9);
 	segfill->data_column ++;
@@ -4349,16 +4416,14 @@ lsa_segfill_segbuf2track(struct segment_buffer *segbuf, int col,
 	struct page *page;
 	uint32_t sum = 0, *dbuf;
 	int i;
-
+#if 0
 	if (segbuf->column[col].meta_page)
 		page = segbuf->column[col].meta_page;
 	else
 		page = segbuf->column[col].page;
 	track_buffer = page_address(page);
-
+#endif
 	sum += track_buffer->total;
-	sum += track_buffer->prev_seg_id;
-	sum += track_buffer->prev_column;
 	sum += track_buffer->seq_id;
 	dbuf = (uint32_t *)track_buffer->entry;
 	for (i = 0; i < (track_buffer->total*sizeof(lsa_track_entry_t))/4; i ++, dbuf ++)
@@ -4394,10 +4459,9 @@ lsa_segfill_find_meta(struct lsa_segment_fill *segfill,
 	track_buffer = lsa_segfill_segbuf2track(segbuf, meta->col, 
 			&valid, &sum);
 
-	debug("segid %08x/%02x, %08x, total %03x, %08x/%02x, %sVALID\n",
+	debug("segid %08x/%02x, %08x, total %03x, %sVALID\n",
 			meta->meta, meta->col, track_buffer->seq_id,
-			track_buffer->total, track_buffer->prev_seg_id,
-			track_buffer->prev_column & 0xff, valid ? "" : "IN");
+			track_buffer->total, valid ? "" : "IN");
 	if (valid == 0) {
 		lsa_segment_release(segbuf, 0);
 		/* TODO 
@@ -4448,17 +4512,13 @@ proc_segfill_read(struct seq_file *p, struct lsa_segment_fill *segfill, loff_t s
 
 	track_buffer = lsa_segfill_segbuf2track(segbuf, col, &valid, &sum);
 
-	seq_printf(p, "magic %08x, segid %08x/%02x, %08x, sum %08x/%08x, total %03x, %08x/%02x\n",
+	seq_printf(p, "magic %08x, segid %08x/%02x, %08x, sum %08x/%08x, total %03x\n",
 			track_buffer->magic, segfill->seq_show.cur_meta, col,
 			track_buffer->seq_id, track_buffer->sum, sum,
-			track_buffer->total,
-			track_buffer->prev_seg_id,
-			track_buffer->prev_column & 0xff);
+			track_buffer->total);
 	seq_printf(p, " ID LBA      SEGID             COL   OFFSET  LENGTH\n");
 	/*              00 000000e0 00008202/00008204 00/01 000/078 08/08" */
 	segfill->seq_show.valid    = valid;
-	segfill->seq_show.cur_meta = track_buffer->prev_seg_id;
-	segfill->seq_show.cur_col  = track_buffer->prev_column;
 	segfill->seq_show.track_buffer = (char *)track_buffer;
 		
 	lsa_segment_release(segbuf, 0);
@@ -4996,8 +5056,10 @@ lsa_read_handle(raid5_conf_t *conf, struct lsa_bio *bi)
 				struct lba_map_entry, node);
 		lsa_entry_t *ln = &map->entry.new;
 		struct segment_buffer *segbuf = map->segbuf;
-		struct page *page = segbuf->column[ln->seg_column].page;
-
+		struct page *page;
+#if 0	
+		page = segbuf->column[ln->seg_column].page;
+#endif
 		node = rb_prev(&map->node);
 		if (DATA_PARTIAL & ln->status)
 			lsa_read_bio_copy_data(bi,
@@ -5580,12 +5642,12 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 
 	res = lsa_segment_init(&conf->meta_segment, conf->raid_disks,
 			ENTRY_HEAD_SIZE/conf->raid_disks/PAGE_SIZE,
-			PAGE_SHIFT, conf);
+			PAGE_SHIFT, conf, 1);
 	debug("res %d\n", res);
 
 	res = lsa_segment_init(&conf->data_segment, conf->raid_disks,
 			(128*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
-			STRIPE_SHIFT, conf);
+			STRIPE_SHIFT, conf, 0);
 	debug("res %d\n", res);
 
 	res = lsa_ss_init(&conf->lsa_segment_status, 
