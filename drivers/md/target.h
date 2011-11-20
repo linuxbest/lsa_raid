@@ -267,4 +267,9 @@ void             lsa_bio_endio(struct lsa_bio *bio, int error);
 
 int              lsa_raid_bio_queue (struct mddev_s *mddev, struct lsa_bio * bi);
 int              lsa_raid_seg_put   (struct mddev_s *mddev, struct segment_buffer *segbuf, int dirty);
+
+#ifndef SECTOR_SHIFT
+#define SECTOR_SHIFT 9
+#endif
+
 #endif

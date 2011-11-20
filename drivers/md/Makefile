@@ -4,7 +4,7 @@ target-objs     += targ_md_buf.o
 
 obj-m += target.o
 obj-m  += raid456.o
-raid456-y       += raid5.o
+raid456-y       += raid5.o lsa_segment.o
 
 EXTRA_CFLAGS += -DGITVERSION=\"${GITVERSION}\"
 EXTRA_CFLAGS += -I$(src)/../../include
