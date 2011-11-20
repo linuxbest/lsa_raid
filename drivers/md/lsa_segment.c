@@ -8,6 +8,7 @@
 #include "raid5.h"
 
 #include "lsa_segment.h"
+#include "lsa_segment_status.h"
 
 /*
  * LSA segment operations
@@ -150,8 +151,6 @@ static const char *segment_event_str(segment_event_t type)
 	return str[type & SS_SEG_MASK];
 };
 
-static int
-lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf);
 static int
 lsa_segment_read_done(struct lsa_segment *seg, struct segment_buffer *segbuf);
 static int

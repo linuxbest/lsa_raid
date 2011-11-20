@@ -1,6 +1,18 @@
 #ifndef _LSA_SEGMENT_H_
 #define _LSA_SEGMENT_H_
 
+enum {
+	COLUMN_NULL = 0xFFFF,
+	STRIPE_MASK = STRIPE_SIZE-1,
+	TRACK_MAGIC   = 0xABCD0000, /* TODO */
+	SEG_LCS_MAGIC = 0xABCD0001,
+
+	SUPER_ID   = 0x0,
+	DIR_SEG_ID = 0x1,     /* block size 4k */
+	SS_SEG_ID  = 0x40000, /* block size 4k */
+	LCS_SEG_ID = 0x70000, /* block size 4k */
+	DATA_SEG_ID= 0x8000 , /* data segment block size is 64k byte */
+};
 /*
  * FREE: meaning the segment contains no valid data and is ready to opened.
  * OPEN: meaning the segment is available to hold logical track. 
