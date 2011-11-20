@@ -1407,7 +1407,7 @@ enum {
 	SEGBUF_TREE     = 0,
 	SEGBUF_UPTODATE = 1,
 	SEGBUF_DIRTY    = 2,
-	SEGBUF_META     = 3,
+	SEGBUF_CHECKPOINT = 3,
 	SEGBUF_LCS      = 4,
 	SEGBUF_LOCKED   = 5,
 	SEGBUF_LRU      = 6,
@@ -1438,7 +1438,7 @@ static inline int test_clear_segbuf_##name(struct segment_buffer *eh) \
 SEGBUF_FNS(TREE,     tree)
 SEGBUF_FNS(DIRTY,    dirty)
 SEGBUF_FNS(UPTODATE, uptodate)
-SEGBUF_FNS(META,     meta)
+SEGBUF_FNS(CHECKPOINT, checkpoint)
 SEGBUF_FNS(LCS,      lcs)
 SEGBUF_FNS(LOCKED,   locked)
 SEGBUF_FNS(LRU,      lru)
@@ -1703,7 +1703,7 @@ __lsa_segment_freed(struct lsa_segment *seg, uint32_t seg_id)
 	/* must not locked */
 	BUG_ON(segbuf_locked(segbuf));
 	/* meta must cleared */
-	BUG_ON(segbuf_meta(segbuf));
+	BUG_ON(segbuf_checkpoint(segbuf));
 
 	seg->free_cnt --;
 	list_del_init(&segbuf->lru_entry);
@@ -3085,7 +3085,6 @@ lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf)
 	struct lsa_ss_cookie cookie = {.rw = WRITE,};
 	int res = lsa_ss_find_or_create(ss, segbuf->seg_id, &cookie);
 	struct ss_buffer *ssbuf;
-	uint8_t meta = segbuf_meta(segbuf) ? SS_SEG_META : 0;
 
 	ssbuf = cookie.ssbuf;
 	BUG_ON(res != 0);
@@ -3093,7 +3092,7 @@ lsa_ss_update(struct lsa_segment_status *ss, struct segment_buffer *segbuf)
 		unsigned long flags;
 
 		ssbuf->e.seq       = segbuf->seq;
-		ssbuf->e.status    = segbuf->status | meta;
+		ssbuf->e.status    = segbuf->status;
 		ssbuf->e.timestamp = get_seconds();
 		ssbuf->e.jiffies   = jiffies;
 		ssbuf->e.meta      = segbuf->meta;
@@ -4132,9 +4131,6 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 	track->buf->total       = 0;
 	
 	track->segbuf = NULL;
-
-	track->lcs = segfill->lcs = lsa_lcs_freed(&conf->lsa_closed_status);
-	BUG_ON(track->lcs == NULL);
 }
 
 /*
@@ -4183,21 +4179,26 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	raid5_conf_t *conf = container_of(seg, raid5_conf_t, data_segment);
 	struct lsa_segment_fill *segfill = &conf->segment_fill;
 	unsigned long flags;
-	struct lsa_track *track;
 
 	debug("segid %x, meta %d, seg %p\n",
 			segbuf->seg_id, segbuf->meta, segbuf->seg);
 	lsa_segment_event(segbuf, SEG_CLOSED);
+	if (segbuf_checkpoint(segbuf)) {
+		lsa_lcs_commit(&conf->lsa_closed_status, 
+				segbuf->seg_id,
+				segbuf->meta,
+				segbuf->seq);
+	}
 	lsa_segment_release(segbuf, 0);
-#if 0
-	BUG_ON(segfill->lcs == NULL);
-	lsa_lcs_commit(segfill->lcs, segbuf->seg_id, segbuf->meta, segbuf->seq);
-	track->lcs = NULL;
-#endif
-	spin_lock_irqsave(&segfill->lock, flags);
-	__lsa_track_put(track);
-	spin_unlock_irqrestore(&segfill->lock, flags);
 
+	return 0;
+}
+
+static int
+__lsa_segment_need_checkpoint(struct lsa_segment_fill *segfill,
+		raid5_conf_t *conf)
+{
+	/* TODO */
 	return 0;
 }
 
@@ -4206,7 +4207,6 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
-	int dir_dirty, dir_point, ss_dirty, ss_point;
 
 	__lsa_track_close(segfill);
 
@@ -4214,12 +4214,8 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	BUG_ON(segfill->lcs == NULL);
 	lsa_lcs_insert(segfill->lcs, segfill->segbuf->seg_id);
 
-	lsa_dirtory_checkpoint_sts(&conf->lsa_dirtory, &dir_dirty, &dir_point);
-	lsa_ss_checkpoint_sts(&conf->lsa_segment_status, &ss_dirty, &ss_point);
-	debug("segid %x, meta %d, dir(%d/%d), ss(%d/%d)\n",
-			segfill->segbuf->seg_id, segbuf_meta(segfill->segbuf),
-			dir_dirty, dir_point, ss_dirty, ss_point);
-	if (segbuf_meta(segfill->segbuf) && !ss_point && !dir_point) {
+	if (__lsa_segment_need_checkpoint(segfill, conf)) {
+		set_segbuf_checkpoint(segfill->segbuf);
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
 		lsa_ss_checkpoint(&conf->lsa_segment_status);
 	}
