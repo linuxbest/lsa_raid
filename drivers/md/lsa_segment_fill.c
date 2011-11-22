@@ -22,7 +22,6 @@ typedef struct lsa_track {
 	struct lsa_dirtory *dir;
 	struct segment_buffer *segbuf;
 	lsa_track_buffer_t *buf;
-	struct lcs_buffer *lcs;
 	struct lsa_segment_fill *segfill;
 	struct lsa_track_cookie cookie[0];
 } lsa_track_t;
@@ -191,7 +190,6 @@ __lsa_track_open(struct lsa_segment_fill *segfill)
 
 	/* make sure the track is clean */
 	BUG_ON(segfill->track == NULL);
-	BUG_ON(segfill->track->lcs != NULL);
 	
 	/* TODO __lsa_track_get may return NULL */
 	track->buf->magic       = TRACK_MAGIC;
@@ -252,10 +250,12 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 			segbuf->seg_id, segbuf->meta, segbuf->seg);
 	lsa_segment_event(segbuf, SS_SEG_CLOSED);
 	if (segbuf_checkpoint(segbuf)) {
+#if 0
 		lsa_lcs_commit(&conf->lsa_closed_status, 
 				segbuf->seg_id,
 				segbuf->meta,
 				segbuf->seq);
+#endif
 	}
 	lsa_segment_release(segbuf, 0);
 
@@ -275,18 +275,19 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 {
 	raid5_conf_t *conf =
 		container_of(segfill, raid5_conf_t, segment_fill);
-
-	__lsa_track_close(segfill);
+	int res;
 
 	BUG_ON(segfill->segbuf == NULL);
-	BUG_ON(segfill->lcs == NULL);
-	lsa_lcs_insert(segfill->lcs, segfill->segbuf->seg_id);
-
-	if (__lsa_segment_need_checkpoint(segfill, conf)) {
+	__lsa_track_close(segfill);
+#if 0
+	res = lsa_lcs_insert(&conf->lsa_closed_status,
+			segfill->segbuf->seg_id);
+	if (res == LCS_NEED_CHECKPOINT) {
 		set_segbuf_checkpoint(segfill->segbuf);
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
 		lsa_ss_checkpoint(&conf->lsa_segment_status);
 	}
+#endif
 	__lsa_segment_write_put(segfill->segbuf);
 	segfill->segbuf = NULL;
 }
@@ -674,7 +675,6 @@ lsa_segment_fill_init(struct lsa_segment_fill *segfill)
 			return -1;
 
 		track->dir = &conf->lsa_dirtory;
-		track->lcs = NULL;
 		track->segfill = segfill;
 		list_add_tail(&track->entry, &segfill->free);
 		segfill->free_cnt ++;
@@ -697,7 +697,6 @@ static void
 __lsa_track_free(struct lsa_segment_fill *segfill, lsa_track_t *lt)
 {
 	list_del_init(&lt->entry);
-	BUG_ON(lt->lcs);
 	kfree(lt);
 	segfill->free_cnt --;
 }

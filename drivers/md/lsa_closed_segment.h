@@ -2,9 +2,9 @@
 #define _LSA_CLOSED_SEGMENT_H
 
 int
-lsa_cs_init(struct lsa_closed_segment *lcs);
+lsa_lcs_init(struct lsa_closed_segment *lcs);
 int
-lsa_cs_exit(struct lsa_closed_segment *lcs);
+lsa_lcs_exit(struct lsa_closed_segment *lcs);
 
 /*
  * LSA closed segment list 
@@ -19,10 +19,10 @@ typedef struct lcs_buffer {
 	int          seg;
 } lcs_buffer_t;
 
-void
-lsa_lcs_commit(lcs_buffer_t *lb, uint32_t seg_id, int col, uint32_t seq);
-void 
-lsa_lcs_insert(lcs_buffer_t *lb, uint32_t seg_id);
+#if 0
+void lsa_lcs_commit(struct lsa_closed_segment *lcs, uint32_t seg_id, int col, uint32_t seq);
+int  lsa_lcs_insert(struct lsa_closed_segment *lcs, uint32_t seg_id);
+#endif
 
 struct lcs_segment_buffer {
 	struct segment_buffer_entry segbuf_entry;

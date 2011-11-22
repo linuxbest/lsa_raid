@@ -135,7 +135,12 @@ __lsa_column_init(struct lsa_segment *seg, struct segment_buffer *segbuf)
 	for (i = 0; i < conf->raid_disks; i ++, column ++) {
 		column->meta.flags  = 0;
 	}
-	segbuf->track = page_address(segbuf->column[0].data.page[0]);
+
+	if (segbuf->type == COLUMN_DATA) {
+		segbuf->track = page_address(segbuf->column[0].data.page[0]);
+	} else {
+		segbuf->track = NULL;
+	}
 
 	return 0;
 }

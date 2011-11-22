@@ -1902,7 +1902,7 @@ lsa_dirtory_read_done(struct lsa_track_cookie *cookie)
 	lrb->offset  = lo->offset;
 	lrb->length  = lo->length;
 
-	if ((lo->status & DATA_VALID) == 0) {
+	if (/*(lo->status & DATA_VALID) == 0*/1) {
 		lsa_read_handle_dummy(conf, bi);
 	} else if ((DATA_PARTIAL & lo->status) || 1) {
 		/* must doing it @ thread context */
@@ -2174,7 +2174,7 @@ static int lsa_stripe_exit(raid5_conf_t *conf)
 	del_timer(&conf->timer);
 	lsa_gc_exit(&conf->lsa_gc, conf);
 	lsa_segment_fill_exit(&conf->segment_fill);
-	lsa_cs_exit(&conf->lsa_closed_status);
+	lsa_lcs_exit(&conf->lsa_closed_status);
 	lsa_ss_exit(&conf->lsa_segment_status);
 	lsa_dirtory_exit(&conf->lsa_dirtory);
 	lsa_segment_exit(&conf->meta_segment, conf->raid_disks);
@@ -2238,7 +2238,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	debug("res %d\n", res);
 
 	res = lsa_segment_init(&conf->data_segment, conf->raid_disks,
-			(128*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks,
+			(128*1024*1024>>STRIPE_SS_SHIFT)/conf->raid_disks/LSA_BLOCKDEPTH,
 			STRIPE_SHIFT, conf, 0);
 	debug("res %d\n", res);
 
@@ -2249,7 +2249,7 @@ static int lsa_stripe_init(raid5_conf_t *conf)
 	res = lsa_segment_fill_init(&conf->segment_fill);
 	debug("res %d\n", res);
 	
-	res = lsa_cs_init(&conf->lsa_closed_status);
+	res = lsa_lcs_init(&conf->lsa_closed_status);
 	debug("res %d\n", res);
 
 	res = lsa_gc_init(&conf->lsa_gc, conf);

@@ -346,7 +346,7 @@ lsa_lcs_uptodate_done(struct segment_buffer *segbuf,
 }
 
 int
-lsa_cs_init(struct lsa_closed_segment *lcs)
+lsa_lcs_init(struct lsa_closed_segment *lcs)
 {
 	int order = 2;
 	int max = ((PAGE_SIZE<<order) - sizeof(lcs_ondisk_t))/sizeof(uint32_t), i;
@@ -402,7 +402,7 @@ lsa_cs_init(struct lsa_closed_segment *lcs)
 }
 
 int
-lsa_cs_exit(struct lsa_closed_segment *lcs)
+lsa_lcs_exit(struct lsa_closed_segment *lcs)
 {
 	raid5_conf_t *conf = container_of(lcs, raid5_conf_t, lsa_closed_status);
 	int i;
