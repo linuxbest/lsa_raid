@@ -9,6 +9,7 @@
 
 #include "lsa_segment.h"
 #include "lsa_segment_status.h"
+#include "lsa_segment_fill.h"
 
 /*
  * LSA segment operations
@@ -101,7 +102,7 @@ __lsa_column_data_bio_init(struct column_data *data,
 	data->req.bi_flags    = 1 << BIO_UPTODATE;
 	data->req.bi_idx      = 0;
 	data->req.bi_next     = NULL;
-	data->req.bi_io_vec   = &data->vec[i];
+	data->req.bi_io_vec   = data->vec;
 	data->req.bi_vcnt     = LSA_BLOCKDEPTH;
 	data->req.bi_max_vecs = LSA_BLOCKDEPTH;
 	data->req.bi_size     = (1<<segbuf->seg->shift) * LSA_BLOCKDEPTH;
@@ -468,10 +469,6 @@ lsa_segment_dirty(struct lsa_segment *seg, struct segment_buffer *segbuf)
 
 	return 0;
 }
-
-static int
-__lsa_segment_fill_write_done(struct lsa_segment *seg, 
-		struct segment_buffer *segbuf);
 
 static int
 lsa_segment_done_callback(struct segment_buffer *segbuf,

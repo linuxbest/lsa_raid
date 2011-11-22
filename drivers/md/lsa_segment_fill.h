@@ -20,4 +20,10 @@ int __lsa_segment_write_put(struct segment_buffer *segbuf);
 int lsa_segfill_find_meta(struct lsa_segment_fill *segfill, 
 		struct lsa_segfill_meta *meta);
 
+void lsa_segment_fill_update(struct lsa_segment_fill *segfill,
+		uint32_t meta_id, int col, uint32_t seq);
+int
+__lsa_segment_fill_write_done(struct lsa_segment *seg,
+		struct segment_buffer *segbuf);
+
 #endif

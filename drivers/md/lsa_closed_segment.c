@@ -11,6 +11,7 @@
 #include "lsa_segment.h"
 #include "lsa_dirtory.h"
 #include "lsa_segment_status.h"
+#include "lsa_segment_fill.h"
 #include "lsa_closed_segment.h"
 
 #define LSA_LCS_STS "segment_closed"
@@ -299,10 +300,6 @@ lsa_lcs_select(struct lsa_closed_segment *lcs)
 	return sel;
 }
  
-static void
-lsa_segment_fill_update(struct lsa_segment_fill *segfill,
-		uint32_t meta_id, int col, uint32_t seq);
-
 static int 
 lsa_lcs_recover(struct lsa_closed_segment *lcs)
 {

@@ -240,7 +240,7 @@ __lsa_track_close(struct lsa_segment_fill *segfill)
 			track->buf->total, track->buf->sum);
 }
 
-static int
+int
 __lsa_segment_fill_write_done(struct lsa_segment *seg,
 		struct segment_buffer *segbuf)
 {
@@ -631,7 +631,7 @@ static const struct file_operations proc_segfill_fops = {
 	.owner = THIS_MODULE,
 };
 
-static void
+void
 lsa_segment_fill_update(struct lsa_segment_fill *segfill,
 		uint32_t meta_id, int col, uint32_t seq)
 {
