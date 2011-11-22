@@ -1958,7 +1958,7 @@ lsa_bio_tasklet(unsigned long data)
 		debug("bio %llu, %u, %s, full %d\n", (unsigned long long)bi->bi_sector,
 				bi->lt, bio_data_dir(bi) == WRITE ? "WRT" : "RDT", full);
 		if (bio_data_dir(bi) == WRITE)
-			lsa_segment_fill_write(&conf->segment_fill, bi, bi->lt);
+			lsa_segment_fill_write(&conf->segment_fill, bi);
 		else {
 			/* TODO adding cache search segment */
 			lsa_page_read(conf, bi, bi->lt);

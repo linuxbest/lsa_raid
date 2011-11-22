@@ -366,8 +366,7 @@ __lsa_segment_fill_append(struct lsa_segment_fill *segfill, struct lsa_bio *bi,
 }
 
 int
-lsa_segment_fill_write(struct lsa_segment_fill *segfill,
-		struct lsa_bio *bi, uint32_t log_track_id)
+lsa_segment_fill_write(struct lsa_segment_fill *segfill, struct lsa_bio *bi)
 {
 	unsigned long flags;
 	int res;
@@ -376,12 +375,12 @@ lsa_segment_fill_write(struct lsa_segment_fill *segfill,
 		container_of(segfill, raid5_conf_t, segment_fill);
 
 	spin_lock_irqsave(&segfill->lock, flags);
-	res = __lsa_segment_fill_append(segfill, bi, &cookie, log_track_id);
+	res = __lsa_segment_fill_append(segfill, bi, &cookie, bi->lt);
 	spin_unlock_irqrestore(&segfill->lock, flags);
 
 	cookie->done = __lsa_track_cookie_update;
-	res = lsa_entry_find_or_create(&conf->lsa_dirtory, log_track_id, cookie);
-	debug("ltid %x, res %d\n", log_track_id, res);
+	res = lsa_entry_find_or_create(&conf->lsa_dirtory, bi->lt, cookie);
+	debug("ltid %x, res %d\n", bi->lt, res);
 	if (res != -EINPROGRESS) {
 		__lsa_track_cookie_update(cookie);
 	}

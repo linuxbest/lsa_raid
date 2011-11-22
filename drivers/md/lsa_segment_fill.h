@@ -11,19 +11,13 @@ struct lsa_segfill_meta {
 	unsigned long *bitmap;
 };
 
-int
-lsa_segment_fill_init(struct lsa_segment_fill *segfill);
-int
-lsa_segment_fill_exit(struct lsa_segment_fill *segfill);
+int lsa_segment_fill_init(struct lsa_segment_fill *segfill);
+int lsa_segment_fill_exit(struct lsa_segment_fill *segfill);
 
-int
-lsa_segfill_find_meta(struct lsa_segment_fill *segfill, 
+int lsa_segment_fill_write(struct lsa_segment_fill *segfill, struct lsa_bio *bi);
+int __lsa_segment_write_put(struct segment_buffer *segbuf);
+
+int lsa_segfill_find_meta(struct lsa_segment_fill *segfill, 
 		struct lsa_segfill_meta *meta);
-int
-lsa_segment_fill_write(struct lsa_segment_fill *segfill,
-		struct lsa_bio *bi, uint32_t log_track_id);
-int 
-__lsa_segment_write_put(struct segment_buffer *segbuf);
-
 
 #endif
