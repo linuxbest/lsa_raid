@@ -4,7 +4,13 @@ target-objs     += targ_md_buf.o
 
 obj-m += target.o
 obj-m  += raid456.o
-raid456-y       += raid5.o lsa_segment.o lsa_segment_status.o lsa_dirtory.o lsa_closed_segment.o
+
+raid456-y += raid5.o 
+raid456-y += lsa_segment.o 
+raid456-y += lsa_segment_status.o 
+raid456-y += lsa_segment_fill.o 
+raid456-y += lsa_dirtory.o 
+raid456-y += lsa_closed_segment.o
 
 EXTRA_CFLAGS += -DGITVERSION=\"${GITVERSION}\"
 EXTRA_CFLAGS += -I$(src)/../../include

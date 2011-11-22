@@ -1,8 +1,10 @@
 #ifndef _LOG_STRUCTED_ARRAY_
 #define _LOG_STRUCTED_ARRAY_
 
-#define LSA_BLOCKSIZE  (1<<16)
-#define LSA_BLOCKDEPTH (4)
+#define LSA_BLOCKSIZE        (1<<16)
+#define LSA_BLOCKDEPTH_SHIFT (2)
+#define LSA_BLOCKDEPTH_MASK  (LSA_BLOCKDEPTH-1)
+#define LSA_BLOCKDEPTH       (1<<LSA_BLOCKDEPTH_SHIFT)
 
 typedef struct {
 	uint32_t log_track_id; /* logic track address */
