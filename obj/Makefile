@@ -7,16 +7,16 @@ QP_INCDIR  = $(QPC)/include
 QEP_SRCDIR = $(QPC)/qep/source
 QF_SRCDIR  = $(QPC)/qf/source
 QS_SRCDIR  = $(QPC)/qs/source
-QP_PRTDIR  = $(QPC)/ports/lkm/
+RAID5_DIR  = $(ROOT)/dm-raid456/src/
 
-EXTRA_CFLAGS += -I$(QP_PRTDIR) -I$(QP_INCDIR) -I${QF_SRCDIR}
+EXTRA_CFLAGS += -I$(RAID5_DIR) -I$(QP_INCDIR) -I${QF_SRCDIR}
 
 CONF = spy
 
 vpath-y += ${QF_SRCDIR}
 vpath-y += ${QS_SRCDIR}
 vpath-y += ${QEP_SRCDIR}
-vpath-y += $(ROOT)/dm-raid456/src/
+vpath-y += ${RAID5_DIR}
 
 ifneq ($(KERNELRELEASE),)
 	obj-m := lsa.o
