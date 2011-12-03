@@ -16,6 +16,7 @@ CONF = spy
 vpath-y += ${QF_SRCDIR}
 vpath-y += ${QS_SRCDIR}
 vpath-y += ${QEP_SRCDIR}
+vpath-y += $(ROOT)/dm-raid456/src/
 
 ifneq ($(KERNELRELEASE),)
 	obj-m := lsa.o
