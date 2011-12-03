@@ -252,21 +252,11 @@ __lsa_segment_fill_write_done(struct lsa_segment *seg,
 	if (segbuf_checkpoint(segbuf)) {
 #if 0
 		lsa_lcs_commit(&conf->lsa_closed_status, 
-				segbuf->seg_id,
-				segbuf->meta,
-				segbuf->seq);
+				segbuf);
 #endif
 	}
 	lsa_segment_release(segbuf, 0);
 
-	return 0;
-}
-
-static int
-__lsa_segment_need_checkpoint(struct lsa_segment_fill *segfill,
-		raid5_conf_t *conf)
-{
-	/* TODO */
 	return 0;
 }
 
@@ -281,7 +271,7 @@ __lsa_segment_fill_close(struct lsa_segment_fill *segfill)
 	__lsa_track_close(segfill);
 #if 0
 	res = lsa_lcs_insert(&conf->lsa_closed_status,
-			segfill->segbuf->seg_id);
+			segfill->segbuf);
 	if (res == LCS_NEED_CHECKPOINT) {
 		set_segbuf_checkpoint(segfill->segbuf);
 		lsa_dirtory_checkpoint(&conf->lsa_dirtory);
