@@ -3,14 +3,33 @@
 #include "bsp.h"
 #include "md_raid5.h"
 
+static QEvent const *l_cacheQueueSto[64];
+static QSubscrList  l_subscrSto[MAX_PUB_SIG];
+
+union SmallEvents {
+	void   *e0;
+	uint8_t e1[sizeof(QEvent)];
+};
+
+union MediumEvents {
+	void   *e0;
+	uint8_t e1[sizeof(CacheRWEvt)];
+};
+
 static struct event_pool {
 	void *sto;
 	int pool_size;
 	int event_size;
-} EventPool[2];
-
-static QEvent const *l_cacheQueueSto[64];
-static QSubscrList  l_subscrSto[MAX_PUB_SIG];
+} EventPool[2] = {
+	[0] = {
+		.pool_size = 1024,
+		.event_size = sizeof(union SmallEvents),
+	},
+	[1] = {
+		.pool_size = 1024,
+		.event_size = sizeof(union MediumEvents),
+	},
+};
 
 int lsa_raid_init(void)
 {
@@ -23,7 +42,9 @@ int lsa_raid_init(void)
 	
 	for (i = 0; i < Q_DIM(EventPool); i++) {
 		struct event_pool *ep = &EventPool[i];
-		QF_poolInit(ep->sto, ep->pool_size, ep->event_size);
+		int tlen = ep->pool_size * ep->event_size;
+		ep->sto = kmalloc(tlen, GFP_KERNEL);
+		QF_poolInit(ep->sto, tlen, ep->event_size);
 	}
 	QF_psInit(l_subscrSto, Q_DIM(l_subscrSto));   /* init publish-subscribe */
 
@@ -48,4 +69,9 @@ int lsa_raid_init(void)
 void
 lsa_raid_exit(void)
 {
+	int i;
+	for (i = 0; i < Q_DIM(EventPool); i++) {
+		struct event_pool *ep = &EventPool[i];
+		kfree(ep->sto);
+	}
 }

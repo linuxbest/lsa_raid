@@ -27,6 +27,7 @@ void Cache_ctor(void)
 /*..........................................................................*/
 QState Cache_initial(Cache *me, QEvent const *e)
 {
+	QActive_subscribe((QActive *)me, TERMINATE_SIG);
 	QActive_subscribe((QActive *)me, CACHE_WRITE_SIG);
 	QActive_subscribe((QActive *)me, CACHE_READ_SIG);
 

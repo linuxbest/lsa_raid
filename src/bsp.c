@@ -4,7 +4,8 @@
 
 #include "qp_port.h"
 
-//#include "dpp.h"
+#include "qp_lsa.h"
+#include "md_raid5.h"
 #include "bsp.h"
 
 #ifdef Q_SPY
@@ -108,6 +109,8 @@ uint8_t QS_onStartup(void const *arg)
     QS_initBuf(qsBuf, QS_SPY_SIZE);
 
     QS_FILTER_ON(QS_ALL_RECORDS);
+
+    QS_FILTER_OFF(QS_QF_TICK);
   
     QS_BEGIN_NOCRIT_(QS_QEP_RESERVED0, (void *)0, (void *)0)
 	    QS_U8_(QS_TIME_SIZE);
@@ -152,13 +155,16 @@ void BSP_busyDelay(void)
 /*..........................................................................*/
 int module_qp_init(void)
 {
-	//main(0, NULL);
+	lsa_raid_init();
+	raid5_init();
 	return 0;
 }
 /*..........................................................................*/
 void module_qp_exit(void)
 {
 	QF_exit();
+	lsa_raid_exit();
+	raid5_exit();
 }
 
 /*..........................................................................*/
