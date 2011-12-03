@@ -11,6 +11,9 @@
 
 #include "md_raid5.h"
 
+struct raid5_private_data {
+};
+
 static int raid5_make_request(struct request_queue *q, struct bio * bi)
 {
 	/* TODO */
@@ -151,6 +154,3 @@ void raid5_exit(void)
 {
 	unregister_md_personality(&raid5_personality);
 }
-
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("RAID4/5/6 (striping with parity) personality for MD");

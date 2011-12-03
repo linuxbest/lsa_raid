@@ -13,7 +13,7 @@ static QState Cache_idle   (Cache *me, QEvent const *e);
 
 static Cache l_cache;
 
-QActive * const AO_Cache = (QActive *)&l_cache;
+QActive * const AO_cache = (QActive *)&l_cache;
 
 /*..........................................................................*/
 void Cache_ctor(void)
