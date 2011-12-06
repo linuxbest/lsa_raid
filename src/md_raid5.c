@@ -79,9 +79,9 @@ raid5_run(mddev_t *mddev)
 	raid5_conf_t *conf;
 	int ret;
 	
-	if (mddev->chunk_sectors == 128) {
-		printk(KERN_ERR "md/raid5:%s: chunk size must be 128.\n",
-		       mdname(mddev));
+	if (mddev->chunk_sectors != 128) {
+		printk(KERN_ERR "md/raid5:%s: invalid chunk size %d.\n",
+		       mdname(mddev), mddev->chunk_sectors);
 		return -EINVAL;
 	}
 	blk_queue_max_hw_sectors(mddev->queue, mddev->chunk_sectors);
