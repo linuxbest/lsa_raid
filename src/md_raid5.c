@@ -13,13 +13,19 @@
 #include "qp_port.h"
 #include "qp_lsa.h"
 
+enum {
+	BLOCK_SECTORS = 128,
+};
 struct raid5_private_data {
 	spinlock_t device_lock;
+	short max_degraded;
+	short raid_disks;
 };
 
 static int
 raid5_make_request(struct request_queue *q, struct bio * bi)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -27,12 +33,14 @@ raid5_make_request(struct request_queue *q, struct bio * bi)
 static void 
 raid5_unplug_device(struct request_queue *q)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 }
 
 static int 
 raid5_congested(void *data, int bits)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -40,7 +48,14 @@ raid5_congested(void *data, int bits)
 static sector_t
 raid5_size(mddev_t *mddev, sector_t sectors, int raid_disks)
 {
-	return 0;
+	raid5_conf_t *conf = mddev->private;
+	if (!sectors)
+		sectors = mddev->dev_sectors;
+	if (!raid_disks)
+		raid_disks = conf->raid_disks;
+	sectors &= ~((sector_t)mddev->chunk_sectors - 1);
+	sectors &= ~((sector_t)mddev->new_chunk_sectors - 1);
+	return sectors * (raid_disks - conf->max_degraded);
 }
 
 static raid5_conf_t *
@@ -49,13 +64,18 @@ setup_conf(mddev_t *mddev)
 	raid5_conf_t *conf;
 	
 	if (mddev->new_level != 5) {
-		printk(KERN_ERR "md/raid5:%s raid level not set to 5 (%d)\n",
+		printk(KERN_ERR "md/raid5:%s raid level not set to 5 (%d).\n",
 		       mdname(mddev), mddev->new_level);
 		return ERR_PTR(-EIO);
 	}
-	if (mddev->new_chunk_sectors != 128) {
-		printk(KERN_ERR "md/raid5:%s invalid chunk size %d\n",
+	if (mddev->new_chunk_sectors != BLOCK_SECTORS) {
+		printk(KERN_ERR "md/raid5:%s invalid chunk size %d.\n",
 		       mdname(mddev), mddev->new_chunk_sectors << 9);
+		return ERR_PTR(-EINVAL);
+	}
+	if (mddev->chunk_sectors != BLOCK_SECTORS) {
+		printk(KERN_ERR "md/raid5:%s: invalid chunk size %d.\n",
+		       mdname(mddev), mddev->chunk_sectors);
 		return ERR_PTR(-EINVAL);
 	}
 	
@@ -64,6 +84,9 @@ setup_conf(mddev_t *mddev)
 		return NULL;
 	spin_lock_init(&conf->device_lock);
 
+	conf->max_degraded = 1;
+	conf->raid_disks   = mddev->raid_disks;
+	
 	return conf;
 }
 
@@ -77,21 +100,16 @@ static int
 raid5_run(mddev_t *mddev)
 {
 	raid5_conf_t *conf;
-	int ret;
 	
-	if (mddev->chunk_sectors != 128) {
-		printk(KERN_ERR "md/raid5:%s: invalid chunk size %d.\n",
-		       mdname(mddev), mddev->chunk_sectors);
-		return -EINVAL;
-	}
-	blk_queue_max_hw_sectors(mddev->queue, mddev->chunk_sectors);
-	
-	if (mddev->private == NULL) {
+	if (mddev->private == NULL)
 		conf = setup_conf(mddev);
-	} else 
+	else 
 		conf = mddev->private;
 	if (IS_ERR(conf))
 		return PTR_ERR(conf);
+	
+	mddev->private = conf;
+	blk_queue_max_hw_sectors(mddev->queue, mddev->chunk_sectors);
 	
 	mddev->queue->queue_lock = &conf->device_lock;
 	mddev->queue->unplug_fn = raid5_unplug_device;
@@ -117,22 +135,26 @@ raid5_stop(mddev_t *mddev)
 static sector_t
 raid5_sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	return 0;
 }
 
 static void
 raid5_status(struct seq_file *seq, mddev_t *mddev)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 }
 
 static void
 raid5_error(mddev_t *mddev, mdk_rdev_t *rdev)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 }
 
 static int
 raid5_spare_active(mddev_t *mddev)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -141,6 +163,7 @@ static int
 raid5_remove_disk(mddev_t *mddev, int number)
 {
 	raid5_conf_t *conf = mddev->private;
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -149,6 +172,7 @@ static int
 raid5_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
 {
 	raid5_conf_t *conf = mddev->private;
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -156,6 +180,7 @@ raid5_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
 static int
 raid5_resize(mddev_t *mddev, sector_t sectors)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -164,6 +189,7 @@ static int
 raid5_start_reshape(mddev_t *mddev)
 {
 	raid5_conf_t *conf = mddev->private;
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -176,17 +202,20 @@ raid5_finish_reshape(mddev_t *mddev)
 {
 	raid5_conf_t *conf = mddev->private;
 	/* TODO */
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 }
 
 static void 
 raid5_quiesce(mddev_t *mddev, int state)
 {
 	/* TODO */
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 }
 
 static int
 raid5_check_reshape(mddev_t *mddev)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return 0;
 }
@@ -194,6 +223,7 @@ raid5_check_reshape(mddev_t *mddev)
 static void *
 raid5_takeover(mddev_t *mddev)
 {
+	pr_debug("%s:%d\n", __FILE__, __LINE__);
 	/* TODO */
 	return ERR_PTR(-EINVAL);
 }
