@@ -9,8 +9,8 @@
 #include "md.h"
 #include "bitmap.h"
 
-#include "md_raid5.h"
 #include "qp_port.h"
+#include "md_raid5.h"
 #include "qp_lsa.h"
 
 enum {
@@ -21,22 +21,112 @@ struct raid5_private_data {
 	spinlock_t device_lock;
 	short max_degraded;
 	short raid_disks;
+	short chunk_sectors;
 };
+
+struct raid5_bio_context {
+	struct bio *bi;
+	unsigned int offset;
+	unsigned int idx;
+	unsigned int total;
+};
+
+static void
+raid5_bio_buf_init(struct raid5_bio_context *ctx, struct bio *bi)
+{
+	bi->bi_phys_segments = 1;
+	ctx->bi     = bi;
+	ctx->offset = 0;
+	ctx->idx    = 0;
+	ctx->total  = bi->bi_size;
+}
+
+static void
+raid5_bio_buf_add(struct raid5_bio_context *ctx, int len, int vec_len)
+{
+	ctx->offset += len;
+	ctx->total  -= len;
+	if (ctx->offset >= vec_len) {
+		ctx->offset = 0;
+		ctx->idx ++;
+	}
+}
+
+static int
+raid5_bio_buf_next(struct raid5_bio_context *ctx, struct raid5_bio_buf *buf)
+{
+	struct bio_vec *vec = bio_iovec_idx(ctx->bi, ctx->idx);
+	int len = min_t(int, vec->bv_len - ctx->offset, STRIPE_SIZE);
+	
+	if (ctx->total <= 0)
+		return -1;
+	if (ctx->idx > ctx->bi->bi_vcnt)
+		return -2;
+	
+	buf->bi     = ctx->bi;
+	buf->page   = vec->bv_page;
+	buf->offset = vec->bv_offset + ctx->offset;
+	buf->length = len;
+
+	raid5_bio_buf_add(ctx, len, vec->bv_len);
+	ctx->bi->bi_phys_segments ++;
+	
+	/* done */
+	if (len == STRIPE_SIZE || ctx->total == 0)
+		return 0;
+	
+	vec = bio_iovec_idx(ctx->bi, ctx->idx);
+	len = min_t(int, vec->bv_len - ctx->offset, len);
+	buf->page_next   = vec->bv_page;
+	buf->offset_next = vec->bv_offset + ctx->offset;
+	buf->length_next = len;
+	raid5_bio_buf_add(ctx, len, vec->bv_len);
+	
+	return 0;
+}
 
 static int
 raid5_make_request(struct request_queue *q, struct bio *bi)
 {
 	mddev_t *mddev = q->queuedata;
 	raid5_conf_t *conf = mddev->private;
-	CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_SIG);
+	sector_t blknr = bi->bi_sector;
+	sector_t offset = bi->bi_sector;
+	sector_t remainning = bi->bi_size >> SECTOR_SHIFT;
+	int res = 0;
+	struct raid5_bio_context ctx;
 	
-	pe->track = 0;
-	pe->offset = 0;
-	pe->len = 0;
-	QACTIVE_POST(AO_cache, (QEvent *)pe, conf);
+	if (bio_rw_flagged(bi, BIO_RW_BARRIER)) {
+		bio_endio(bi, -EOPNOTSUPP);
+		return res;
+	}
+
+	raid5_bio_buf_init(&ctx, bi);
+	do {
+		CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_SIG);
+		sector_t split_io = STRIPE_SECTORS;
+		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
+		sector_t len      = min_t(sector_t, remainning, boundary);
+		
+		sector_t track    = blknr & ~((sector_t)STRIPE_SECTORS-1);
+		sector_div(track, conf->chunk_sectors);
+		
+		pe->track  = (uint32_t)track;
+		pe->offset = (uint16_t)(blknr & (STRIPE_SECTORS-1));
+		pe->len    = (uint16_t)len;
+		pe->flags  = bio_data_dir(bi) | BIO_BUF;
+		pe->conf   = conf;
+		res = raid5_bio_buf_next(&ctx, &pe->buf.bio);
+		BUG_ON(res != 0);
+		
+		QACTIVE_POST(AO_cache, (QEvent *)pe, AO_raid5);
+		remainning -= len;
+	} while (remainning);
 	
+	BUG_ON(ctx.total != 0);
+
 	bio_endio(bi, 0);
-	return 0;
+	return res;
 }
 
 static void 
@@ -93,7 +183,8 @@ setup_conf(mddev_t *mddev)
 
 	conf->max_degraded = 1;
 	conf->raid_disks   = mddev->raid_disks;
-	
+	conf->chunk_sectors= mddev->chunk_sectors;
+
 	return conf;
 }
 

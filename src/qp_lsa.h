@@ -16,12 +16,7 @@ void Raid5_ctor(void);
 extern QActive * const AO_cache;
 extern QActive * const AO_raid5;
 
-typedef struct CacheRWEvtTag {
-	QEvent super;
-	uint32_t track;
-	uint16_t offset;
-	uint16_t len;
-} CacheRWEvt;
+typedef struct CacheRWEvtTag CacheRWEvt;
 
 int  lsa_raid_init(void);
 void lsa_raid_exit(void);
