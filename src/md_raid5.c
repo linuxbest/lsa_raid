@@ -16,6 +16,7 @@
 enum {
 	BLOCK_SECTORS = 128,
 };
+
 struct raid5_private_data {
 	spinlock_t device_lock;
 	short max_degraded;
@@ -23,25 +24,22 @@ struct raid5_private_data {
 };
 
 static int
-raid5_make_request(struct request_queue *q, struct bio * bi)
+raid5_make_request(struct request_queue *q, struct bio *bi)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	bio_endio(bi, 0);
 	return 0;
 }
 
 static void 
 raid5_unplug_device(struct request_queue *q)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 }
 
 static int 
 raid5_congested(void *data, int bits)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	/* nothing */
 	return 0;
 }
 
@@ -135,62 +133,54 @@ raid5_stop(mddev_t *mddev)
 static sector_t
 raid5_sync_request(mddev_t *mddev, sector_t sector_nr, int *skipped, int go_faster)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
+	WARN_ON(1);
 	return 0;
 }
 
 static void
 raid5_status(struct seq_file *seq, mddev_t *mddev)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
+	WARN_ON(1);
 }
 
 static void
 raid5_error(mddev_t *mddev, mdk_rdev_t *rdev)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
+	WARN_ON(1);
 }
 
 static int
 raid5_spare_active(mddev_t *mddev)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
 static int
 raid5_remove_disk(mddev_t *mddev, int number)
 {
-	raid5_conf_t *conf = mddev->private;
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
 static int
 raid5_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
 {
-	raid5_conf_t *conf = mddev->private;
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
 static int
 raid5_resize(mddev_t *mddev, sector_t sectors)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
 static int
 raid5_start_reshape(mddev_t *mddev)
 {
-	raid5_conf_t *conf = mddev->private;
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
@@ -200,31 +190,26 @@ raid5_start_reshape(mddev_t *mddev)
 static void 
 raid5_finish_reshape(mddev_t *mddev)
 {
-	raid5_conf_t *conf = mddev->private;
-	/* TODO */
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
+	WARN_ON(1);
 }
 
 static void 
 raid5_quiesce(mddev_t *mddev, int state)
 {
-	/* TODO */
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
+	WARN_ON(1);
 }
 
 static int
 raid5_check_reshape(mddev_t *mddev)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return 0;
 }
 
 static void *
 raid5_takeover(mddev_t *mddev)
 {
-	pr_debug("%s:%d\n", __FILE__, __LINE__);
-	/* TODO */
+	WARN_ON(1);
 	return ERR_PTR(-EINVAL);
 }
 
