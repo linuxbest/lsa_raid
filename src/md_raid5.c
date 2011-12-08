@@ -26,6 +26,15 @@ struct raid5_private_data {
 static int
 raid5_make_request(struct request_queue *q, struct bio *bi)
 {
+	mddev_t *mddev = q->queuedata;
+	raid5_conf_t *conf = mddev->private;
+	CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_SIG);
+	
+	pe->track = 0;
+	pe->offset = 0;
+	pe->len = 0;
+	QACTIVE_POST(AO_cache, (QEvent *)pe, conf);
+	
 	bio_endio(bi, 0);
 	return 0;
 }
@@ -236,7 +245,7 @@ static struct mdk_personality raid5_personality =
 	.takeover	= raid5_takeover,
 };
 
-int raid5_init(void)
+int  raid5_init(void)
 {
 	register_md_personality(&raid5_personality);
 	return 0;
@@ -245,4 +254,58 @@ int raid5_init(void)
 void raid5_exit(void)
 {
 	unregister_md_personality(&raid5_personality);
+}
+
+typedef struct Raid5Tag {
+	QActive super;
+	
+} Raid5;
+
+static QState Raid5_initial (Raid5 *me, QEvent const *e);
+static QState Raid5_final   (Raid5 *me, QEvent const *e);
+static QState Raid5_idle    (Raid5 *me, QEvent const *e);
+
+static Raid5 l_raid5;
+QActive * const AO_raid5 = (QActive *)&l_raid5;
+
+/*..........................................................................*/
+void Raid5_ctor(void)
+{
+	Raid5 *me = &l_raid5;
+	QActive_ctor(&me->super, (QStateHandler)(Raid5_initial));
+}
+
+/* HSM definition ----------------------------------------------------------*/
+/*..........................................................................*/
+static QState Raid5_initial(Raid5 *me, QEvent const *e)
+{
+	QActive_subscribe((QActive *)me, TERMINATE_SIG);
+
+	QS_OBJ_DICTIONARY(&l_raid5);
+	
+	QS_FUN_DICTIONARY(&Raid5_initial);
+	QS_FUN_DICTIONARY(&Raid5_final);
+	QS_FUN_DICTIONARY(&Raid5_initial);
+
+	return Q_TRAN(&Raid5_idle);
+}
+/*..........................................................................*/
+static QState Raid5_final(Raid5 *me, QEvent const *e)
+{
+	switch (e->sig) {
+	case Q_ENTRY_SIG:
+		QActive_stop(&me->super);
+		return Q_HANDLED();
+	}
+	return Q_SUPER(&QHsm_top);	
+}
+/*..........................................................................*/
+static QState Raid5_idle(Raid5 *me, QEvent const *e)
+{
+	switch (e->sig) {
+	case TERMINATE_SIG:
+		return Q_TRAN(&Raid5_final);
+	}
+
+	return Q_SUPER(&QHsm_top);
 }

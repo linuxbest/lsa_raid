@@ -4,7 +4,8 @@
 #include "md_raid5.h"
 
 static QEvent const *l_cacheQueueSto[64];
-static QSubscrList  l_subscrSto[MAX_PUB_SIG];
+static QEvent const *l_raid5QueueSto[64];
+static QSubscrList l_subscrSto[MAX_PUB_SIG];
 
 union SmallEvents {
 	void   *e0;
@@ -36,6 +37,8 @@ int lsa_raid_init(void)
 	int i;
 	
 	Cache_ctor();
+	Raid5_ctor();
+	
 	BSP_init(0, NULL);
 	
 	QF_init();
@@ -52,12 +55,17 @@ int lsa_raid_init(void)
 	QS_OBJ_DICTIONARY(&EventPool[1]);
 
 	QS_SIG_DICTIONARY(TERMINATE_SIG,   0);
-	QS_SIG_DICTIONARY(CACHE_WRITE_SIG, 0);
-	QS_SIG_DICTIONARY(CACHE_READ_SIG,  0);
-
+	QS_SIG_DICTIONARY(CACHE_RW_SIG, 0);
+	
 	QActive_start(AO_cache,
 		      1,
 		      l_cacheQueueSto, Q_DIM(l_cacheQueueSto),
+		      (void *)0, 0,
+		      (QEvent *)0);
+
+	QActive_start(AO_raid5,
+		      2,
+		      l_raid5QueueSto, Q_DIM(l_raid5QueueSto),
 		      (void *)0, 0,
 		      (QEvent *)0);
 	

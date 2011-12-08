@@ -25,11 +25,10 @@ void Cache_ctor(void)
 
 /* HSM definition ----------------------------------------------------------*/
 /*..........................................................................*/
-QState Cache_initial(Cache *me, QEvent const *e)
+static QState Cache_initial(Cache *me, QEvent const *e)
 {
 	QActive_subscribe((QActive *)me, TERMINATE_SIG);
-	QActive_subscribe((QActive *)me, CACHE_WRITE_SIG);
-	QActive_subscribe((QActive *)me, CACHE_READ_SIG);
+	QActive_subscribe((QActive *)me, CACHE_RW_SIG);
 
 	QS_OBJ_DICTIONARY(&l_cache);
 	QS_OBJ_DICTIONARY(&l_cache.head);
@@ -38,13 +37,12 @@ QState Cache_initial(Cache *me, QEvent const *e)
 	QS_FUN_DICTIONARY(&Cache_final);
 	QS_FUN_DICTIONARY(&Cache_idle);
 	
-	QS_SIG_DICTIONARY(CACHE_WRITE_SIG, &l_cache);
-	QS_SIG_DICTIONARY(CACHE_READ_SIG,  &l_cache);
+	QS_SIG_DICTIONARY(CACHE_RW_SIG, &l_cache);
 	
 	return Q_TRAN(&Cache_idle);
 }
 /*..........................................................................*/
-QState Cache_final(Cache *me, QEvent const *e)
+static QState Cache_final(Cache *me, QEvent const *e)
 {
 	switch (e->sig) {
 	case Q_ENTRY_SIG:
@@ -54,7 +52,7 @@ QState Cache_final(Cache *me, QEvent const *e)
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
-QState Cache_idle(Cache *me, QEvent const *e)
+static QState Cache_idle(Cache *me, QEvent const *e)
 {
 	switch (e->sig) {
 	case TERMINATE_SIG:
