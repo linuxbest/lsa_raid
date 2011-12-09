@@ -104,7 +104,7 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 
 	raid5_bio_buf_init(&ctx, bi);
 	do {
-		CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_SIG);
+		CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_REQUEST_SIG);
 		sector_t split_io = STRIPE_SECTORS;
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
 		sector_t len      = min_t(sector_t, remainning, boundary);
@@ -118,6 +118,7 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		pe->len    = (uint16_t)len;
 		pe->flags  = bio_data_dir(bi) | BIO_BUF;
 		pe->conf   = conf;
+		pe->ao     = AO_raid5;
 		res = raid5_bio_buf_next(&ctx, &pe->buf.bio);
 		BUG_ON(res != 0);
 		QACTIVE_POST(AO_cache, (QEvent *)pe, AO_raid5);
@@ -373,12 +374,14 @@ void Raid5_ctor(void)
 static QState Raid5_initial(Raid5 *me, QEvent const *e)
 {
 	QActive_subscribe((QActive *)me, TERMINATE_SIG);
-
+	
 	QS_OBJ_DICTIONARY(&l_raid5);
 	
 	QS_FUN_DICTIONARY(&Raid5_initial);
 	QS_FUN_DICTIONARY(&Raid5_final);
 	QS_FUN_DICTIONARY(&Raid5_initial);
+
+	QS_SIG_DICTIONARY(CACHE_RW_REPLY_SIG, &l_raid5);
 
 	return Q_TRAN(&Raid5_idle);
 }
@@ -393,12 +396,22 @@ static QState Raid5_final(Raid5 *me, QEvent const *e)
 	return Q_SUPER(&QHsm_top);	
 }
 /*..........................................................................*/
+static QState Raid5_reply(Raid5 *me, QEvent const *e);
+/*..........................................................................*/
 static QState Raid5_idle(Raid5 *me, QEvent const *e)
 {
 	switch (e->sig) {
 	case TERMINATE_SIG:
 		return Q_TRAN(&Raid5_final);
+	case CACHE_RW_REPLY_SIG:
+		return Raid5_reply(me, e);
 	}
 
+	return Q_SUPER(&QHsm_top);
+}
+/*..........................................................................*/
+static QState Raid5_reply(Raid5 *me, QEvent const *e)
+{
+	/* TODO */
 	return Q_SUPER(&QHsm_top);
 }

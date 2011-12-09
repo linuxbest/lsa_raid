@@ -31,6 +31,16 @@ struct CacheRWEvtTag {
 		} tgt;
 	} buf;
 	raid5_conf_t *conf;
+	QActive      *ao;
+};
+struct CacheRWRlyTag {
+	QEvent  super;
+	uint8_t errno;
+	union {
+		struct raid5_bio_reply {
+			struct bio *bi;
+		} bio;
+	} buf;
 };
 
 #define STRIPE_SS_SHIFT         16
