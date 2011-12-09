@@ -11,6 +11,7 @@ typedef struct CacheTag {
 static QState Cache_initial(Cache *me, QEvent const *e);
 static QState Cache_final  (Cache *me, QEvent const *e);
 static QState Cache_idle   (Cache *me, QEvent const *e);
+static QState Cache_rw     (Cache *me, QEvent const *e);
 
 static Cache l_cache;
 
@@ -36,6 +37,7 @@ static QState Cache_initial(Cache *me, QEvent const *e)
 	QS_FUN_DICTIONARY(&Cache_initial);
 	QS_FUN_DICTIONARY(&Cache_final);
 	QS_FUN_DICTIONARY(&Cache_idle);
+	QS_FUN_DICTIONARY(&Cache_rw);
 	
 	QS_SIG_DICTIONARY(CACHE_RW_REQUEST_SIG, &l_cache);
 	
@@ -51,8 +53,6 @@ static QState Cache_final(Cache *me, QEvent const *e)
 	}
 	return Q_SUPER(&QHsm_top);
 }
-/*..........................................................................*/
-static QState Cache_rw  (Cache *me, QEvent const *e);
 /*..........................................................................*/
 static QState Cache_idle(Cache *me, QEvent const *e)
 {

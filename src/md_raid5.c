@@ -388,6 +388,7 @@ typedef struct Raid5Tag {
 static QState Raid5_initial (Raid5 *me, QEvent const *e);
 static QState Raid5_final   (Raid5 *me, QEvent const *e);
 static QState Raid5_idle    (Raid5 *me, QEvent const *e);
+static QState Raid5_reply   (Raid5 *me, QEvent const *e);
 
 static Raid5 l_raid5;
 QActive * const AO_raid5 = (QActive *)&l_raid5;
@@ -410,6 +411,7 @@ static QState Raid5_initial(Raid5 *me, QEvent const *e)
 	QS_FUN_DICTIONARY(&Raid5_initial);
 	QS_FUN_DICTIONARY(&Raid5_final);
 	QS_FUN_DICTIONARY(&Raid5_initial);
+	QS_FUN_DICTIONARY(&Raid5_reply);
 
 	QS_SIG_DICTIONARY(CACHE_RW_REPLY_SIG, &l_raid5);
 
@@ -425,8 +427,6 @@ static QState Raid5_final(Raid5 *me, QEvent const *e)
 	}
 	return Q_SUPER(&QHsm_top);	
 }
-/*..........................................................................*/
-static QState Raid5_reply(Raid5 *me, QEvent const *e);
 /*..........................................................................*/
 static QState Raid5_idle(Raid5 *me, QEvent const *e)
 {
