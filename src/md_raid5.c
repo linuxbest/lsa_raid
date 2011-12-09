@@ -380,6 +380,8 @@ void raid5_exit(void)
 	unregister_md_personality(&raid5_personality);
 }
 
+/* Active Object -----------------------------------------------------------*/
+/*..........................................................................*/
 typedef struct Raid5Tag {
 	QActive super;
 	
