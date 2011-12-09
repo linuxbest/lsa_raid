@@ -10,10 +10,10 @@ enum {CacheRWEvt_BIO, CacheRWEvt_TGT};
 
 struct CacheRWEvtTag {
 	QEvent        super;
+	uint32_t      sector;
 	uint32_t      track;
 	uint16_t      offset;
 	uint16_t      len;
-	raid5_conf_t *conf;
 	uint8_t       flags;
 #define BIO_BUF (1<<7)
 #define TGT_BUF (1<<6)
@@ -30,6 +30,7 @@ struct CacheRWEvtTag {
 		struct {
 		} tgt;
 	} buf;
+	raid5_conf_t *conf;
 };
 
 #define STRIPE_SS_SHIFT         16

@@ -10,6 +10,10 @@ enum QP_LSA_Signals {
 	MAX_SIG,
 };
 
+enum {
+	QS_CACHE_RW = QS_USER,
+};
+
 void Cache_ctor(void);
 void Raid5_ctor(void);
 

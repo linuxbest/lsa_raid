@@ -1,5 +1,6 @@
 #include "qp_port.h"
 #include "qp_lsa.h"
+#include "md_raid5.h"
 
 typedef struct CacheTag {
 	QActive super;
@@ -52,11 +53,31 @@ static QState Cache_final(Cache *me, QEvent const *e)
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
+static QState Cache_rw  (Cache *me, QEvent const *e);
+/*..........................................................................*/
 static QState Cache_idle(Cache *me, QEvent const *e)
 {
 	switch (e->sig) {
 	case TERMINATE_SIG:
 		return Q_TRAN(&Cache_final);
+	case CACHE_RW_SIG:
+		return Cache_rw(me, e);
 	}
+	return Q_SUPER(&QHsm_top);
+}
+
+/*..........................................................................*/
+static QState Cache_rw(Cache *me, QEvent const *e)
+{
+	CacheRWEvt *pe = (CacheRWEvt *)e;
+	
+	QS_BEGIN(QS_CACHE_RW, QS_apObj_);
+	QS_U32_HEX(4, pe->sector);
+	QS_U32_HEX(4, pe->track);
+	QS_U32_HEX(2, pe->offset);
+	QS_U32_HEX(2, pe->len);
+	QS_U32_HEX(2, pe->flags);
+	QS_END();
+	
 	return Q_SUPER(&QHsm_top);
 }

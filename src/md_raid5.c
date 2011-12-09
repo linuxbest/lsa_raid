@@ -24,6 +24,7 @@ struct raid5_private_data {
 	short chunk_sectors;
 };
 
+/* RAID5 BIO context helper -------------------------------------------------*/
 struct raid5_bio_context {
 	struct bio *bi;
 	unsigned int offset;
@@ -84,7 +85,7 @@ raid5_bio_buf_next(struct raid5_bio_context *ctx, struct raid5_bio_buf *buf)
 	
 	return 0;
 }
-
+/*..........................................................................*/
 static int
 raid5_make_request(struct request_queue *q, struct bio *bi)
 {
@@ -110,7 +111,8 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		
 		sector_t track    = blknr & ~((sector_t)STRIPE_SECTORS-1);
 		sector_div(track, conf->chunk_sectors);
-		
+	
+		pe->sector = blknr;
 		pe->track  = (uint32_t)track;
 		pe->offset = (uint16_t)(blknr & (STRIPE_SECTORS-1));
 		pe->len    = (uint16_t)len;
@@ -118,9 +120,9 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		pe->conf   = conf;
 		res = raid5_bio_buf_next(&ctx, &pe->buf.bio);
 		BUG_ON(res != 0);
-		
 		QACTIVE_POST(AO_cache, (QEvent *)pe, AO_raid5);
 		remainning -= len;
+		blknr      += len;
 	} while (remainning);
 	
 	BUG_ON(ctx.total != 0);
