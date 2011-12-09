@@ -54,6 +54,12 @@ raid5_bio_buf_end(struct raid5_bio_context *ctx)
 	spin_lock_irqsave(&conf->device_lock, flags);
 	bi->bi_phys_segments --;
 	if (bi->bi_phys_segments == 0) {
+		QS_BEGIN(QS_BIO_DONE, QS_apObj_);
+		QS_U32_HEX(8, (uint32_t)bi);
+		QS_U32_HEX(8, bi->bi_sector);
+		QS_U32_HEX(4, bi->bi_size >> SECTOR_SHIFT);
+		QS_U32_HEX(1, bio_data_dir(bi));
+		QS_END();
 		bio_endio(bi, 0);
 	}
 	spin_unlock_irqrestore(&conf->device_lock, flags);
@@ -113,6 +119,13 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 	sector_t remainning = bi->bi_size >> SECTOR_SHIFT;
 	int res = 0;
 	struct raid5_bio_context ctx;
+	
+	QS_BEGIN(QS_BIO_REQ, QS_apObj_);
+	QS_U32_HEX(8, (uint32_t)bi);
+	QS_U32_HEX(8, blknr);
+	QS_U32_HEX(4, remainning);
+	QS_U32_HEX(1, bio_data_dir(bi));
+	QS_END();
 	
 	if (bio_rw_flagged(bi, BIO_RW_BARRIER)) {
 		bio_endio(bi, -EOPNOTSUPP);

@@ -14,6 +14,8 @@ enum QP_LSA_Signals {
 
 enum {
 	QS_CACHE_RW = QS_USER,
+	QS_BIO_REQ,
+	QS_BIO_DONE,
 };
 
 void Cache_ctor(void);
