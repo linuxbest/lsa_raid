@@ -72,10 +72,10 @@ static QState Cache_rw(Cache *me, QEvent const *e)
 	CacheRWEvt *pe = (CacheRWEvt *)e;
 	
 	QS_BEGIN(QS_CACHE_RW, QS_apObj_);
-	QS_U32_HEX(4, pe->sector);
-	QS_U32_HEX(4, pe->track);
-	QS_U32_HEX(2, pe->offset);
-	QS_U32_HEX(2, pe->len);
+	QS_U32_HEX(8, pe->sector);
+	QS_U32_HEX(8, pe->track);
+	QS_U32_HEX(4, pe->offset);
+	QS_U32_HEX(4, pe->len);
 	QS_U32_HEX(2, pe->flags);
 	QS_END();
 	
