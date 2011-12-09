@@ -69,7 +69,8 @@ int lsa_raid_init(void)
 		      l_raid5QueueSto, Q_DIM(l_raid5QueueSto),
 		      (void *)0, 0,
 		      (QEvent *)0);
-	
+
+	lsa_track_init();
 	QF_run();
 
 	return 0;

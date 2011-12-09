@@ -2,6 +2,8 @@
 #include "qp_lsa.h"
 #include "md_raid5.h"
 
+Q_DEFINE_THIS_FILE
+
 typedef struct CacheTag {
 	QActive super;
 	
@@ -79,6 +81,7 @@ static QState Cache_rw(Cache *me, QEvent const *e)
 	QS_U32_HEX(2, pe->flags);
 	QS_END();
 
+	/* doing a fake bio finish */
 	re->conf  = pe->conf;
 	re->errno = 0;
 	re->buf.bio.bi = pe->buf.bio.bi;

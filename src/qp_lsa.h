@@ -30,4 +30,9 @@ typedef struct CacheRWRlyTag CacheRWRly;
 int  lsa_raid_init(void);
 void lsa_raid_exit(void);
 
+int  lsa_track_init(void);
+void lsa_track_exit(void);
+
+QHsm * Track_ctor(uint32_t id);
+
 #endif
