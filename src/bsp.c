@@ -25,7 +25,7 @@ Q_DEFINE_THIS_MODULE(bsp)
 #ifdef Q_SPY
 static void QS_send(uint8_t const *block, uint16_t nBytes)
 {
-	if (np.dev)
+	if (np.dev && nBytes)
 		netpoll_send_udp(&np, block, nBytes);
 }
 static int idleThread(void *arg)
