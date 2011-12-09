@@ -26,6 +26,7 @@ struct raid5_private_data {
 
 /* RAID5 BIO context helper -------------------------------------------------*/
 struct raid5_bio_context {
+	raid5_conf_t *conf;
 	struct bio *bi;
 	unsigned int offset;
 	unsigned int idx;
@@ -33,13 +34,29 @@ struct raid5_bio_context {
 };
 
 static void
-raid5_bio_buf_init(struct raid5_bio_context *ctx, struct bio *bi)
+raid5_bio_buf_init(struct raid5_bio_context *ctx, struct bio *bi, raid5_conf_t *conf)
 {
 	bi->bi_phys_segments = 1;
 	ctx->bi     = bi;
+	ctx->conf   = conf;
 	ctx->offset = 0;
 	ctx->idx    = 0;
 	ctx->total  = bi->bi_size;
+}
+
+static void
+raid5_bio_buf_end(struct raid5_bio_context *ctx)
+{
+	struct bio *bi = ctx->bi;
+	raid5_conf_t *conf = ctx->conf;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&conf->device_lock, flags);
+	bi->bi_phys_segments --;
+	if (bi->bi_phys_segments == 0) {
+		bio_endio(bi, 0);
+	}
+	spin_unlock_irqrestore(&conf->device_lock, flags);
 }
 
 static void
@@ -102,7 +119,7 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		return res;
 	}
 
-	raid5_bio_buf_init(&ctx, bi);
+	raid5_bio_buf_init(&ctx, bi, conf);
 	do {
 		CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_REQUEST_SIG);
 		sector_t split_io = STRIPE_SECTORS;
@@ -127,8 +144,8 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 	} while (remainning);
 	
 	BUG_ON(ctx.total != 0);
+	raid5_bio_buf_end(&ctx);
 
-	bio_endio(bi, 0);
 	return res;
 }
 
@@ -412,6 +429,15 @@ static QState Raid5_idle(Raid5 *me, QEvent const *e)
 /*..........................................................................*/
 static QState Raid5_reply(Raid5 *me, QEvent const *e)
 {
-	/* TODO */
+	CacheRWRly *re = (CacheRWRly *)e;
+	struct raid5_bio_context ctx;
+
+	/* TODO handle the errno */
+	WARN_ON(re->errno);
+	
+	ctx.bi   = re->buf.bio.bi;
+	ctx.conf = re->conf;
+	raid5_bio_buf_end(&ctx);
+	
 	return Q_SUPER(&QHsm_top);
 }

@@ -79,6 +79,7 @@ static QState Cache_rw(Cache *me, QEvent const *e)
 	QS_U32_HEX(2, pe->flags);
 	QS_END();
 
+	re->conf  = pe->conf;
 	re->errno = 0;
 	re->buf.bio.bi = pe->buf.bio.bi;
 	QACTIVE_POST(pe->ao, (QEvent *)re, AO_cache);

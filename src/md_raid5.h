@@ -41,6 +41,7 @@ struct CacheRWRlyTag {
 			struct bio *bi;
 		} bio;
 	} buf;
+	raid5_conf_t *conf;
 };
 
 #define STRIPE_SS_SHIFT         16
