@@ -1,6 +1,8 @@
 #ifndef _RAID5_H
 #define _RAID5_H
 
+#include <linux/radix-tree.h>
+
 typedef struct raid5_private_data raid5_conf_t;
 
 int  raid5_init(void);
@@ -50,5 +52,10 @@ struct CacheRWRlyTag {
 #define STRIPE_SECTORS          (STRIPE_SIZE>>9)
 #define STRIPE_ORDER            (STRIPE_SHIFT - PAGE_SHIFT)
 #define SECTOR_SHIFT            9
+
+typedef struct raid5_track {
+	struct list_head free, used;
+	struct radix_tree_root tree;
+} raid5_track;
 
 #endif

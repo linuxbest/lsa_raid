@@ -22,6 +22,7 @@ struct raid5_private_data {
 	short max_degraded;
 	short raid_disks;
 	short chunk_sectors;
+	struct raid5_track rt;
 };
 
 /* RAID5 BIO context helper -------------------------------------------------*/
@@ -218,12 +219,15 @@ setup_conf(mddev_t *mddev)
 	conf->raid_disks   = mddev->raid_disks;
 	conf->chunk_sectors= mddev->chunk_sectors;
 
+	lsa_track_init(&conf->rt, 1024);
+
 	return conf;
 }
 
 static void
 free_conf(raid5_conf_t *conf)
 {
+	lsa_track_exit(&conf->rt);
 	kfree(conf);
 }
 

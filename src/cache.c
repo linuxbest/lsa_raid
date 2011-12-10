@@ -6,8 +6,6 @@ Q_DEFINE_THIS_FILE
 
 typedef struct CacheTag {
 	QActive super;
-	
-	struct list_head head;
 } Cache;
 
 static QState Cache_initial(Cache *me, QEvent const *e);
@@ -24,9 +22,7 @@ void Cache_ctor(void)
 {
 	Cache *me = &l_cache;
 	QActive_ctor(&me->super, (QStateHandler)(Cache_initial));
-	INIT_LIST_HEAD(&me->head);
 }
-
 /* HSM definition ----------------------------------------------------------*/
 /*..........................................................................*/
 static QState Cache_initial(Cache *me, QEvent const *e)
@@ -34,7 +30,6 @@ static QState Cache_initial(Cache *me, QEvent const *e)
 	QActive_subscribe((QActive *)me, TERMINATE_SIG);
 
 	QS_OBJ_DICTIONARY(&l_cache);
-	QS_OBJ_DICTIONARY(&l_cache.head);
 	
 	QS_FUN_DICTIONARY(&Cache_initial);
 	QS_FUN_DICTIONARY(&Cache_final);
