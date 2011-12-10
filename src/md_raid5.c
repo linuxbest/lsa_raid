@@ -412,7 +412,7 @@ static QState Raid5_initial(Raid5 *me, QEvent const *e)
 	
 	QS_FUN_DICTIONARY(&Raid5_initial);
 	QS_FUN_DICTIONARY(&Raid5_final);
-	QS_FUN_DICTIONARY(&Raid5_initial);
+	QS_FUN_DICTIONARY(&Raid5_idle);
 	QS_FUN_DICTIONARY(&Raid5_reply);
 
 	QS_SIG_DICTIONARY(CACHE_RW_REPLY_SIG, &l_raid5);
