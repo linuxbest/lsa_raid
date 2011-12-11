@@ -34,6 +34,6 @@ struct raid5_track;
 int  lsa_track_init(struct raid5_track *rt, uint16_t nr);
 void lsa_track_exit(struct raid5_track *rt);
 
-//QHsm * Track_ctor  (struct raid5_track *rt, uint32_t track);
+QHsm *Track_find_or_create(struct raid5_track *rt, uint32_t track);
 
 #endif

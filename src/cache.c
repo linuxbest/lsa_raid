@@ -67,7 +67,8 @@ static QState Cache_rw(Cache *me, QEvent const *e)
 {
 	CacheRWEvt *pe = (CacheRWEvt *)e;
 	CacheRWRly *re = Q_NEW(CacheRWRly, CACHE_RW_REPLY_SIG);
-	
+	QHsm *track;
+
 	QS_BEGIN(QS_CACHE_RW, QS_apObj_);
 	QS_U32_HEX(8, pe->sector);
 	QS_U32_HEX(8, pe->track);
@@ -75,7 +76,13 @@ static QState Cache_rw(Cache *me, QEvent const *e)
 	QS_U32_HEX(4, pe->len);
 	QS_U32_HEX(2, pe->flags);
 	QS_END();
-
+	
+	track = Track_find_or_create(pe->rt, pe->track);
+	/* TODO: handle track empty */
+	Q_ASSERT(track);
+	
+	QHsm_dispatch(track, e);
+	
 	/* doing a fake bio finish */
 	re->conf  = pe->conf;
 	re->errno = 0;

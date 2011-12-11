@@ -149,6 +149,7 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		pe->len    = (uint16_t)len;
 		pe->flags  = bio_data_dir(bi) | BIO_BUF;
 		pe->conf   = conf;
+		pe->rt     = &conf->rt;
 		pe->ao     = AO_raid5;
 		res = raid5_bio_buf_next(&ctx, &pe->buf.bio);
 		BUG_ON(res != 0);

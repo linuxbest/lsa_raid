@@ -32,8 +32,9 @@ struct CacheRWEvtTag {
 		struct {
 		} tgt;
 	} buf;
-	raid5_conf_t *conf;
-	QActive      *ao;
+	raid5_conf_t       *conf;
+	struct raid5_track *rt;
+	QActive            *ao;
 };
 struct CacheRWRlyTag {
 	QEvent  super;
