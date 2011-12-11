@@ -43,13 +43,14 @@ int lsa_raid_init(void)
 	
 	QF_init();
 	
+	QF_psInit(l_subscrSto, Q_DIM(l_subscrSto));   /* init publish-subscribe */
 	for (i = 0; i < Q_DIM(EventPool); i++) {
 		struct event_pool *ep = &EventPool[i];
 		int tlen = ep->pool_size * ep->event_size;
 		ep->sto = kmalloc(tlen, GFP_KERNEL);
+		QS_OBJ_DICTIONARY(ep->sto);
 		QF_poolInit(ep->sto, tlen, ep->event_size);
 	}
-	QF_psInit(l_subscrSto, Q_DIM(l_subscrSto));   /* init publish-subscribe */
 
 	QS_OBJ_DICTIONARY(&EventPool[0]);
 	QS_OBJ_DICTIONARY(&EventPool[1]);
