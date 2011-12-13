@@ -86,7 +86,7 @@ static QHsm * Track_ctor(raid5_track *rt)
 
 	/* call QHsm */
 	QHsm_ctor(&me->super, (QStateHandler)&Track_initial);
-	return (QHsm *)me;
+	return &me->super;
 }
 /* HSM definition ----------------------------------------------------------*/
 /*..........................................................................*/

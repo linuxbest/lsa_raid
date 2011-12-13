@@ -59,4 +59,15 @@ typedef struct raid5_track {
 	struct radix_tree_root tree;
 } raid5_track;
 
+typedef struct raid5_segment {
+	struct list_head free, used;
+	struct radix_tree_root tree;
+} raid5_segment;
+
+int  lsa_track_init(struct raid5_track *rt, uint16_t nr);
+void lsa_track_exit(struct raid5_track *rt);
+
+int  lsa_segment_init(struct raid5_segment *rseg, uint16_t nr);
+void lsa_segment_exit(struct raid5_segment *rseg);
+
 #endif

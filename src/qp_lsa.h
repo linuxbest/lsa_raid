@@ -31,9 +31,6 @@ int  lsa_raid_init(void);
 void lsa_raid_exit(void);
 
 struct raid5_track;
-int  lsa_track_init(struct raid5_track *rt, uint16_t nr);
-void lsa_track_exit(struct raid5_track *rt);
-
 void Track_dispatch(struct raid5_track *rt, QEvent const *e);
 
 #endif
