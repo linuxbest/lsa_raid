@@ -36,7 +36,8 @@ static QState Cache_initial(Cache *me, QEvent const *e)
 	QS_FUN_DICTIONARY(&Cache_idle);
 	QS_FUN_DICTIONARY(&Cache_rw);
 	
-	QS_SIG_DICTIONARY(CACHE_RW_REQUEST_SIG, &l_cache);
+	QS_SIG_DICTIONARY(CACHE_WRITE_REQUEST_SIG, &l_cache);
+	QS_SIG_DICTIONARY(CACHE_READ_REQUEST_SIG, &l_cache);
 	
 	return Q_TRAN(&Cache_idle);
 }
@@ -56,8 +57,14 @@ static QState Cache_idle(Cache *me, QEvent const *e)
 	switch (e->sig) {
 	case TERMINATE_SIG:
 		return Q_TRAN(&Cache_final);
-	case CACHE_RW_REQUEST_SIG:
-		return Cache_rw(me, e);
+		
+	case CACHE_WRITE_REQUEST_SIG:
+		Cache_rw(me, e);
+		return Q_HANDLED();
+		
+	case CACHE_READ_REQUEST_SIG:
+		Cache_rw(me, e);
+		return Q_HANDLED();
 	}
 	return Q_SUPER(&QHsm_top);
 }
@@ -66,7 +73,10 @@ static QState Cache_idle(Cache *me, QEvent const *e)
 static QState Cache_rw(Cache *me, QEvent const *e)
 {
 	CacheRWEvt *pe = (CacheRWEvt *)e;
-	CacheRWRly *re = Q_NEW(CacheRWRly, CACHE_RW_REPLY_SIG);
+	CacheRWRly *re;
+	int reply = pe->flags & 1 ? CACHE_WRITE_REPLY_SIG : CACHE_READ_REPLY_SIG;
+	
+	re = Q_NEW(CacheRWRly, reply);
 
 	QS_BEGIN(QS_CACHE_RW, QS_apObj_);
 	QS_U32_HEX(8, pe->sector);

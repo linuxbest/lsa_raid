@@ -21,6 +21,8 @@ typedef struct TrackRequest {
 
 /*
  * unused:  no data in page, bitmap is cleared.
+ * ioin:    the data in from the io layer.
+ * ioout:   the data out from the io layer. 
  * segin:   the data is reading from segment.
  * segout:  the dirty data is try write to segment.
  * dirty:   have dirty data in page, may not full data.
@@ -33,6 +35,8 @@ static QState Track_dirty    (Track *me, QEvent const *e);
 static QState Track_clean    (Track *me, QEvent const *e);
 static QState Track_segin    (Track *me, QEvent const *e);
 static QState Track_segout   (Track *me, QEvent const *e);
+static QState Track_ioin     (Track *me, QEvent const *e);
+static QState Track_ioout    (Track *me, QEvent const *e);
 
 /* track alloc/free---------------------------------------------------------*/
 /*..........................................................................*/
@@ -79,7 +83,12 @@ static QHsm * Track_ctor(raid5_track *rt)
 	QS_OBJ_DICTIONARY(track);
 	QS_OBJ_DICTIONARY(track->page);
 	
-	QS_SIG_DICTIONARY(CACHE_RW_REQUEST_SIG, me);
+	QS_SIG_DICTIONARY(CACHE_WRITE_REQUEST_SIG, me);
+	QS_SIG_DICTIONARY(CACHE_READ_REQUEST_SIG,  me);
+	QS_SIG_DICTIONARY(CACHE_WRITE_DONE_SIG,    me);
+	QS_SIG_DICTIONARY(CACHE_READ_DONE_SIG,     me);
+	QS_SIG_DICTIONARY(SEG_READ_REPLY_SIG,      me);
+	QS_SIG_DICTIONARY(SEG_WRITE_REPLY_SIG,     me);
 
 	/* adding free list */
 	list_add_tail(&me->entry, &rt->free);
@@ -98,13 +107,26 @@ static QState Track_initial(Track *me, QEvent const *e)
 static QState Track_unused(Track *me, QEvent const *e)
 {
 	switch (e->sig) {
-	case CACHE_RW_REQUEST_SIG: {
+	case CACHE_WRITE_REQUEST_SIG: {
 		CacheRWEvt *pe = (CacheRWEvt *)e;
-		if (pe->flags & 1) { /* WRITE */
-			return Q_TRAN(&Track_dirty);
-		} else {
-			return Q_TRAN(&Track_segin);
-		}
+		TrackReq *req = track_request_alloc(me, pe);
+		return Q_TRAN(&Track_ioin);
+	}
+	case CACHE_WRITE_DONE_SIG: {
+	}
+
+	case CACHE_READ_REQUEST_SIG: {
+		CacheRWEvt *pe = (CacheRWEvt *)e;
+		TrackReq *req = track_request_alloc(me, pe);
+		return Q_TRAN(&Track_segin);
+	}
+	case CACHE_READ_DONE_SIG: {
+	}
+
+	case SEG_WRITE_REPLY_SIG: {
+	}
+
+	case SEG_READ_REPLY_SIG: {
 	}
 	}
 	return Q_SUPER(&QHsm_top);
@@ -113,30 +135,42 @@ static QState Track_unused(Track *me, QEvent const *e)
 static QState Track_dirty(Track *me, QEvent const *e)
 {
 	switch (e->sig) {
-	case Q_ENTRY_SIG: {
-	}
 	}
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
 static QState Track_clean(Track *me, QEvent const *e)
 {
+	switch (e->sig) {
+	}
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
 static QState Track_segin(Track *me, QEvent const *e)
 {
 	switch (e->sig) {
-	case Q_ENTRY_SIG: {
-		/* sending request into segment buffer */
-		return Q_HANDLED();
-	}
 	}
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
 static QState Track_segout(Track *me, QEvent const *e)
 {
+	switch (e->sig) {
+	}
+	return Q_SUPER(&QHsm_top);
+}
+/*..........................................................................*/
+static QState Track_ioin(Track *me, QEvent const *e)
+{
+	switch (e->sig) {
+	}
+	return Q_SUPER(&QHsm_top);
+}
+/*..........................................................................*/
+static QState Track_ioout(Track *me, QEvent const *e)
+{
+	switch (e->sig) {
+	}
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
@@ -176,6 +210,8 @@ int lsa_track_init(raid5_track *rt, uint16_t nr)
 	QS_FUN_DICTIONARY(&Track_clean);
 	QS_FUN_DICTIONARY(&Track_segin);
 	QS_FUN_DICTIONARY(&Track_segout);
+	QS_FUN_DICTIONARY(&Track_ioin);
+	QS_FUN_DICTIONARY(&Track_ioout);
 	
 	INIT_LIST_HEAD(&rt->free);
 	INIT_LIST_HEAD(&rt->used);

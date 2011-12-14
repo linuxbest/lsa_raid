@@ -136,7 +136,9 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 
 	raid5_bio_buf_init(&ctx, bi, conf);
 	do {
-		CacheRWEvt *pe = Q_NEW(CacheRWEvt, CACHE_RW_REQUEST_SIG);
+		int req = bio_data_dir(bi) & 1 ? 
+			CACHE_WRITE_REQUEST_SIG : CACHE_READ_REQUEST_SIG;
+		CacheRWEvt *pe = Q_NEW(CacheRWEvt, req);
 		sector_t split_io = STRIPE_SECTORS;
 		sector_t boundary = ((offset + split_io) & ~(split_io - 1)) - offset;
 		sector_t len      = min_t(sector_t, remainning, boundary);
@@ -423,7 +425,8 @@ static QState Raid5_initial(Raid5 *me, QEvent const *e)
 	QS_FUN_DICTIONARY(&Raid5_idle);
 	QS_FUN_DICTIONARY(&Raid5_reply);
 
-	QS_SIG_DICTIONARY(CACHE_RW_REPLY_SIG, &l_raid5);
+	QS_SIG_DICTIONARY(CACHE_READ_REPLY_SIG, &l_raid5);
+	QS_SIG_DICTIONARY(CACHE_WRITE_REPLY_SIG, &l_raid5);
 
 	return Q_TRAN(&Raid5_idle);
 }
@@ -443,8 +446,14 @@ static QState Raid5_idle(Raid5 *me, QEvent const *e)
 	switch (e->sig) {
 	case TERMINATE_SIG:
 		return Q_TRAN(&Raid5_final);
-	case CACHE_RW_REPLY_SIG:
-		return Raid5_reply(me, e);
+
+	case CACHE_WRITE_REPLY_SIG:
+		Raid5_reply(me, e);
+		return Q_HANDLED();
+		
+	case CACHE_READ_REPLY_SIG:
+		Raid5_reply(me, e);
+		return Q_HANDLED();
 	}
 
 	return Q_SUPER(&QHsm_top);

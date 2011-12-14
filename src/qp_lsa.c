@@ -55,9 +55,7 @@ int lsa_raid_init(void)
 	QS_OBJ_DICTIONARY(&EventPool[0]);
 	QS_OBJ_DICTIONARY(&EventPool[1]);
 
-	QS_SIG_DICTIONARY(TERMINATE_SIG,        0);
-	QS_SIG_DICTIONARY(CACHE_RW_REQUEST_SIG, 0);
-	QS_SIG_DICTIONARY(CACHE_RW_REPLY_SIG,   0);
+	QS_SIG_DICTIONARY(TERMINATE_SIG,           0);
 	
 	QActive_start(AO_cache,
 		      1,
