@@ -19,6 +19,7 @@ struct CacheRWEvtTag {
 	uint8_t       flags;
 #define BIO_BUF (1<<7)
 #define TGT_BUF (1<<6)
+#define NUL_BUF (1<<5)
 	union {
 		struct raid5_bio_buf {
 			struct bio   *bi;
@@ -33,7 +34,6 @@ struct CacheRWEvtTag {
 		} tgt;
 	} buf;
 	raid5_conf_t       *conf;
-	struct raid5_track *rt;
 	QActive            *ao;
 };
 struct CacheRWRlyTag {
@@ -45,6 +45,13 @@ struct CacheRWRlyTag {
 		} bio;
 	} buf;
 	raid5_conf_t *conf;
+};
+
+struct SegmentEvtTag {
+	QEvent       super;
+	uint32_t     track;
+	raid5_conf_t *conf;
+	struct TrackTag *me;
 };
 
 #define STRIPE_SS_SHIFT         16
@@ -69,5 +76,8 @@ void lsa_track_exit(struct raid5_track *rt);
 
 int  lsa_segment_init(struct raid5_segment *rseg, uint16_t nr);
 void lsa_segment_exit(struct raid5_segment *rseg);
+
+struct raid5_track   *raid5_track_conf  (raid5_conf_t *conf);
+struct raid5_segment *raid5_segment_conf(raid5_conf_t *conf);
 
 #endif

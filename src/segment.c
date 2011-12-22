@@ -4,75 +4,63 @@
 
 Q_DEFINE_THIS_FILE
 
-/* local objects ...........................................................*/
 typedef struct SegmentTag {
-	QHsm super;
-	
-	struct list_head entry;
+	QActive super;
 } Segment;
 
-static QState Segment_initial  (Segment *me, QEvent const *e);
+static QState Segment_initial (Segment *me, QEvent const *e);
+static QState Segment_final   (Segment *me, QEvent const *e);
+static QState Segment_idle    (Segment *me, QEvent const *e);
+
+static Segment l_segment;
+
+QActive *const AO_segment = (QActive *)&l_segment;
 
 /*..........................................................................*/
-static Segment *segment_alloc(void)
+void Segment_ctor(void)
 {
-	Segment *me = kmalloc(sizeof(*me), GFP_KERNEL);
-	return me;
-}
-static void segment_free(Segment *me)
-{
-	kfree(me);
-}
-/*..........................................................................*/
-static QHsm *Segment_ctor(raid5_segment *rseg)
-{
-	Segment * me;
-	Segment * seg;
-
-	/* allocate the memory */
-	me = seg = segment_alloc();
-	Q_ASSERT(me != NULL);
-	
-	QS_OBJ_DICTIONARY(seg);
-	/*QS_OBJ_DICTIONARY(seg->*/
-	
-	/* adding free list */
-	list_add_tail(&me->entry, &rseg->free);
-	
-	/* call QHsm */
-	QHsm_ctor(&me->super, (QStateHandler)&Segment_initial);
-	return &me->super;
+	Segment *me = &l_segment;
+	QActive_ctor(&me->super, (QStateHandler)(Segment_initial));
 }
 /* HSM definition ----------------------------------------------------------*/
 /*..........................................................................*/
 static QState Segment_initial(Segment *me, QEvent const *e)
 {
-	return Q_SUPER(&QHsm_top);
-}
-/* export function ---------------------------------------------------------*/
-/*..........................................................................*/
-int lsa_segment_init(raid5_segment *rseg, uint16_t nr)
-{
-	int i;
+	QActive_subscribe((QActive *)me, TERMINATE_SIG);
+
+	QS_OBJ_DICTIONARY(&l_segment);
 
 	QS_FUN_DICTIONARY(&Segment_initial);
+	QS_FUN_DICTIONARY(&Segment_final);
+	QS_FUN_DICTIONARY(&Segment_idle);
 
-	INIT_LIST_HEAD(&rseg->free);
-	INIT_LIST_HEAD(&rseg->used);
-	INIT_RADIX_TREE(&rseg->tree, GFP_KERNEL);
+	QS_SIG_DICTIONARY(SEG_READ_REQUEST_SIG,  &l_segment);
+	QS_SIG_DICTIONARY(SEG_WRITE_REQUEST_SIG, &l_segment);
 	
-	for (i = 0; i < nr; i ++) {
-		Segment_ctor(rseg);
-	}
-
-	return 0;
+	return Q_TRAN(&Segment_idle);
 }
 /*..........................................................................*/
-void lsa_segment_exit(raid5_segment *rseg)
+static QState Segment_final(Segment *me, QEvent const *e)
 {
-	while (!list_empty(&rseg->free)) {
-		Segment *me = list_entry(rseg->free.next, Segment, entry);
-		list_del(&me->entry);
-		segment_free(me);
+	switch (e->sig) {
+	case Q_ENTRY_SIG:
+		QActive_stop(&me->super);
+		return Q_HANDLED();
 	}
+	return Q_SUPER(&QHsm_top);
+}
+/*..........................................................................*/
+static QState Segment_idle(Segment *me, QEvent const *e)
+{
+	switch (e->sig) {
+	case TERMINATE_SIG:
+		return Q_TRAN(&Segment_final);
+		
+	case SEG_READ_REQUEST_SIG:
+		return Q_HANDLED();
+
+	case SEG_WRITE_REQUEST_SIG:
+		return Q_HANDLED();
+	}
+	return Q_SUPER(&QHsm_top);
 }

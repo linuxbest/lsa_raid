@@ -152,7 +152,6 @@ raid5_make_request(struct request_queue *q, struct bio *bi)
 		pe->len    = (uint16_t)len;
 		pe->flags  = bio_data_dir(bi) | BIO_BUF;
 		pe->conf   = conf;
-		pe->rt     = &conf->rt;
 		pe->ao     = AO_raid5;
 		res = raid5_bio_buf_next(&ctx, &pe->buf.bio);
 		BUG_ON(res != 0);
@@ -472,4 +471,14 @@ static QState Raid5_reply(Raid5 *me, QEvent const *e)
 	raid5_bio_buf_end(&ctx);
 	
 	return Q_SUPER(&QHsm_top);
+}
+
+struct raid5_track   *raid5_track_conf(raid5_conf_t *conf)
+{
+	return &conf->rt;
+}
+
+struct raid5_segment *raid5_segment_conf(raid5_conf_t *conf)
+{
+	return &conf->rseg;
 }

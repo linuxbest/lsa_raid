@@ -81,4 +81,4 @@ qp_port += bsp.o
 qp_port += qf_port.o
 
 lsa-objs := ${qf_objs} ${qep_objs} ${qs_objs} ${qp_port}
-lsa-objs += md_raid5.o qp_lsa.o cache.o track.o segment.o
+lsa-objs += md_raid5.o qp_lsa.o cache.o track.o segment.o stripe.o

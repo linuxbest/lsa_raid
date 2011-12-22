@@ -11,6 +11,8 @@ typedef struct TrackTag {
 	struct list_head entry;
 	struct page *page;
 	uint8_t bitmap[1<<(STRIPE_SHIFT-(9+3))];
+	uint32_t track;
+	raid5_conf_t *conf;
 	struct list_head head;
 } Track;
 
@@ -38,6 +40,9 @@ static QState Track_segout   (Track *me, QEvent const *e);
 static QState Track_ioin     (Track *me, QEvent const *e);
 static QState Track_ioout    (Track *me, QEvent const *e);
 
+static QState Track_iohandle (Track *me, QEvent const *e);
+static QState Track_seghandle(Track *me, QEvent const *e);
+
 /* track alloc/free---------------------------------------------------------*/
 /*..........................................................................*/
 static Track * track_alloc(void)
@@ -61,6 +66,7 @@ static void track_free(Track *me)
 }
 /* track request  alloc/free------------------------------------------------*/
 /*..........................................................................*/
+/* must call under cache active object */
 static TrackReq *track_request_alloc(Track *rt, CacheRWEvt *e)
 {
 	TrackReq *tq = kmalloc(sizeof(*tq), GFP_KERNEL);
@@ -104,30 +110,32 @@ static QState Track_initial(Track *me, QEvent const *e)
 	return Q_TRAN(&Track_unused);
 }
 /*..........................................................................*/
+static QState Track_read_req(Track *me, QEvent const *e)
+{
+	TrackReq *req = track_request_alloc(me, (CacheRWEvt *)e);
+	SegmentEvt *pe = Q_NEW(SegmentEvt, SEG_READ_REQUEST_SIG);
+	pe->track = me->track;
+	pe->me    = me;
+	pe->conf  = me->conf;
+	QACTIVE_POST(AO_segment, (QEvent *)pe, AO_cache);
+	return Q_TRAN(&Track_segin);
+}
+/*..........................................................................*/
 static QState Track_unused(Track *me, QEvent const *e)
 {
 	switch (e->sig) {
-	case CACHE_WRITE_REQUEST_SIG: {
-		CacheRWEvt *pe = (CacheRWEvt *)e;
-		TrackReq *req = track_request_alloc(me, pe);
-		return Q_TRAN(&Track_ioin);
-	}
-	case CACHE_WRITE_DONE_SIG: {
-	}
-
-	case CACHE_READ_REQUEST_SIG: {
-		CacheRWEvt *pe = (CacheRWEvt *)e;
-		TrackReq *req = track_request_alloc(me, pe);
-		return Q_TRAN(&Track_segin);
-	}
-	case CACHE_READ_DONE_SIG: {
-	}
-
-	case SEG_WRITE_REPLY_SIG: {
-	}
-
-	case SEG_READ_REPLY_SIG: {
-	}
+	case CACHE_WRITE_REQUEST_SIG:
+		/* TODO */
+		break;
+		
+	case CACHE_READ_REQUEST_SIG:
+		return Track_read_req(me, e);
+		
+	case CACHE_WRITE_DONE_SIG:
+	case CACHE_READ_DONE_SIG:
+	case SEG_WRITE_REPLY_SIG:
+	case SEG_READ_REPLY_SIG:
+		break;
 	}
 	return Q_SUPER(&QHsm_top);
 }
@@ -174,27 +182,39 @@ static QState Track_ioout(Track *me, QEvent const *e)
 	return Q_SUPER(&QHsm_top);
 }
 /*..........................................................................*/
-static QHsm * Track_find_or_create(struct raid5_track *rt, uint32_t track)
+static QHsm * Track_find_or_create(raid5_conf_t *conf, uint32_t track)
 {
-	Track *me = radix_tree_lookup(&rt->tree, track);
-	if (me)
+	struct raid5_track *rt = raid5_track_conf(conf);
+	int res;
+	Track *me;
+
+	me = radix_tree_lookup(&rt->tree, track);
+	if (me) {
+		Q_ASSERT(me->track == track);
 		return &me->super;
+	}
 	if (list_empty(&rt->free))
 		return NULL;
 	me = list_entry(rt->free.next, Track, entry);
 	list_del_init(&me->entry);
-	
+	me->track = track;
+	me->conf  = conf;
+
 	/* must not have any request */
 	Q_ASSERT(list_empty(&me->head));
+
+	/* insert into tree */
+	res = radix_tree_insert(&rt->tree, track, me);
+	Q_ASSERT(res == 0);
 	
 	return &me->super;
 }
 /* export function ---------------------------------------------------------*/
 /*..........................................................................*/
-void Track_dispatch(struct raid5_track *rt, QEvent const *e)
+void Track_dispatch(raid5_conf_t *conf, QEvent const *e)
 {
 	CacheRWEvt *pe = (CacheRWEvt *)e;
-	QHsm *track = Track_find_or_create(rt, pe->track);
+	QHsm *track = Track_find_or_create(conf, pe->track);
 	/* TODO: handle track empty */
 	Q_ASSERT(track);
 	QHsm_dispatch(track, e);

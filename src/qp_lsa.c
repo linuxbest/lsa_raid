@@ -5,6 +5,7 @@
 
 static QEvent const *l_cacheQueueSto[64];
 static QEvent const *l_raid5QueueSto[64];
+static QEvent const *l_segQueueSto[64];
 static QSubscrList l_subscrSto[MAX_PUB_SIG];
 
 union SmallEvents {
@@ -57,14 +58,20 @@ int lsa_raid_init(void)
 
 	QS_SIG_DICTIONARY(TERMINATE_SIG,           0);
 	
-	QActive_start(AO_cache,
+	QActive_start(AO_segment,
 		      1,
+		      l_segQueueSto, Q_DIM(l_segQueueSto),
+		      (void *)0, 0,
+		      (QEvent *)0);
+	
+	QActive_start(AO_cache,
+		      2,
 		      l_cacheQueueSto, Q_DIM(l_cacheQueueSto),
 		      (void *)0, 0,
 		      (QEvent *)0);
 
 	QActive_start(AO_raid5,
-		      2,
+		      3,
 		      l_raid5QueueSto, Q_DIM(l_raid5QueueSto),
 		      (void *)0, 0,
 		      (QEvent *)0);
