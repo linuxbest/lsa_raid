@@ -57,6 +57,7 @@ static QState Segment_idle(Segment *me, QEvent const *e)
 		return Q_TRAN(&Segment_final);
 		
 	case SEG_READ_REQUEST_SIG:
+		/* search the LSA dirtory */
 		return Q_HANDLED();
 
 	case SEG_WRITE_REQUEST_SIG:

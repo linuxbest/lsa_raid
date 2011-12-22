@@ -12,7 +12,6 @@ typedef struct StripeTag {
 } Stripe;
 
 static QState Stripe_initial  (Stripe *me, QEvent const *e);
-
 /*..........................................................................*/
 static Stripe *stripe_alloc(void)
 {
@@ -44,6 +43,7 @@ static QHsm *Stripe_ctor(raid5_segment *rseg)
 	
 	/* call QHsm */
 	QHsm_ctor(&me->super, (QStateHandler)&Stripe_initial);
+
 	return &me->super;
 }
 /* HSM definition ----------------------------------------------------------*/

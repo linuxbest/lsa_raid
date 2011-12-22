@@ -117,6 +117,7 @@ static QState Track_read_req(Track *me, QEvent const *e)
 	pe->track = me->track;
 	pe->me    = me;
 	pe->conf  = me->conf;
+	pe->page  = me->page;
 	QACTIVE_POST(AO_segment, (QEvent *)pe, AO_cache);
 	return Q_TRAN(&Track_segin);
 }

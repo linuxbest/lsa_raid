@@ -50,6 +50,7 @@ struct CacheRWRlyTag {
 struct SegmentEvtTag {
 	QEvent       super;
 	uint32_t     track;
+	struct page  *page;
 	raid5_conf_t *conf;
 	struct TrackTag *me;
 };
