@@ -39,6 +39,7 @@ void Raid5_ctor(void);
 extern QActive * const AO_cache;
 extern QActive * const AO_raid5;
 extern QActive * const AO_segment;
+extern QActive * const AO_dirtory;
 
 typedef struct CacheRWEvtTag CacheRWEvt;
 typedef struct CacheRWRlyTag CacheRWRly;
@@ -51,5 +52,6 @@ void lsa_raid_exit(void);
 
 struct raid5_private_data;
 void Track_dispatch(struct raid5_private_data *conf, QEvent const *e);
+void Entry_dispatch(struct raid5_private_data *conf, QEvent const *e);
 
 #endif

@@ -23,7 +23,7 @@ static void stripe_free(Stripe *me)
 	kfree(me);
 }
 /*..........................................................................*/
-static QHsm *Stripe_ctor(raid5_segment *rseg)
+static QHsm *Stripe_ctor(raid5_segment_t *rseg)
 {
 	Stripe * me;
 	Stripe * seg;
@@ -54,7 +54,7 @@ static QState Stripe_initial(Stripe *me, QEvent const *e)
 }
 /* export function ---------------------------------------------------------*/
 /*..........................................................................*/
-int lsa_stripe_init(raid5_segment *rseg, uint16_t nr)
+int lsa_stripe_init(raid5_segment_t *rseg, uint16_t nr)
 {
 	int i;
 
@@ -71,7 +71,7 @@ int lsa_stripe_init(raid5_segment *rseg, uint16_t nr)
 	return 0;
 }
 /*..........................................................................*/
-void lsa_stripe_exit(raid5_segment *rseg)
+void lsa_stripe_exit(raid5_segment_t *rseg)
 {
 	while (!list_empty(&rseg->free)) {
 		Stripe *me = list_entry(rseg->free.next, Stripe, entry);

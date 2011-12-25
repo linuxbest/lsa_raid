@@ -81,7 +81,7 @@ static void track_request_free(TrackReq *tq)
 	kfree(tq);
 }
 /*..........................................................................*/
-static QHsm * Track_ctor(raid5_track *rt)
+static QHsm * Track_ctor(raid5_track_t *rt)
 {
 	Track *me = track_alloc();
 	Track *track = me;
@@ -221,7 +221,7 @@ void Track_dispatch(raid5_conf_t *conf, QEvent const *e)
 	QHsm_dispatch(track, e);
 }
 /*..........................................................................*/
-int lsa_track_init(raid5_track *rt, uint16_t nr)
+int lsa_track_init(raid5_track_t *rt, uint16_t nr)
 {
 	int i;
 
@@ -245,7 +245,7 @@ int lsa_track_init(raid5_track *rt, uint16_t nr)
 	return 0;
 }
 /*..........................................................................*/
-void lsa_track_exit(raid5_track *rt)
+void lsa_track_exit(raid5_track_t *rt)
 {
        	while (!list_empty(&rt->free)) {
 		Track *me = list_entry(rt->free.next, Track, entry);

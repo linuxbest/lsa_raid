@@ -5,7 +5,8 @@
 
 static QEvent const *l_cacheQueueSto[64];
 static QEvent const *l_raid5QueueSto[64];
-static QEvent const *l_segQueueSto[64];
+static QEvent const *l_segQueueSto  [64];
+static QEvent const *l_dirQueueSto  [64];
 static QSubscrList l_subscrSto[MAX_PUB_SIG];
 
 union SmallEvents {
@@ -57,6 +58,12 @@ int lsa_raid_init(void)
 	QS_OBJ_DICTIONARY(&EventPool[1]);
 
 	QS_SIG_DICTIONARY(TERMINATE_SIG,           0);
+
+	QActive_start(AO_dirtory,
+		      1,
+		      l_dirQueueSto, Q_DIM(l_dirQueueSto),
+		      (void *)0, 0,
+		      (QEvent *)0);
 	
 	QActive_start(AO_segment,
 		      1,
