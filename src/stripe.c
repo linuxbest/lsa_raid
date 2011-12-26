@@ -33,7 +33,7 @@ static QHsm *Stripe_ctor(raid5_segment_t *rseg)
 	Q_ASSERT(me != NULL);
 	
 	QS_OBJ_DICTIONARY(seg);
-	/*QS_OBJ_DICTIONARY(seg->*/
+	/*QS_OBJ_DICTIONARY(seg->x);*/
 	
 	QS_SIG_DICTIONARY(SEG_READ_REQUEST_SIG,   me);
 	QS_SIG_DICTIONARY(SEG_WRITE_REQUEST_SIG,  me);
